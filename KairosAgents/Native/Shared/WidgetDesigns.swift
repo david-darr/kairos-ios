@@ -557,7 +557,7 @@ struct SpendWidgetView: View {
         switch family {
         case .accessoryCircular:
             Gauge(value: min(1, share)) { Image(systemName: "creditcard") } currentValueLabel: {
-                Text(WidgetFormat.money(spend.spent, spend.currency)).minimumScaleFactor(0.5)
+                Text(spend.currency + "\(Int(spend.spent.rounded()))").minimumScaleFactor(0.6)
             }
             .gaugeStyle(.accessoryCircularCapacity)
         case .accessoryRectangular:

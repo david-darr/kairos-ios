@@ -250,6 +250,12 @@ struct WidgetDrawing: View {
         if family.isAccessory {
             KairosWidgetView(kind: kind, snapshot: snapshot, family: family, hidingTitles: false)
                 .foregroundStyle(.white)
+                .background {
+                    // AccessoryWidgetBackground only draws on the Lock Screen; stand in for it here.
+                    if family == .accessoryCircular, kind == .needsYou || kind == .quickActions {
+                        Circle().fill(Color.white.opacity(0.16))
+                    }
+                }
                 .frame(width: size.width, height: size.height, alignment: family == .accessoryInline ? .leading : .center)
                 .environment(\.colorScheme, .dark)
         } else {
@@ -338,9 +344,14 @@ struct NoticeBanner: View {
         HStack(alignment: .top, spacing: 12) {
             icon
             VStack(alignment: .leading, spacing: 1) {
-                HStack {
+                HStack(spacing: 6) {
                     Text(notice.kind.fromBot ? notice.botName : "Kairos").font(.system(size: 15, weight: .semibold))
                     Spacer()
+                    if notice.kind.level == .timeSensitive {
+                        Label("Time Sensitive", systemImage: "clock.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(hex: 0x8A5A12))
+                    }
                     Text(time).font(.system(size: 13)).foregroundStyle(.secondary)
                 }
                 Text(notice.headline).font(.system(size: 15, weight: notice.kind.fromBot ? .regular : .semibold)).lineLimit(1)
@@ -354,16 +365,6 @@ struct NoticeBanner: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(Color(hex: 0xF3EADB, alpha: 0.86), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            if notice.kind.level == .timeSensitive {
-                Text("Time Sensitive")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color(hex: 0x8A5A12))
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Color(hex: 0xE2B154, alpha: 0.3), in: Capsule())
-                    .offset(x: -12, y: -9)
-            }
-        }
         .environment(\.colorScheme, .light)
         .accessibilityElement(children: .combine)
     }
