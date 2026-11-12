@@ -34,7 +34,7 @@ final class SampleBackend: ChatBackend {
     static let botReply = "This is sample data. Connect your desktop and I will answer for real."
 
     static let settings = ChatSettings(
-        modelID: "ep-claude", modelName: "Claude", source: "Claude subscription", versionID: "claude-opus", versionName: "Claude Opus",
+        modelID: "ep-claude", modelName: "Claude", source: "Claude subscription", versionID: "claude-opus-5-5", versionName: "Opus 5.5",
         effort: "high", efforts: ["low", "medium", "high", "xhigh", "max"], fast: false,
         approval: "Ask first", approvals: ["Ask first", "Edits", "Auto", "Full access"])
 
@@ -48,9 +48,11 @@ final class SampleBackend: ChatBackend {
     /// Each connection's own models, as the desktop's catalog lists them. A local model has none.
     static let catalogs: [String: [ModelVersion]] = [
         "ep-claude": [
-            ModelVersion(id: "claude-opus", name: "Claude Opus", efforts: ["low", "medium", "high", "xhigh", "max"]),
-            ModelVersion(id: "claude-sonnet", name: "Claude Sonnet", efforts: ["low", "medium", "high"]),
-            ModelVersion(id: "claude-haiku", name: "Claude Haiku", efforts: []),
+            ModelVersion(id: "claude-opus-5-5", name: "Opus 5.5", efforts: ["low", "medium", "high", "xhigh", "max"]),
+            ModelVersion(id: "claude-opus-5", name: "Opus 5", efforts: ["low", "medium", "high", "xhigh", "max"]),
+            ModelVersion(id: "claude-sonnet-5-5", name: "Sonnet 5.5", efforts: ["low", "medium", "high"]),
+            ModelVersion(id: "claude-fable-5-2", name: "Fable 5.2", efforts: ["low", "medium", "high", "xhigh", "max"]),
+            ModelVersion(id: "claude-haiku-5-5", name: "Haiku 5.5", efforts: []),
         ],
         "ep-codex": [
             ModelVersion(id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "medium", "high", "xhigh"]),
@@ -395,10 +397,10 @@ final class SampleBackend: ChatBackend {
             ChatDetails.Part(id: "files", label: "Files", tokens: 5_000, estimated: true),
             ChatDetails.Part(id: "messages", label: "Messages", tokens: 49_000, estimated: true),
         ]
-        details.model = "Claude Opus"
+        details.model = "Opus 5.5"
         details.provider = "Claude subscription"
         details.rows = [
-            .init(id: "Model", value: "Claude Opus"), .init(id: "Provider", value: "Claude subscription"),
+            .init(id: "Model", value: "Opus 5.5"), .init(id: "Provider", value: "Claude subscription"),
             .init(id: "Context window", value: "500K (estimated)"), .init(id: "Calls", value: "5"), .init(id: "Turns", value: "3"),
             .init(id: "Input", value: "182K"), .init(id: "Output", value: "6.4K"), .init(id: "Cache read", value: "150K"),
             .init(id: "Cache write", value: "21K"), .init(id: "Cache hit", value: "82%"), .init(id: "Tool calls", value: "7"),
@@ -437,8 +439,8 @@ final class SampleBackend: ChatBackend {
     func botModel(threadID: String) async throws -> ChatSettings {
         if let saved = botModels[threadID] { return saved }
         var settings = SampleBackend.settings
-        settings.versionID = "claude-sonnet"
-        settings.versionName = "Claude Sonnet"
+        settings.versionID = "claude-sonnet-5-5"
+        settings.versionName = "Sonnet 5.5"
         settings.efforts = ["low", "medium", "high"]
         settings.effort = nil
         settings.approvals = []

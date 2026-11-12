@@ -414,7 +414,7 @@ struct ModelPickerList: View {
             .frame(minHeight: 56)
             .contentShape(Rectangle())
             .overlay(alignment: .bottom) {
-                if !last || isOpen { Palette.line.frame(height: 1).padding(.leading, 16) }
+                if !last && !isOpen { Palette.line.frame(height: 1).padding(.leading, 16) }
             }
         }
         .buttonStyle(PressStyle(scale: 0.99))
@@ -422,39 +422,35 @@ struct ModelPickerList: View {
         .accessibilityHint(isOpen ? "Hides its models" : "Shows its models")
 
         if isOpen, let models, !models.isEmpty {
-            ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
-                let on = inUse && model.id == settings.versionID
-                Button {
-                    Haptics.select()
-                    withAnimation(Motion.snappy) { choose(option, model) }
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(model.name).font(KFont.ui(15.5)).foregroundStyle(Palette.ink)
-                            if !model.efforts.isEmpty {
-                                Text("\(model.efforts.count) thinking levels")
-                                    .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
-                            }
-                        }
-                        Spacer()
-                        if on {
-                            Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.goldText)
-                                .transition(.scale.combined(with: .opacity))
-                        }
+            FlowLayout(spacing: 8) {
+                ForEach(models) { model in
+                    let on = inUse && model.id == settings.versionID
+                    Button {
+                        Haptics.select()
+                        withAnimation(Motion.snappy) { choose(option, model) }
+                    } label: {
+                        Text(model.name)
+                            .font(KFont.ui(14.5, on ? .semibold : .medium, relativeTo: .subheadline))
+                            .foregroundStyle(on ? Palette.onGold : Palette.ink)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 36)
+                            .background(Capsule().fill(on ? Palette.gold : Palette.ink.opacity(0.07)))
+                            .contentShape(Capsule())
                     }
-                    .padding(.leading, 32)
-                    .padding(.trailing, 16)
-                    .frame(minHeight: 50)
-                    .background(Palette.ink.opacity(0.03))
-                    .contentShape(Rectangle())
-                    .overlay(alignment: .bottom) {
-                        if !(last && index == models.count - 1) { Palette.line.frame(height: 1).padding(.leading, 32) }
-                    }
+                    .buttonStyle(PressStyle(scale: 0.95))
+                    .accessibilityLabel(model.name)
+                    .accessibilityAddTraits(on ? .isSelected : [])
                 }
-                .buttonStyle(PressStyle(scale: 0.99))
-                .accessibilityAddTraits(on ? .isSelected : [])
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 16)
+            .padding(.trailing, 16)
+            .padding(.top, 2)
+            .padding(.bottom, 14)
+            .overlay(alignment: .bottom) {
+                if !last { Palette.line.frame(height: 1).padding(.leading, 16) }
+            }
+            .transition(.opacity)
         }
     }
 
