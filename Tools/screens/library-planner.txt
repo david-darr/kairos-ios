@@ -40,3 +40,35 @@ mail-error -kDebugView library.mail-error
 mail-error-light -kDebugView library.mail-error -kAppearance light
 mail-search -kDebugView library.mail-search
 mail-search-light -kDebugView library.mail-search -kAppearance light
+tasks-page -kDebugView library.tasks-page
+tasks-page-light -kDebugView library.tasks-page -kAppearance light
+tasks-board -kDebugView library.tasks-board
+tasks-board-light -kDebugView library.tasks-board -kAppearance light
+tasks-review -kDebugView library.tasks-review
+tasks-review-light -kDebugView library.tasks-review -kAppearance light
+tasks-card -kDebugView library.tasks-card
+tasks-card-light -kDebugView library.tasks-card -kAppearance light
+tasks-addcard -kDebugView library.tasks-addcard
+tasks-addcard-light -kDebugView library.tasks-addcard -kAppearance light
+tasks-routines -kDebugView library.tasks-routines
+tasks-routines-light -kDebugView library.tasks-routines -kAppearance light
+tasks-task -kDebugView library.tasks-task
+tasks-task-light -kDebugView library.tasks-task -kAppearance light
+tasks-history -kDebugView library.tasks-history
+tasks-history-light -kDebugView library.tasks-history -kAppearance light
+tasks-schedule -kDebugView library.tasks-schedule
+tasks-schedule-light -kDebugView library.tasks-schedule -kAppearance light
+tasks-triggers -kDebugView library.tasks-triggers
+tasks-triggers-light -kDebugView library.tasks-triggers -kAppearance light
+tasks-trigger -kDebugView library.tasks-trigger
+tasks-trigger-light -kDebugView library.tasks-trigger -kAppearance light
+tasks-addtrigger -kDebugView library.tasks-addtrigger
+tasks-addtrigger-light -kDebugView library.tasks-addtrigger -kAppearance light
+tasks-approve -kDebugView library.tasks-approve
+tasks-approve-light -kDebugView library.tasks-approve -kAppearance light
+tasks-library -kDebugView library.tasks-library
+tasks-library-light -kDebugView library.tasks-library -kAppearance light
+tasks-brief -kDebugView library.tasks-brief
+tasks-brief-light -kDebugView library.tasks-brief -kAppearance light
+tasks-search -kDebugView library.tasks-search
+tasks-search-light -kDebugView library.tasks-search -kAppearance light

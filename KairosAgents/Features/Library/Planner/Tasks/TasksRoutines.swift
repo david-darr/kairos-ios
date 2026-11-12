@@ -228,6 +228,11 @@ struct JobSheet: View {
                         .foregroundStyle(Palette.inkFaint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if !job.builtin {
+                    PlannerPill(title: "Share to the Tool Store", symbol: "bag", style: .outline, expand: true) {
+                        notice = "\(job.name) is ready to share in the Tool Store."
+                    }
+                }
                 PlannerPill(title: "Delete task", symbol: "trash", style: .danger, expand: true) { onDelete(job) }
             }
         }
