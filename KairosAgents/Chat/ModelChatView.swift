@@ -2,48 +2,77 @@ import SwiftUI
 
 /// A chat with a model: a title pill, steps as a live checklist, live work as cards in the
 /// conversation, and a composer with the model chip and the approval chip.
+/// Everything comes from `ChatStore`: the sample desktop until one is paired, the person's desktop after.
 struct ModelChatView: View {
     /// nil means a brand new chat.
     let conversation: Conversation?
 
     @Environment(AppRouter.self) private var router
+    @State private var chat: ModelChatState?
+
+    var body: some View {
+        Group {
+            if let chat {
+                ModelChatScreen(chat: chat)
+            } else {
+                Color.clear.kScreen()
+            }
+        }
+        .onAppear {
+            guard chat == nil else { return }
+            chat = ChatStore.shared.modelChat(chatID())
+        }
+    }
+
+    /// The shell builds this screen from the sample list, which does not know a desktop's ids.
+    /// Home's path still holds the real one: the newest chat pushed is this screen.
+    private func chatID() -> String? {
+        guard let conversation else { return nil }
+        for route in (router.paths[.home] ?? []).reversed() {
+            if case .chat(let id) = route { return id }
+        }
+        return conversation.id
+    }
+}
+
+private struct ModelChatScreen: View {
+    let chat: ModelChatState
+
+    @Environment(AppRouter.self) private var router
+    @Environment(ChromeState.self) private var chrome
     @Environment(\.dismiss) private var dismiss
     @State private var draft = ""
-    @State private var sent: [String] = []
     @State private var showModel = false
     @State private var showTools = false
     @State private var viewer: ViewerStart?
     @State private var model = ModelChoice()
     @FocusState private var typing: Bool
 
-    private var isLive: Bool { conversation?.id == "c-bike" }
-    private var title: String { conversation?.title ?? "New chat" }
+    private var store: ChatStore { ChatStore.shared }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if conversation == nil && sent.isEmpty {
-                    emptyState
-                } else if isLive {
-                    liveTranscript
-                } else if conversation != nil {
-                    stepsTranscript
+        let transcript = chat.transcript
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    content(transcript)
+                    Color.clear.frame(height: 1).id("end")
                 }
-                ForEach(sent, id: \.self) { text in
-                    UserLine(text: text)
-                    Text("This is sample data. Connect your desktop to get a real answer.")
-                        .font(KFont.ui(16.5))
-                        .foregroundStyle(Palette.inkDim)
-                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .defaultScrollAnchor(chat.id == nil ? .top : .bottom)
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: transcript.last?.text.count) {
+                proxy.scrollTo("end", anchor: .bottom)
+            }
+            .onChange(of: transcript.count) {
+                withAnimation(Motion.snappy) { proxy.scrollTo("end", anchor: .bottom) }
+            }
         }
-        .defaultScrollAnchor(conversation == nil ? .top : .bottom)
-        .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .top, spacing: 0) { header }
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .safeAreaInset(edge: .bottom, spacing: 0) { bottom }
         .kScreen(glowAt: UnitPoint(x: 0.8, y: -0.05))
         .sheet(isPresented: $showModel) {
             ModelSheet(choice: $model)
@@ -52,8 +81,14 @@ struct ModelChatView: View {
             ToolsSheet()
         }
         .sheet(item: $viewer) { start in
-            DocumentViewer(documents: SampleData.documents, index: start.id).kSheet()
+            let files = chat.files
+            if files.isEmpty {
+                DocumentViewer(documents: SampleData.documents, index: 0).kSheet()
+            } else {
+                FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData).kSheet()
+            }
         }
+        .task { await chat.load() }
         .onAppear {
             switch router.debugScreen {
             case "modelsheet": router.debugScreen = nil; showModel = true
@@ -62,6 +97,17 @@ struct ModelChatView: View {
             default: break
             }
         }
+        .onChange(of: chat.notice) {
+            guard let notice = chat.notice else { return }
+            chrome.say(notice)
+            chat.notice = nil
+        }
+        .onChange(of: chat.restoredDraft) {
+            guard let text = chat.restoredDraft else { return }
+            draft = text
+            chat.restoredDraft = nil
+        }
+        .onChange(of: store.generation) { dismiss() }
     }
 
     // MARK: Header
@@ -71,17 +117,17 @@ struct ModelChatView: View {
             GlassIconButton(symbol: "chevron.left", label: "Back to Home") { dismiss() }
             Spacer(minLength: 8)
             VStack(spacing: 5) {
-                Text(title)
+                Text(chat.title)
                     .font(KFont.ui(15.5, .medium, relativeTo: .subheadline))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
                     .padding(.horizontal, 15)
                     .frame(height: 44)
                     .kGlass(Capsule())
-                if isLive {
+                if let line = statusLine {
                     HStack(spacing: 6) {
                         PulsingDot(color: Palette.working, size: 6)
-                        Text("2 running").font(KFont.ui(12.5, .medium, relativeTo: .caption)).foregroundStyle(Palette.ink)
+                        Text(line).font(KFont.ui(12.5, .medium, relativeTo: .caption)).foregroundStyle(Palette.ink)
                     }
                     .padding(.horizontal, 10)
                     .frame(height: 24)
@@ -90,7 +136,13 @@ struct ModelChatView: View {
             }
             Spacer(minLength: 8)
             Menu {
-                Button("Documents", systemImage: "doc.on.doc") { viewer = ViewerStart(id: 0) }
+                Button("Documents", systemImage: "doc.on.doc") {
+                    if chat.files.isEmpty && !chat.isSample {
+                        chrome.say("This chat has no files yet.")
+                    } else {
+                        viewer = ViewerStart(id: 0)
+                    }
+                }
                 Button("Model and details", systemImage: "chart.bar") { showModel = true }
             } label: {
                 Image(systemName: "ellipsis")
@@ -107,7 +159,55 @@ struct ModelChatView: View {
         .background { HeaderFade() }
     }
 
-    // MARK: Transcripts (sample)
+    /// "Waiting for you", "Stopping", "2 running".
+    private var statusLine: String? {
+        if let activity = chat.activity { return activity }
+        let count = chat.runningCount
+        return count > 0 ? "\(count) running" : nil
+    }
+
+    // MARK: Transcript
+
+    @ViewBuilder
+    private func content(_ transcript: [TranscriptEntry]) -> some View {
+        switch chat.phase {
+        case .loading where transcript.isEmpty:
+            ProgressView()
+                .tint(Palette.inkDim)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 120)
+        case .failed(let reason) where transcript.isEmpty:
+            VStack(spacing: 12) {
+                Text(reason)
+                    .font(KFont.ui(15.5, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.inkDim)
+                    .multilineTextAlignment(.center)
+                Button("Try again") { Task { await chat.load() } }
+                    .font(KFont.ui(15, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.goldText)
+                    .frame(minHeight: 44)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 120)
+            .padding(.horizontal, 20)
+        default:
+            if chat.isEmpty {
+                emptyState
+            } else {
+                ForEach(Array(transcript.enumerated()), id: \.element.id) { offset, entry in
+                    line(entry).arrives(offset)
+                }
+                if let request = chat.request {
+                    RequestCard(
+                        request: request,
+                        onChoice: { chat.answer(request, choice: $0) },
+                        onRespond: { chat.respond(request, answers: $0, skip: $1) })
+                        .id(request.id)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+            }
+        }
+    }
 
     private var emptyState: some View {
         VStack(spacing: 12) {
@@ -125,35 +225,90 @@ struct ModelChatView: View {
         .padding(.horizontal, 20)
     }
 
-    private var stepsTranscript: some View {
-        Group {
-            UserLine(text: "Find 8 inch black zip ties in stock near me today.").arrives(0)
-            StepList(steps: SampleData.zipSteps.enumerated().map { StepLine(id: String($0.offset), text: $0.element.text, done: $0.element.done) }).arrives(1)
-            Text("Two stores have them in stock within 5 miles. One has a 100 pack for $6.98, ready for pickup in 2 hours.")
-                .font(KFont.ui(16.5))
-                .lineSpacing(4)
-                .foregroundStyle(Palette.ink)
-                .arrives(2)
+    @ViewBuilder
+    private func line(_ entry: TranscriptEntry) -> some View {
+        switch entry.role {
+        case .user:
+            VStack(alignment: .trailing, spacing: 6) {
+                UserLine(text: entry.text)
+                if !entry.files.isEmpty {
+                    SentFiles(files: entry.files) { open($0) }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        case .assistant:
+            reply(entry)
+        case .note:
+            Text(entry.text)
+                .font(KFont.ui(13, relativeTo: .footnote))
+                .foregroundStyle(Palette.inkFaint)
+                .frame(maxWidth: .infinity)
+        case .browser(let site):
+            BrowserCard(site: site, onTakeOver: { router.open(.computer) }, onFullScreen: { router.open(.browse) })
+        case .backgroundTask(let progress):
+            BackgroundTaskCard(title: entry.text, progress: progress)
         }
     }
 
-    private var liveTranscript: some View {
-        Group {
-            UserLine(text: "Find three rivals' prices, design a booking page, and write a one-page plan.").arrives(0)
-            BrowserCard().arrives(1)
-            BackgroundTaskCard(title: "Writing the one-page plan", progress: 0.58).arrives(2)
-            Text("I found three rival price lists and made the booking page. Sending both.")
-                .font(KFont.ui(16.5))
-                .lineSpacing(4)
-                .foregroundStyle(Palette.ink)
-                .arrives(3)
-            DocumentStack(documents: SampleData.documents) { index in viewer = ViewerStart(id: index) }
-                .arrives(4)
-            SourceCard(site: "cyclerepair.example", title: "Tune-up prices, 2026").arrives(5)
+    private func reply(_ entry: TranscriptEntry) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let caption = entry.caption {
+                Text(caption)
+                    .font(KFont.ui(12.5, .medium, relativeTo: .caption))
+                    .foregroundStyle(Palette.inkFaint)
+            }
+            if !entry.steps.isEmpty {
+                StepList(steps: entry.steps)
+                    .animation(Motion.snappy, value: entry.steps)
+            }
+            if !entry.text.isEmpty {
+                MarkdownText(text: entry.text, streaming: entry.streaming)
+            }
+            if !entry.files.isEmpty {
+                FileStack(files: entry.files, load: chat.fileData) { open($0) }
+            }
+            ForEach(entry.sources) { source in
+                SourceCard(site: source.site, title: source.title)
+            }
+            if let failure = entry.failure {
+                HStack(spacing: 10) {
+                    Text(failure)
+                        .font(KFont.ui(14.5, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.inkDim)
+                    if !chat.isBusy, entry.id == chat.transcript.last?.id {
+                        Button("Try again") { chat.retryLast() }
+                            .font(KFont.ui(14.5, .semibold, relativeTo: .subheadline))
+                            .foregroundStyle(Palette.goldText)
+                            .frame(minHeight: 44)
+                    }
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func open(_ file: ChatFile) {
+        let index = chat.files.firstIndex(where: { $0.id == file.id }) ?? 0
+        viewer = ViewerStart(id: index)
     }
 
     // MARK: Composer
+
+    private var bottom: some View {
+        VStack(spacing: 8) {
+            if !chat.queue.isEmpty {
+                QueueStrip(
+                    items: chat.queue, paused: chat.queuePaused,
+                    sendNow: chat.isBusy ? nil : { _ in chat.sendNextQueued() },
+                    edit: { chat.editQueued($0) },
+                    remove: { chat.removeQueued($0) })
+            }
+            composer
+        }
+    }
+
+    private var hasDraft: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var showsStop: Bool { chat.isBusy && !hasDraft && chat.run?.isRunning == true }
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -183,15 +338,18 @@ struct ModelChatView: View {
                 }
                 .accessibilityLabel("Approval: \(model.approval)")
                 Spacer(minLength: 0)
-                Button(action: send) {
-                    Image(systemName: "arrow.up")
+                Button(action: showsStop ? stop : send) {
+                    Image(systemName: showsStop ? "stop.fill" : "arrow.up")
                         .font(.system(size: 15, weight: .bold))
+                        .contentTransition(.symbolEffect(.replace))
                         .foregroundStyle(Palette.onGold)
                         .frame(width: 36, height: 36)
                         .background(Palette.gold, in: Circle())
+                        .opacity(chat.isStopping ? 0.5 : 1)
                         .frame(width: 44, height: 44)
                 }
-                .accessibilityLabel("Send")
+                .disabled(chat.isStopping)
+                .accessibilityLabel(showsStop ? "Stop the reply" : (chat.isBusy ? "Add to the queue" : "Send"))
             }
             .buttonStyle(PressStyle(scale: 0.93))
         }
@@ -204,6 +362,7 @@ struct ModelChatView: View {
         .padding(.top, 6)
         .padding(.bottom, 8)
         .animation(Motion.snappy, value: model.approval)
+        .animation(Motion.snappy, value: showsStop)
     }
 
     private func send() {
@@ -214,6 +373,11 @@ struct ModelChatView: View {
         }
         Haptics.tap()
         draft = ""
-        withAnimation(Motion.bouncy) { sent.append(text) }
+        withAnimation(Motion.bouncy) { chat.send(text) }
+    }
+
+    private func stop() {
+        Haptics.thud()
+        chat.stop()
     }
 }
