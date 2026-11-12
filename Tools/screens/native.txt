@@ -1,0 +1,26 @@
+# Native: Live Activities, Dynamic Island, widgets, notifications, calls (drawn with the extension's own views)
+activity-reply -kDebugView native.activity-reply
+activity-task -kDebugView native.activity-task
+activity-team -kDebugView native.activity-team
+activity-render -kDebugView native.activity-render
+activity-forge -kDebugView native.activity-forge
+activity-call -kDebugView native.activity-call
+activity-ends -kDebugView native.activity-ends
+activity-private -kDebugView native.activity-private
+widgets-small -kDebugView native.widgets-small
+widgets-small-2 -kDebugView native.widgets-small-2
+widgets-medium -kDebugView native.widgets-medium
+widgets-medium-2 -kDebugView native.widgets-medium-2
+widgets-large -kDebugView native.widgets-large
+widgets-lock -kDebugView native.widgets-lock
+widgets-small-light -kDebugView native.widgets-small -kAppearance light
+widgets-medium-light -kDebugView native.widgets-medium -kAppearance light
+widgets-medium-2-light -kDebugView native.widgets-medium-2 -kAppearance light
+notifications -kDebugView native.notifications
+notifications-2 -kDebugView native.notifications-2
+notifications-3 -kDebugView native.notifications-3
+notification-actions -kDebugView native.notification-actions
+settings -kDebugView native.settings
+settings-light -kDebugView native.settings -kAppearance light
+call -kDebugView native.call
+call-pill -kDebugView native.call-pill
