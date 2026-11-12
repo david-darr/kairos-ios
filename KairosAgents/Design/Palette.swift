@@ -60,6 +60,13 @@ nonisolated enum Palette {
     static let botSage: UInt32 = 0xB5C7A5
     static let botLilac: UInt32 = 0xCDBFD9
 
+    /// A bot's shadow tone for cel shading: the same hue, deeper and a little darker.
+    static func celShade(_ hex: UInt32) -> Color {
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        UIColor(hex: hex).getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        return Color(hue: Double(hue), saturation: Double(min(1, saturation * 1.45 + 0.04)), brightness: Double(brightness * 0.88))
+    }
+
     static func dyn(_ dark: UInt32, _ light: UInt32, _ darkAlpha: Double = 1, _ lightAlpha: Double = 1) -> Color {
         Color(uiColor: UIColor { traits in
             traits.userInterfaceStyle == .dark

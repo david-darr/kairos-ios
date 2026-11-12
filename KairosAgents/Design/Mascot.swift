@@ -1,6 +1,10 @@
 import SwiftUI
 
-nonisolated enum MascotShape: String, Hashable, Sendable { case round, squircle, tall }
+/// Round, squircle and tall are the desktop's shapes. Dome, wide, hex, scallop and ghost are new
+/// on the phone (David, 2026-11-12); the desktop cannot store them yet.
+nonisolated enum MascotShape: String, Hashable, Sendable, CaseIterable {
+    case round, squircle, tall, dome, wide, hex, scallop, ghost
+}
 nonisolated enum MascotAccessory: String, Hashable, Sendable { case none, laurel, spectacles, quill, rays, scarf }
 enum MascotPose { case idle, thinking, needs, sleeping }
 
@@ -42,7 +46,7 @@ struct Mascot: View {
             Path(ellipseIn: CGRect(x: 34, y: 124, width: 72, height: 10)).fill(Palette.mascotShadow)
             back
             ZStack {
-                Self.bodyPath(shape).fill(bodyColor)
+                bodyFill
                 neck
                 face
                 front
@@ -61,14 +65,91 @@ struct Mascot: View {
 
     // MARK: Body
 
-    static func bodyPath(_ shape: MascotShape) -> Path {
-        let whole: Path
-        switch shape {
-        case .round: whole = Path(ellipseIn: CGRect(x: 26, y: 32, width: 88, height: 88))
-        case .squircle: whole = Path(roundedRect: CGRect(x: 27, y: 33, width: 86, height: 86), cornerRadius: 30)
-        case .tall: whole = Path(roundedRect: CGRect(x: 33, y: 28, width: 74, height: 96), cornerRadius: 37)
+    /// Kip is flat. A bot is cel shaded: one hard shadow along the lower right and one highlight.
+    @ViewBuilder
+    private var bodyFill: some View {
+        let body = Self.bodyPath(shape)
+        if let colorHex {
+            body.fill(Palette.celShade(colorHex))
+            Self.shapePath(shape).offsetBy(dx: -6, dy: -7).intersection(body).fill(Color(hex: colorHex))
+            Self.highlight(shape).intersection(body).fill(Color.white.opacity(0.55))
+        } else {
+            body.fill(bodyColor)
         }
-        return whole.subtracting(Path(ellipseIn: CGRect(x: 80, y: 16, width: 40, height: 40)))
+    }
+
+    /// The whole shape, before the bite.
+    static func shapePath(_ shape: MascotShape) -> Path {
+        switch shape {
+        case .round:
+            return Path(ellipseIn: CGRect(x: 26, y: 32, width: 88, height: 88))
+        case .squircle:
+            return Path(roundedRect: CGRect(x: 27, y: 33, width: 86, height: 86), cornerRadius: 30)
+        case .tall:
+            return Path(roundedRect: CGRect(x: 33, y: 28, width: 74, height: 96), cornerRadius: 37)
+        case .dome:
+            let top = Path(ellipseIn: CGRect(x: 28, y: 32, width: 84, height: 84))
+            let base = Path(
+                roundedRect: CGRect(x: 28, y: 74, width: 84, height: 46),
+                cornerRadii: RectangleCornerRadii(topLeading: 0, bottomLeading: 14, bottomTrailing: 14, topTrailing: 0)
+            )
+            return top.union(base)
+        case .wide:
+            return Path(roundedRect: CGRect(x: 16, y: 44, width: 108, height: 76), cornerRadius: 38)
+        case .hex:
+            let corners = [
+                CGPoint(x: 70, y: 28), CGPoint(x: 111.6, y: 52), CGPoint(x: 111.6, y: 100),
+                CGPoint(x: 70, y: 124), CGPoint(x: 28.4, y: 100), CGPoint(x: 28.4, y: 52),
+            ]
+            var path = Path()
+            path.move(to: CGPoint(x: 49.2, y: 40))
+            for index in corners.indices {
+                path.addArc(tangent1End: corners[index], tangent2End: corners[(index + 1) % corners.count], radius: 10)
+            }
+            path.closeSubpath()
+            return path
+        case .scallop:
+            var path = Path(ellipseIn: CGRect(x: 36, y: 42, width: 68, height: 68))
+            for step in 0..<8 {
+                let angle = (22.5 + Double(step) * 45) * .pi / 180
+                let centre = CGPoint(x: 70 + 32 * cos(angle), y: 76 + 32 * sin(angle))
+                path = path.union(Path(ellipseIn: CGRect(x: centre.x - 15, y: centre.y - 15, width: 30, height: 30)))
+            }
+            return path
+        case .ghost:
+            let top = Path(ellipseIn: CGRect(x: 28, y: 32, width: 84, height: 84))
+            var hem = Path()
+            hem.move(to: CGPoint(x: 28, y: 74))
+            hem.addLine(to: CGPoint(x: 112, y: 74))
+            hem.addLine(to: CGPoint(x: 112, y: 110))
+            hem.addQuadCurve(to: CGPoint(x: 84, y: 110), control: CGPoint(x: 98, y: 128))
+            hem.addQuadCurve(to: CGPoint(x: 56, y: 110), control: CGPoint(x: 70, y: 128))
+            hem.addQuadCurve(to: CGPoint(x: 28, y: 110), control: CGPoint(x: 42, y: 128))
+            hem.closeSubpath()
+            return top.union(hem)
+        }
+    }
+
+    /// The shape with the ring's opening bitten out of the upper right.
+    static func bodyPath(_ shape: MascotShape) -> Path {
+        shapePath(shape).subtracting(Path(ellipseIn: CGRect(x: 80, y: 16, width: 40, height: 40)))
+    }
+
+    /// The one hard highlight, upper left.
+    static func highlight(_ shape: MascotShape) -> Path {
+        let spot: CGPoint
+        switch shape {
+        case .round: spot = CGPoint(x: 53, y: 52)
+        case .squircle: spot = CGPoint(x: 51, y: 50)
+        case .tall: spot = CGPoint(x: 52, y: 46)
+        case .dome: spot = CGPoint(x: 53, y: 50)
+        case .wide: spot = CGPoint(x: 43, y: 60)
+        case .hex: spot = CGPoint(x: 52, y: 52)
+        case .scallop: spot = CGPoint(x: 52, y: 51)
+        case .ghost: spot = CGPoint(x: 53, y: 50)
+        }
+        let pill = Path(roundedRect: CGRect(x: -11, y: -4.5, width: 22, height: 9), cornerRadius: 4.5)
+        return pill.applying(CGAffineTransform(translationX: spot.x, y: spot.y).rotated(by: -24 * .pi / 180))
     }
 
     // MARK: Face
@@ -105,7 +186,7 @@ struct Mascot: View {
                 path.move(to: CGPoint(x: 66, y: 73))
                 path.addQuadCurve(to: CGPoint(x: 68, y: 73), control: CGPoint(x: 67, y: 70))
             }
-            .stroke(Palette.goldText, lineWidth: 2.6)
+            .stroke(Palette.goldText, lineWidth: 3.2)
         }
     }
 
@@ -119,7 +200,12 @@ struct Mascot: View {
                     .scaleEffect(pulse ? 2.4 : 1.6, anchor: pointSpot)
                     .opacity(pulse ? 0 : 0.6)
             }
-            Path(ellipseIn: CGRect(x: 91, y: 27, width: 18, height: 18)).fill(Palette.gold)
+            if colorHex == nil {
+                Path(ellipseIn: CGRect(x: 91, y: 27, width: 18, height: 18)).fill(Palette.gold)
+            } else {
+                Path(ellipseIn: CGRect(x: 91, y: 27, width: 18, height: 18)).fill(Color(hex: 0xB8842F))
+                Path(ellipseIn: CGRect(x: 91.2, y: 27.2, width: 14.4, height: 14.4)).fill(Color(hex: 0xEBC06A))
+            }
             Path(ellipseIn: CGRect(x: 91, y: 27, width: 18, height: 18)).stroke(stage, lineWidth: 2.5)
         }
         .offset(x: pose == .sleeping ? -2 : 0, y: pose == .sleeping ? 10 : (bobbing ? -3 : 0))
@@ -140,16 +226,16 @@ struct Mascot: View {
                     path.addLine(to: CGPoint(x: 70 + 62 * cos(angle), y: 76 + 62 * sin(angle)))
                 }
             }
-            .stroke(Palette.gold, style: StrokeStyle(lineWidth: 3.4, lineCap: .round))
+            .stroke(Palette.gold, style: StrokeStyle(lineWidth: 4, lineCap: .round))
         }
         if accessory == .quill {
             Self.quillVane.fill(Palette.goldHi)
-            Self.quillVane.stroke(Palette.goldText, lineWidth: 1.2)
+            Self.quillVane.stroke(Palette.goldDeep, lineWidth: 2)
             Path { path in
                 path.move(to: CGPoint(x: 31, y: 112))
                 path.addCurve(to: CGPoint(x: 18, y: 46), control1: CGPoint(x: 24, y: 90), control2: CGPoint(x: 20, y: 66))
             }
-            .stroke(Palette.inkDim, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            .stroke(Palette.inkDim, style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
         }
     }
 

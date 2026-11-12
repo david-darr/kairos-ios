@@ -30,6 +30,7 @@ struct SearchView: View {
         for area in JumpArea.allCases {
             all.append(Hit(id: "j-\(area.rawValue)", title: area.title, detail: area.about, symbol: area.symbol, bot: nil) { router.open(area) })
         }
+        if router.debugScreen == "bots" { return all.filter { $0.bot != nil } }
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !needle.isEmpty else { return all }
         return all.filter { $0.title.lowercased().contains(needle) || $0.detail.lowercased().contains(needle) }
@@ -70,7 +71,7 @@ struct SearchView: View {
                         } label: {
                             HStack(spacing: 13) {
                                 if let bot = hit.bot {
-                                    BotFace(bot: bot, size: 50)
+                                    BotFace(bot: bot, size: router.debugScreen == "bots" ? 78 : 50)
                                 } else {
                                     Image(systemName: hit.symbol)
                                         .font(.system(size: 16, weight: .medium))
@@ -104,7 +105,7 @@ struct SearchView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .kSheet()
-        .onAppear { if router.debugScreen != "search" { typing = true } }
+        .onAppear { if router.debugScreen != "search" && router.debugScreen != "bots" { typing = true } }
     }
 }
 

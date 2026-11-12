@@ -62,6 +62,7 @@ shot 17-library -onboarded YES -kScreen library
 shot 18-desktop -onboarded YES -kScreen desktop
 shot 19-you -onboarded YES -kScreen you
 shot 20-search -onboarded YES -kScreen search
+shot 27-bots -onboarded YES -kScreen bots
 shot 21-home-light -onboarded YES -kScreen home -kAppearance light
 shot 22-bot-light -onboarded YES -kScreen bot -kAppearance light
 shot 23-chat-live-light -onboarded YES -kScreen chatlive -kAppearance light

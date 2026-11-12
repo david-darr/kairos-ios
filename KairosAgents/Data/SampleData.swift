@@ -7,10 +7,14 @@ nonisolated enum SampleData {
     static let producer = Bot(id: "producer", name: "Producer", role: "Runs the content team", colorHex: Palette.botPowder, status: .working, shape: .squircle, accessory: .spectacles, model: "Claude Opus")
     static let scout = Bot(id: "scout", name: "Scout", role: "Research", colorHex: Palette.botSand, status: .needsYou, shape: .round, accessory: .rays, voice: "Ryan")
     static let quill = Bot(id: "quill", name: "Quill", role: "Writing", colorHex: Palette.botLilac, status: .online, shape: .tall, accessory: .quill)
-    static let ledger = Bot(id: "ledger", name: "Ledger", role: "Bills and receipts", colorHex: Palette.botSage, status: .offline, shape: .squircle, accessory: .laurel)
+    static let ledger = Bot(id: "ledger", name: "Ledger", role: "Bills and receipts", colorHex: Palette.botSage, status: .offline, shape: .dome, accessory: .laurel)
+    static let atlas = Bot(id: "atlas", name: "Atlas", role: "Trips and plans", colorHex: Palette.botRose, status: .online, shape: .wide)
+    static let mason = Bot(id: "mason", name: "Mason", role: "Builds and fixes", colorHex: Palette.botGold, status: .online, shape: .hex)
+    static let posy = Bot(id: "posy", name: "Posy", role: "Reminders", colorHex: Palette.botPowder, status: .online, shape: .scallop)
+    static let wisp = Bot(id: "wisp", name: "Wisp", role: "Night watch", colorHex: Palette.botLilac, status: .online, shape: .ghost)
     static let contentTeam = Bot(id: "content-team", name: "Content team", role: "Producer, Scout and Quill", colorHex: Palette.botPowder, status: .working, members: ["producer", "scout", "quill"])
 
-    static let allBots = [kip, producer, scout, quill, ledger, contentTeam]
+    static let allBots = [kip, producer, scout, quill, ledger, atlas, mason, posy, wisp, contentTeam]
     static let pinned = [kip, producer, scout, contentTeam]
 
     static func bot(_ id: String) -> Bot { allBots.first { $0.id == id } ?? kip }
@@ -26,7 +30,11 @@ nonisolated enum SampleData {
         Conversation(id: "c-kip", kind: .bot("kip"), title: "Kip", preview: "Morning. Your report is due Friday.", time: "8:00"),
         Conversation(id: "c-bike", kind: .model, title: "Bike shop launch", preview: "Three files ready: prices, page and plan", time: "Tue"),
         Conversation(id: "c-quill", kind: .bot("quill"), title: "Quill", preview: "Second draft is in your Library.", time: "Tue"),
+        Conversation(id: "c-atlas", kind: .bot("atlas"), title: "Atlas", preview: "The trip budget is ready to review.", time: "Tue"),
+        Conversation(id: "c-mason", kind: .bot("mason"), title: "Mason", preview: "The shelf plan fits the wall with 2 cm to spare.", time: "Mon"),
         Conversation(id: "c-inbox", kind: .model, title: "Summarise my inbox", preview: "Four need a reply. One is from the landlord.", time: "Mon"),
+        Conversation(id: "c-posy", kind: .bot("posy"), title: "Posy", preview: "Reminder set for Thursday at 9.", time: "Mon"),
+        Conversation(id: "c-wisp", kind: .bot("wisp"), title: "Wisp", preview: "Quiet night. Nothing needed you.", time: "Sun"),
         Conversation(id: "c-trip", kind: .model, title: "Weekend trip plan", preview: "Two routes, both under four hours.", time: "Mon"),
         Conversation(id: "c-ledger", kind: .bot("ledger"), title: "Ledger", preview: "October receipts are filed.", time: "Sun"),
         Conversation(id: "c-garden", kind: .model, title: "Raised bed layout", preview: "A 4 by 8 plan with spacing for tomatoes.", time: "Sat"),

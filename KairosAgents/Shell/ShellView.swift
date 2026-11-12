@@ -141,7 +141,7 @@ enum DebugScreens {
         case "library": router.select(.library)
         case "desktop": router.select(.desktop)
         case "you": router.sheet = .you
-        case "search": router.sheet = .search
+        case "search", "bots": router.sheet = .search
         default: break
         }
     }
