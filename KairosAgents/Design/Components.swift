@@ -252,26 +252,24 @@ struct TabHeader<Trailing: View>: View {
     }
 }
 
-/// What sits behind a floating header: the content blurs and fades out as it scrolls under.
+/// What sits behind a floating header: a light fade of the ground, so the title stays readable. No blur.
 struct HeaderFade: View {
     var body: some View {
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial)
-            Palette.ground.opacity(0.6)
-        }
-        .mask(
-            LinearGradient(
-                stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.62), .init(color: .clear, location: 1)],
-                startPoint: .top, endPoint: .bottom
-            )
+        LinearGradient(
+            stops: [
+                .init(color: Palette.ground.opacity(0.86), location: 0),
+                .init(color: Palette.ground.opacity(0.6), location: 0.6),
+                .init(color: Palette.ground.opacity(0), location: 1),
+            ],
+            startPoint: .top, endPoint: .bottom
         )
-        .padding(.bottom, -14)
         .ignoresSafeArea(edges: .top)
         .allowsHitTesting(false)
     }
 }
 
 /// The glass switch along the top of a tab (Files, Notes, Calendar ...).
+/// It is only as wide as its items, and scrolls sideways when they do not fit.
 struct GlassSwitch<Item: Hashable>: View {
     let items: [Item]
     @Binding var selection: Item
@@ -279,31 +277,55 @@ struct GlassSwitch<Item: Hashable>: View {
     @Namespace private var ns
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 2) {
-                ForEach(items, id: \.self) { item in
-                    let on = item == selection
-                    Button {
-                        Haptics.select()
-                        withAnimation(Motion.snappy) { selection = item }
-                    } label: {
-                        Text(title(item))
-                            .font(KFont.ui(15, on ? .semibold : .regular, relativeTo: .subheadline))
-                            .foregroundStyle(on ? Palette.ink : Palette.inkDim)
-                            .padding(.horizontal, 16)
-                            .frame(minHeight: 38)
-                            .background {
-                                if on { Capsule().fill(Palette.ink.opacity(0.15)).matchedGeometryEffect(id: "on", in: ns) }
-                            }
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(PressStyle())
-                    .accessibilityAddTraits(on ? .isSelected : [])
-                }
-            }
-            .padding(4)
+        ViewThatFits(in: .horizontal) {
+            row.kGlass(Capsule())
+            ScrollView(.horizontal) { row }
+                .scrollIndicators(.hidden)
+                .kGlass(Capsule())
         }
+    }
+
+    private var row: some View {
+        HStack(spacing: 2) {
+            ForEach(items, id: \.self) { item in
+                let on = item == selection
+                Button {
+                    Haptics.select()
+                    withAnimation(Motion.snappy) { selection = item }
+                } label: {
+                    Text(title(item))
+                        .font(KFont.ui(15, on ? .semibold : .regular, relativeTo: .subheadline))
+                        .foregroundStyle(on ? Palette.ink : Palette.inkDim)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 38)
+                        .background {
+                            if on { Capsule().fill(Palette.ink.opacity(0.15)).matchedGeometryEffect(id: "on", in: ns) }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(4)
+    }
+}
+
+/// A sheet that is exactly as tall as what it holds (up to the full screen, where it scrolls).
+struct FittedSheet<Content: View>: View {
+    var estimate: CGFloat = 520
+    @ViewBuilder var content: Content
+    @State private var height: CGFloat = 0
+
+    var body: some View {
+        ScrollView {
+            content
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
         .scrollIndicators(.hidden)
-        .kGlass(Capsule())
+        .kSheet([.height(height > 0 ? height : estimate)])
     }
 }

@@ -43,6 +43,8 @@ nonisolated enum Palette {
     static let kipBody = dyn(0xF2E8D8, 0x3A2A20)
     static let kipEye = dyn(0x1B1612, 0xF3EADB)
 
+    static let mascotShadow = dyn(0x000000, 0x3A2A20, 0.3, 0.13)
+
     // Fixed colours (same in both looks)
     static let cream = Color(hex: 0xF2E8D8)
     static let night = Color(hex: 0x1B1612)

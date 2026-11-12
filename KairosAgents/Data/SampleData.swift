@@ -4,10 +4,10 @@ import Foundation
 /// Nothing here is real, and nothing here is anyone's data.
 nonisolated enum SampleData {
     static let kip = Bot(id: "kip", name: "Kip", role: "Your front desk", colorHex: 0xF2E8D8, status: .online, isKip: true)
-    static let producer = Bot(id: "producer", name: "Producer", role: "Runs the content team", colorHex: Palette.botPowder, status: .working, model: "Claude Opus")
-    static let scout = Bot(id: "scout", name: "Scout", role: "Research", colorHex: Palette.botSand, status: .needsYou, voice: "Ryan")
-    static let quill = Bot(id: "quill", name: "Quill", role: "Writing", colorHex: Palette.botLilac, status: .online)
-    static let ledger = Bot(id: "ledger", name: "Ledger", role: "Bills and receipts", colorHex: Palette.botSage, status: .offline)
+    static let producer = Bot(id: "producer", name: "Producer", role: "Runs the content team", colorHex: Palette.botPowder, status: .working, shape: .squircle, accessory: .spectacles, model: "Claude Opus")
+    static let scout = Bot(id: "scout", name: "Scout", role: "Research", colorHex: Palette.botSand, status: .needsYou, shape: .round, accessory: .rays, voice: "Ryan")
+    static let quill = Bot(id: "quill", name: "Quill", role: "Writing", colorHex: Palette.botLilac, status: .online, shape: .tall, accessory: .quill)
+    static let ledger = Bot(id: "ledger", name: "Ledger", role: "Bills and receipts", colorHex: Palette.botSage, status: .offline, shape: .squircle, accessory: .laurel)
     static let contentTeam = Bot(id: "content-team", name: "Content team", role: "Producer, Scout and Quill", colorHex: Palette.botPowder, status: .working, members: ["producer", "scout", "quill"])
 
     static let allBots = [kip, producer, scout, quill, ledger, contentTeam]

@@ -13,13 +13,13 @@ struct ModelSheet: View {
     ]
 
     var body: some View {
-        ScrollView {
+        FittedSheet(estimate: 690) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Model")
                     .font(KFont.ui(20, .semibold, relativeTo: .title3))
                     .foregroundStyle(Palette.ink)
                     .frame(maxWidth: .infinity)
-                    .padding(.top, 6)
+                    .padding(.top, 30)
 
                 HStack(spacing: 12) {
                     Image(systemName: "sparkle")
@@ -135,7 +135,6 @@ struct ModelSheet: View {
             .padding(.horizontal, 18)
             .padding(.bottom, 24)
         }
-        .scrollIndicators(.hidden)
     }
 
     private func toggleTile(symbol: String, title: String, value: String, on: Bool, action: @escaping () -> Void) -> some View {
@@ -185,7 +184,7 @@ struct ToolsSheet: View {
     private let photoTints: [(UInt32, UInt32)] = [(0x6B5442, 0x3C2E24), (0x4E6070, 0x2C3640), (0x6E5A3A, 0x3A2E1E), (0x5A4A5E, 0x2E2633)]
 
     var body: some View {
-        ScrollView {
+        FittedSheet(estimate: 690) {
             VStack(alignment: .leading, spacing: 16) {
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
@@ -206,7 +205,7 @@ struct ToolsSheet: View {
                     .padding(.horizontal, 18)
                 }
                 .scrollIndicators(.hidden)
-                .padding(.top, 14)
+                .padding(.top, 34)
 
                 VStack(spacing: 0) {
                     ForEach(Array(tools.enumerated()), id: \.offset) { index, tool in
@@ -237,7 +236,6 @@ struct ToolsSheet: View {
             }
             .padding(.bottom, 20)
         }
-        .scrollIndicators(.hidden)
     }
 }
 
@@ -279,7 +277,7 @@ struct DocumentViewer: View {
                 .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(Palette.ink)
             }
-            .padding(.top, 14)
+            .padding(.top, 28)
             .padding(.horizontal, 12)
 
             HStack(spacing: 10) {

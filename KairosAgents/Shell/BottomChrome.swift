@@ -261,7 +261,7 @@ struct LiveWorkPill: View {
             router.push(.bot(work.botID), on: .home)
         } label: {
             HStack(spacing: 9) {
-                BotFace(bot: SampleData.bot(work.botID), size: 24)
+                BotFace(bot: SampleData.bot(work.botID), size: 34)
                 Text(work.text).font(KFont.ui(14, .medium, relativeTo: .footnote)).foregroundStyle(Palette.ink).lineLimit(1)
                 if work.others > 0 {
                     Text("+\(work.others)").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
@@ -269,7 +269,7 @@ struct LiveWorkPill: View {
                 PulsingDot(color: Palette.working)
                     .padding(.leading, 2)
             }
-            .padding(.leading, 8)
+            .padding(.leading, 5)
             .padding(.trailing, 14)
             .frame(height: 40)
             .contentShape(Capsule())

@@ -47,7 +47,7 @@ struct BotChatView: View {
             CallView(bot: bot)
         }
         .sheet(isPresented: $showTools) {
-            ToolsSheet().kSheet()
+            ToolsSheet()
         }
         .onAppear {
             if messages.isEmpty { messages = SampleData.thread(for: bot) }
@@ -70,7 +70,7 @@ struct BotChatView: View {
                 showPanel = true
             } label: {
                 VStack(spacing: 5) {
-                    BotFace(bot: bot, size: 58, blinks: true)
+                    BotFace(bot: bot, size: 72, blinks: true)
                         .matchedTransitionSource(id: "face", in: faceSpace)
                     HStack(spacing: 4) {
                         Text(bot.name).font(KFont.ui(14.5, .medium, relativeTo: .subheadline))
@@ -209,7 +209,7 @@ struct BotPanelView: View {
         ScrollView {
             VStack(spacing: 16) {
                 VStack(spacing: 8) {
-                    BotFace(bot: bot, size: 108, blinks: true)
+                    BotFace(bot: bot, size: 140, blinks: true)
                     Text(bot.name).font(KFont.display(40)).foregroundStyle(Palette.ink)
                     Text("\(bot.role) · \(bot.model) · \(bot.approval)")
                         .font(KFont.ui(14, relativeTo: .subheadline))
@@ -349,7 +349,7 @@ struct CallView: View {
             ZStack {
                 Circle().fill(Color(hex: 0x1F3A40))
                 Circle().strokeBorder(Palette.cream.opacity(0.22), lineWidth: 3)
-                BotFace(bot: bot, size: 96, blinks: true)
+                BotFace(bot: bot, size: 156, blinks: true, stage: Color(hex: 0x1F3A40))
             }
             .frame(width: 196, height: 196)
             .shadow(color: .black.opacity(0.5), radius: 30, y: 18)

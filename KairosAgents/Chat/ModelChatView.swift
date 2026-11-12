@@ -46,10 +46,10 @@ struct ModelChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .kScreen(glowAt: UnitPoint(x: 0.8, y: -0.05))
         .sheet(isPresented: $showModel) {
-            ModelSheet(choice: $model).kSheet([.medium, .large])
+            ModelSheet(choice: $model)
         }
         .sheet(isPresented: $showTools) {
-            ToolsSheet().kSheet()
+            ToolsSheet()
         }
         .sheet(item: $viewer) { start in
             DocumentViewer(documents: SampleData.documents, index: start.id).kSheet()
@@ -108,7 +108,7 @@ struct ModelChatView: View {
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            BotFace(bot: SampleData.kip, size: 76, blinks: true)
+            BotFace(bot: SampleData.kip, size: 104, blinks: true)
             Text("What should we work on?")
                 .font(KFont.display(32))
                 .foregroundStyle(Palette.ink)

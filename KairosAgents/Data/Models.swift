@@ -8,6 +8,8 @@ nonisolated struct Bot: Identifiable, Hashable, Sendable {
     var role: String
     var colorHex: UInt32
     var status: BotStatus
+    var shape: MascotShape = .round
+    var accessory: MascotAccessory = .none
     var isKip = false
     /// A team lists its member bots here; a single bot leaves it empty.
     var members: [String] = []

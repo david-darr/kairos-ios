@@ -30,13 +30,6 @@ struct ShellView: View {
                     .accessibilityAddTraits(.isButton)
             }
 
-            LinearGradient(colors: [Palette.ground.opacity(0), Palette.ground.opacity(0.82)], startPoint: .top, endPoint: .bottom)
-                .frame(height: 190)
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
-                .opacity(router.barHidden ? 0 : 1)
-                .zIndex(1.5)
-
             BottomChrome()
                 .offset(y: router.barHidden ? 170 : 0)
                 .opacity(router.barHidden ? 0 : 1)

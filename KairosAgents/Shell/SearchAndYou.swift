@@ -57,7 +57,7 @@ struct SearchView: View {
             .frame(height: 50)
             .kCard(radius: 25, raised: true)
             .padding(.horizontal, 16)
-            .padding(.top, 18)
+            .padding(.top, 32)
             .padding(.bottom, 8)
 
             ScrollView {
@@ -70,13 +70,14 @@ struct SearchView: View {
                         } label: {
                             HStack(spacing: 13) {
                                 if let bot = hit.bot {
-                                    BotFace(bot: bot, size: 40)
+                                    BotFace(bot: bot, size: 50)
                                 } else {
                                     Image(systemName: hit.symbol)
                                         .font(.system(size: 16, weight: .medium))
                                         .foregroundStyle(Palette.goldText)
                                         .frame(width: 40, height: 40)
                                         .background(Palette.ink.opacity(0.08), in: Circle())
+                                        .frame(width: 50, height: 50)
                                 }
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(hit.title).font(KFont.ui(16.5, .medium)).foregroundStyle(Palette.ink).lineLimit(1)
@@ -136,7 +137,7 @@ struct YouView: View {
                     Text("You").font(KFont.display(36)).foregroundStyle(Palette.ink)
                     Text("Switch account").font(KFont.ui(15, .medium, relativeTo: .subheadline)).foregroundStyle(Palette.goldText)
                 }
-                .padding(.top, 26)
+                .padding(.top, 40)
 
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel(text: "Look")

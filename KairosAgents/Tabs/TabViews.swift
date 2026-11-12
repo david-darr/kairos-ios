@@ -156,6 +156,7 @@ struct LibraryView: View {
                     GlassIconButton(symbol: "magnifyingglass", label: "Search") { router.sheet = .search }
                 }
                 GlassSwitch(items: LibrarySection.allCases, selection: $router.librarySection) { $0.rawValue }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
             }

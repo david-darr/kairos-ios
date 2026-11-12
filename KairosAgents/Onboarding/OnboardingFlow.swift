@@ -108,11 +108,11 @@ private struct OnboardingArt: View {
             switch page {
             case 0:
                 VStack(spacing: 18) {
-                    BotFace(bot: SampleData.kip, size: 150, blinks: true)
+                    BotFace(bot: SampleData.kip, size: 184, blinks: true)
                         .scaleEffect(active ? 1 : 0.8)
                     HStack(spacing: 10) {
                         ForEach([SampleData.producer, SampleData.scout, SampleData.quill, SampleData.ledger]) { bot in
-                            BotFace(bot: bot, size: 46)
+                            BotFace(bot: bot, size: 60)
                         }
                     }
                     .opacity(active ? 1 : 0)
@@ -120,7 +120,7 @@ private struct OnboardingArt: View {
                 }
             case 1:
                 VStack(spacing: 10) {
-                    BotFace(bot: SampleData.kip, size: 60, blinks: true)
+                    BotFace(bot: SampleData.kip, size: 76, blinks: true)
                     MessageBubble(message: ChatMessage(kind: .theirs("Your report is due Friday. Want a draft?")))
                     MessageBubble(message: ChatMessage(kind: .mine("Yes please.")))
                     MessageBubble(message: ChatMessage(kind: .status("Kip is reading your notes")))
@@ -151,7 +151,7 @@ private struct OnboardingArt: View {
             default:
                 VStack(spacing: 12) {
                     HStack(spacing: 10) {
-                        BotFace(bot: SampleData.kip, size: 34)
+                        BotFace(bot: SampleData.kip, size: 44)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Reading your vault").font(KFont.ui(12, relativeTo: .caption)).foregroundStyle(Palette.cream.opacity(0.6))
                             Text("Drafting the summary").font(KFont.ui(15.5, .medium, relativeTo: .subheadline)).foregroundStyle(Palette.cream)
@@ -177,7 +177,7 @@ private struct OnboardingArt: View {
 
     private func notification(_ title: String, _ detail: String) -> some View {
         HStack(spacing: 11) {
-            BotFace(bot: SampleData.kip, size: 34)
+            BotFace(bot: SampleData.kip, size: 44)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(KFont.ui(14.5, .medium, relativeTo: .subheadline)).foregroundStyle(Palette.ink)
                 Text(detail).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)

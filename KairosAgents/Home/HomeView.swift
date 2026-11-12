@@ -20,7 +20,7 @@ struct HomeView: View {
                             router.push(.bot(bot.id), on: .home)
                         } label: {
                             VStack(spacing: 7) {
-                                BotFace(bot: bot, size: 68, showStatus: true, blinks: true)
+                                BotFace(bot: bot, size: 82, showStatus: true, blinks: true)
                                 Text(bot.name)
                                     .font(KFont.ui(13.5, relativeTo: .footnote))
                                     .foregroundStyle(Palette.ink)
@@ -165,21 +165,22 @@ struct ConversationRow: View {
         .padding(.vertical, 10)
         .padding(.horizontal, 4)
         .contentShape(Rectangle())
-        .overlay(alignment: .bottom) { Palette.line.frame(height: 1).padding(.leading, 66) }
+        .overlay(alignment: .bottom) { Palette.line.frame(height: 1).padding(.leading, 74) }
     }
 
     @ViewBuilder
     private var avatar: some View {
         switch conversation.kind {
         case .bot(let id):
-            BotFace(bot: SampleData.bot(id), size: 50)
+            BotFace(bot: SampleData.bot(id), size: 58)
         case .model:
             Image(systemName: "sparkle")
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(Palette.inkDim)
-                .frame(width: 50, height: 50)
+                .frame(width: 46, height: 46)
                 .background(Palette.surfaceRaised, in: Circle())
                 .overlay(Circle().strokeBorder(Palette.line, lineWidth: 1))
+                .frame(width: 58, height: 58)
         }
     }
 }
