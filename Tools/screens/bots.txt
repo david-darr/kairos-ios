@@ -1,0 +1,101 @@
+# Bots area pictures: night, then light.
+inbox -kDebugView bots.inbox
+inbox-light -kDebugView bots.inbox -kAppearance light
+inbox-scout -kDebugView bots.inbox-scout
+inbox-scout-light -kDebugView bots.inbox-scout -kAppearance light
+settings -kDebugView bots.settings
+settings-light -kDebugView bots.settings -kAppearance light
+notifications -kDebugView bots.notifications
+notifications-light -kDebugView bots.notifications -kAppearance light
+activity -kDebugView bots.activity
+activity-light -kDebugView bots.activity -kAppearance light
+report -kDebugView bots.report
+report-light -kDebugView bots.report -kAppearance light
+raise-full -kDebugView bots.raise-full
+raise-full-light -kDebugView bots.raise-full -kAppearance light
+set-model -kDebugView bots.set-model
+set-model-light -kDebugView bots.set-model -kAppearance light
+set-approval -kDebugView bots.set-approval
+set-approval-light -kDebugView bots.set-approval -kAppearance light
+set-voice -kDebugView bots.set-voice
+set-voice-light -kDebugView bots.set-voice -kAppearance light
+set-memory -kDebugView bots.set-memory
+set-memory-light -kDebugView bots.set-memory -kAppearance light
+set-aboutYou -kDebugView bots.set-aboutYou
+set-aboutYou-light -kDebugView bots.set-aboutYou -kAppearance light
+set-skills -kDebugView bots.set-skills
+set-skills-light -kDebugView bots.set-skills -kAppearance light
+set-access -kDebugView bots.set-access
+set-access-light -kDebugView bots.set-access -kAppearance light
+set-connections -kDebugView bots.set-connections
+set-connections-light -kDebugView bots.set-connections -kAppearance light
+set-browser -kDebugView bots.set-browser
+set-browser-light -kDebugView bots.set-browser -kAppearance light
+set-usage -kDebugView bots.set-usage
+set-usage-light -kDebugView bots.set-usage -kAppearance light
+set-limits -kDebugView bots.set-limits
+set-limits-light -kDebugView bots.set-limits -kAppearance light
+set-conversations -kDebugView bots.set-conversations
+set-conversations-light -kDebugView bots.set-conversations -kAppearance light
+set-look -kDebugView bots.set-look
+set-look-light -kDebugView bots.set-look -kAppearance light
+set-instructions -kDebugView bots.set-instructions
+set-instructions-light -kDebugView bots.set-instructions -kAppearance light
+set-history -kDebugView bots.set-history
+set-history-light -kDebugView bots.set-history -kAppearance light
+set-overview -kDebugView bots.set-overview
+set-overview-light -kDebugView bots.set-overview -kAppearance light
+set-delivery -kDebugView bots.set-delivery
+set-delivery-light -kDebugView bots.set-delivery -kAppearance light
+routines -kDebugView bots.routines
+routines-light -kDebugView bots.routines -kAppearance light
+routines-kip -kDebugView bots.routines-kip
+routines-kip-light -kDebugView bots.routines-kip -kAppearance light
+routine-new -kDebugView bots.routine-new
+routine-new-light -kDebugView bots.routine-new -kAppearance light
+routine-interval -kDebugView bots.routine-interval
+routine-interval-light -kDebugView bots.routine-interval -kAppearance light
+trigger-webhook -kDebugView bots.trigger-webhook
+trigger-webhook-light -kDebugView bots.trigger-webhook -kAppearance light
+trigger-app -kDebugView bots.trigger-app
+trigger-app-light -kDebugView bots.trigger-app -kAppearance light
+calendar -kDebugView bots.calendar
+calendar-light -kDebugView bots.calendar -kAppearance light
+automations -kDebugView bots.automations
+automations-light -kDebugView bots.automations -kAppearance light
+team -kDebugView bots.team
+team-light -kDebugView bots.team -kAppearance light
+team-settings -kDebugView bots.team-settings
+team-settings-light -kDebugView bots.team-settings -kAppearance light
+team-memory -kDebugView bots.team-memory
+team-memory-light -kDebugView bots.team-memory -kAppearance light
+team-report -kDebugView bots.team-report
+team-report-light -kDebugView bots.team-report -kAppearance light
+team-map -kDebugView bots.team-map
+team-map-light -kDebugView bots.team-map -kAppearance light
+departments -kDebugView bots.departments
+departments-light -kDebugView bots.departments -kAppearance light
+room -kDebugView bots.room
+room-light -kDebugView bots.room -kAppearance light
+room-settings -kDebugView bots.room-settings
+maker -kDebugView bots.maker
+maker-light -kDebugView bots.maker -kAppearance light
+create-simple -kDebugView bots.create-simple
+create-simple-light -kDebugView bots.create-simple -kAppearance light
+create-advanced -kDebugView bots.create-advanced
+create-advanced-light -kDebugView bots.create-advanced -kAppearance light
+ready-made -kDebugView bots.ready-made
+ready-made-light -kDebugView bots.ready-made -kAppearance light
+archived -kDebugView bots.archived
+archived-light -kDebugView bots.archived -kAppearance light
+packages -kDebugView bots.packages
+packages-light -kDebugView bots.packages -kAppearance light
+package-preview -kDebugView bots.package-preview
+package-preview-light -kDebugView bots.package-preview -kAppearance light
+package-share -kDebugView bots.package-share
+package-share-light -kDebugView bots.package-share -kAppearance light
+all-bots -kDebugView bots.all-bots
+all-bots-light -kDebugView bots.all-bots -kAppearance light
+all-bots-reorder -kDebugView bots.all-bots-reorder
+all-bots-reorder-light -kDebugView bots.all-bots-reorder -kAppearance light
+room-settings-light -kDebugView bots.room-settings -kAppearance light
