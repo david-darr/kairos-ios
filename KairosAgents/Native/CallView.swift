@@ -1,25 +1,31 @@
 import SwiftUI
 
 /// The call screen: a night ground in every look, the bot's face, three round keys.
+/// The call itself lives in `CallCenter` (CallKit), so minimizing keeps it running under the pill.
 struct CallView: View {
     let bot: Bot
     @Environment(\.dismiss) private var dismiss
-    @State private var muted = false
-    @State private var speaker = true
-    @State private var started = Date()
+    private var calls = CallCenter.shared
+
+    init(bot: Bot) {
+        self.bot = bot
+    }
+
+    private var session: CallCenter.Session? {
+        calls.session?.bot.id == bot.id ? calls.session : nil
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Minimize the call")
-                Spacer()
+            ZStack {
                 Text("KAIROS CALL").font(KFont.label).tracking(2.2)
-                Spacer()
-                Image(systemName: "ellipsis").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44)
-                    .accessibilityHidden(true)
+                HStack {
+                    Button { minimize() } label: {
+                        Image(systemName: "chevron.down").font(.system(size: 17, weight: .semibold)).frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Minimize the call")
+                    Spacer()
+                }
             }
             .foregroundStyle(Palette.cream.opacity(0.8))
             .padding(.horizontal, 12)
@@ -35,23 +41,30 @@ struct CallView: View {
             .shadow(color: .black.opacity(0.5), radius: 30, y: 18)
 
             Text(bot.name).font(KFont.display(44)).foregroundStyle(Palette.cream).padding(.top, 22)
-            LevelBars(color: Palette.cream.opacity(0.75)).padding(.top, 6)
-            TimelineView(.periodic(from: started, by: 1)) { context in
-                Text(timer(context.date))
-                    .font(KFont.ui(16).monospacedDigit())
-                    .foregroundStyle(Palette.cream.opacity(0.7))
+            LevelBars(color: Palette.cream.opacity(0.75), active: !calls.muted).padding(.top, 6)
+            Group {
+                if let connected = session?.connectedAt {
+                    TimelineView(.periodic(from: connected, by: 1)) { context in
+                        Text(calls.muted ? "Muted · " + timer(context.date, since: connected) : timer(context.date, since: connected))
+                    }
+                } else {
+                    Text("Calling…")
+                }
             }
+            .font(KFont.ui(16).monospacedDigit())
+            .foregroundStyle(Palette.cream.opacity(0.7))
             .padding(.top, 10)
 
             Spacer()
             Spacer()
 
             HStack(spacing: 34) {
-                callKey("speaker.wave.2.fill", "Speaker", on: speaker) { speaker.toggle() }
-                callKey(muted ? "mic.slash.fill" : "mic.fill", "Mute", on: muted) { muted.toggle() }
+                callKey("speaker.wave.2.fill", "Speaker", on: calls.speaker) { calls.toggleSpeaker() }
+                callKey(calls.muted ? "mic.slash.fill" : "mic.fill", calls.muted ? "Unmute" : "Mute", on: calls.muted) { calls.toggleMute() }
                 VStack(spacing: 8) {
                     Button {
                         Haptics.thud()
+                        calls.endCall()
                         dismiss()
                     } label: {
                         Image(systemName: "phone.down.fill")
@@ -73,6 +86,21 @@ struct CallView: View {
             LinearGradient(colors: [Palette.callTop, Palette.callBottom], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            calls.screenVisible = true
+            calls.startCall(with: bot, present: false)
+        }
+        .onDisappear { calls.screenVisible = false }
+        .onChange(of: calls.session == nil) {
+            // The call ended elsewhere (the Lock Screen, the island, the desktop): close the screen.
+            if calls.session == nil { dismiss() }
+        }
+    }
+
+    private func minimize() {
+        Haptics.tap()
+        calls.showingCall = false
+        dismiss()
     }
 
     private func callKey(_ symbol: String, _ title: String, on: Bool, action: @escaping () -> Void) -> some View {
@@ -96,8 +124,77 @@ struct CallView: View {
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 
-    private func timer(_ now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(started)))
+    private func timer(_ now: Date, since start: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// The minimized call: a glass pill at the top with the bot's face, the timer, mute and hang up.
+struct CallPill: View {
+    let session: CallCenter.Session
+    let open: () -> Void
+    private var calls = CallCenter.shared
+
+    init(session: CallCenter.Session, open: @escaping () -> Void) {
+        self.session = session
+        self.open = open
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: open) {
+                HStack(spacing: 10) {
+                    BotFace(bot: session.bot, size: 30)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(session.bot.name).font(KFont.ui(15, .semibold)).foregroundStyle(Palette.ink)
+                        Group {
+                            if let connected = session.connectedAt {
+                                Text(connected, style: .timer)
+                            } else {
+                                Text("Calling…")
+                            }
+                        }
+                        .font(KFont.ui(12.5).monospacedDigit())
+                        .foregroundStyle(Palette.success)
+                    }
+                    LevelBars(color: Palette.success, active: !calls.muted).scaleEffect(0.8)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel("Back to the call with \(session.bot.name)")
+
+            Button {
+                Haptics.tap()
+                calls.toggleMute()
+            } label: {
+                Image(systemName: calls.muted ? "mic.slash.fill" : "mic.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .contentTransition(.symbolEffect(.replace))
+                    .foregroundStyle(calls.muted ? Palette.night : Palette.ink)
+                    .frame(width: 36, height: 36)
+                    .background(calls.muted ? Palette.cream : Palette.ink.opacity(0.12), in: Circle())
+            }
+            .buttonStyle(PressStyle(scale: 0.9))
+            .accessibilityLabel(calls.muted ? "Unmute" : "Mute")
+
+            Button {
+                Haptics.thud()
+                calls.endCall()
+            } label: {
+                Image(systemName: "phone.down.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Palette.hangUp, in: Circle())
+            }
+            .buttonStyle(PressStyle(scale: 0.9))
+            .accessibilityLabel("End call")
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 6)
+        .frame(height: 50)
+        .kGlass(Capsule(), interactive: true)
     }
 }

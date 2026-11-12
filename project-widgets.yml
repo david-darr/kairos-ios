@@ -1,0 +1,131 @@
+# The full app: project.yml plus the widget extension (Live Activities, Dynamic Island, widgets),
+# entitlements for push, App Groups and notifications, and the Info.plist keys calls and Live Activities need.
+# The Compile workflow uses this file when it exists. project.yml stays the app alone, for the screenshot
+# build and TestFlight, until a signing profile for the extension exists.
+name: KairosAgents
+options:
+  bundleIdPrefix: app.kairos-agents
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  KairosAgents:
+    type: application
+    platform: iOS
+    sources:
+      - path: KairosAgents
+        excludes:
+          - Info.plist
+    dependencies:
+      - target: KairosWidgets
+        embed: true
+    info:
+      path: KairosAgents/Info.plist
+      properties:
+        CFBundleDisplayName: Kairos
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen:
+          UIColorName: LaunchGround
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIAppFonts:
+          - Jost-Regular.ttf
+          - Jost-Medium.ttf
+          - Jost-SemiBold.ttf
+          - CormorantGaramond-MediumItalic.ttf
+          - CormorantGaramond-SemiBoldItalic.ttf
+        ITSAppUsesNonExemptEncryption: false
+        # Native layer (Native/): calls, Live Activities, notification actions, deep links.
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
+        UIBackgroundModes:
+          - audio
+          - voip
+          - remote-notification
+        NSMicrophoneUsageDescription: Kairos uses the microphone when you talk to a bot on a call or by voice.
+        NSCameraUsageDescription: Kairos uses the camera when you take a photo to send to a chat.
+        NSUserActivityTypes:
+          - INSendMessageIntent
+          - INStartCallIntent
+        CFBundleURLTypes:
+          - CFBundleURLName: app.kairos-agents.mobile
+            CFBundleURLSchemes:
+              - kairos-agents
+    entitlements:
+      path: KairosWidgets/Support/KairosAgents.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups:
+          - group.app.kairos-agents.mobile
+        com.apple.developer.usernotifications.time-sensitive: true
+        com.apple.developer.usernotifications.communication: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.kairos-agents.mobile
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+
+  KairosWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: KairosWidgets
+        excludes:
+          - Info.plist
+          - Support/**
+      # The designs and models the extension shares with the app's gallery.
+      - path: KairosAgents/Native/Shared
+      - path: KairosAgents/Design/Palette.swift
+      - path: KairosAgents/Design/Mascot.swift
+      - path: KairosAgents/Design/BotFace.swift
+      - path: KairosAgents/Data/Models.swift
+      - path: KairosAgents/Data/SampleData.swift
+      - path: KairosAgents/Resources/Fonts
+        buildPhase: resources
+        optional: true
+    info:
+      path: KairosWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Kairos
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSSupportsLiveActivities: true
+        UIAppFonts:
+          - Jost-Regular.ttf
+          - Jost-Medium.ttf
+          - Jost-SemiBold.ttf
+          - CormorantGaramond-MediumItalic.ttf
+          - CormorantGaramond-SemiBoldItalic.ttf
+    entitlements:
+      path: KairosWidgets/Support/KairosWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.kairos-agents.mobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.kairos-agents.mobile.liveactivity
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) KAIROS_EXTENSION"
+
+schemes:
+  KairosAgents:
+    build:
+      targets:
+        KairosAgents: all
+    run:
+      config: Debug
