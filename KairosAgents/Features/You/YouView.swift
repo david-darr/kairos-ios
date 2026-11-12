@@ -65,3 +65,15 @@ struct YouView: View {
         .kSheet()
     }
 }
+
+struct HelpScreen: View {
+    var body: some View { SettingsPage("Help") { NoteText(text: "Not built yet.") } }
+}
+
+enum YouHomeDebug {
+    static func view(_ name: String) -> AnyView? {
+        switch name {
+        default: return nil
+        }
+    }
+}
