@@ -24,6 +24,8 @@ targets:
       path: KairosAgents/Info.plist
       properties:
         CFBundleDisplayName: Kairos
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen:
           UIColorName: LaunchGround
         UISupportedInterfaceOrientations:

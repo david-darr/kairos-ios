@@ -68,3 +68,5 @@ KairosAgents/Resources/Fonts/
 build/
 build.log
 shots/
+build-release/
+*.log

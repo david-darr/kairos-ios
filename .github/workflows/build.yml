@@ -63,6 +63,24 @@ jobs:
           echo "Warnings: $(grep -c 'warning:' build.log || true)"
           grep -E "warning:" build.log | sort -u | head -60 || true
 
+      - name: Release build check (unsigned)
+        run: |
+          set -o pipefail
+          if ! xcodebuild \
+            -project KairosAgents.xcodeproj \
+            -scheme KairosAgents \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build-release \
+            CODE_SIGNING_ALLOWED=NO \
+            build > release.log 2>&1; then
+            grep -E "error:" -A 6 release.log | head -300
+            exit 1
+          fi
+          echo "Release build compiles"
+          xcrun --find altool || echo "altool is not in this Xcode"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' build-release/Build/Products/Release-iphoneos/KairosAgents.app/Info.plist
+
       - name: Screenshots
         run: |
           chmod +x Tools/screenshots.sh
