@@ -86,16 +86,19 @@ private struct BotChatScreen: View {
                 FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData).kSheet()
             }
         }
-        .task {
-            await chat.load()
-            if modelAfterLoad {
+        .task { await chat.load() }
+        .onChange(of: chat.phase) {
+            // Debug screenshots: open the model drawer once the conversation is read.
+            if modelAfterLoad && chat.phase == .loaded {
                 modelAfterLoad = false
                 showModel = true
             }
         }
         .onAppear {
             switch router.debugScreen {
-            case "botmodel": router.debugScreen = nil; modelAfterLoad = true
+            case "botmodel":
+                router.debugScreen = nil
+                if chat.phase == .loaded { showModel = true } else { modelAfterLoad = true }
             case "botpanel": router.debugScreen = nil; showPanel = true
             case "botsettings": router.debugScreen = nil; panelTab = .settings; showPanel = true
             case "call": router.debugScreen = nil; showCall = true
