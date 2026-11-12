@@ -1,0 +1,91 @@
+# Desktop area. Night look, then the light look.
+home -kDebugView desktop.home
+home-asleep -kDebugView desktop.home-asleep
+forge -kDebugView desktop.forge
+forge-customize -kDebugView desktop.forge-customize
+new-session -kDebugView desktop.new-session
+chart -kDebugView desktop.chart
+projects -kDebugView desktop.projects
+add-project -kDebugView desktop.add-project
+project -kDebugView desktop.project
+repo -kDebugView desktop.repo
+session -kDebugView desktop.session
+session-working -kDebugView desktop.session-working
+session-review -kDebugView desktop.session-review
+session-actions -kDebugView desktop.session-actions
+full-access -kDebugView desktop.full-access
+model -kDebugView desktop.model
+end -kDebugView desktop.end
+git -kDebugView desktop.git
+run-app -kDebugView desktop.run-app
+changes -kDebugView desktop.changes
+diff -kDebugView desktop.diff
+explorer -kDebugView desktop.explorer
+file -kDebugView desktop.file
+terminal -kDebugView desktop.terminal
+preview -kDebugView desktop.preview
+preview-logs -kDebugView desktop.preview-logs
+computer -kDebugView desktop.computer
+computer-control -kDebugView desktop.computer-control
+computer-steps -kDebugView desktop.computer-steps
+models -kDebugView desktop.models
+models-engine -kDebugView desktop.models-engine
+models-empty -kDebugView desktop.models-empty
+models-setup -kDebugView desktop.models-setup
+files -kDebugView desktop.files
+files-folder -kDebugView desktop.files-folder
+files-preview -kDebugView desktop.files-preview
+browse -kDebugView desktop.browse
+browse-home -kDebugView desktop.browse-home
+browse-tabs -kDebugView desktop.browse-tabs
+browse-site -kDebugView desktop.browse-site
+browse-history -kDebugView desktop.browse-history
+browse-downloads -kDebugView desktop.browse-downloads
+browse-passwords -kDebugView desktop.browse-passwords
+browse-ask -kDebugView desktop.browse-ask
+browse-settings -kDebugView desktop.browse-settings
+home-light -kDebugView desktop.home -kAppearance light
+home-asleep-light -kDebugView desktop.home-asleep -kAppearance light
+forge-light -kDebugView desktop.forge -kAppearance light
+forge-customize-light -kDebugView desktop.forge-customize -kAppearance light
+new-session-light -kDebugView desktop.new-session -kAppearance light
+chart-light -kDebugView desktop.chart -kAppearance light
+projects-light -kDebugView desktop.projects -kAppearance light
+add-project-light -kDebugView desktop.add-project -kAppearance light
+project-light -kDebugView desktop.project -kAppearance light
+repo-light -kDebugView desktop.repo -kAppearance light
+session-light -kDebugView desktop.session -kAppearance light
+session-working-light -kDebugView desktop.session-working -kAppearance light
+session-review-light -kDebugView desktop.session-review -kAppearance light
+session-actions-light -kDebugView desktop.session-actions -kAppearance light
+full-access-light -kDebugView desktop.full-access -kAppearance light
+model-light -kDebugView desktop.model -kAppearance light
+end-light -kDebugView desktop.end -kAppearance light
+git-light -kDebugView desktop.git -kAppearance light
+run-app-light -kDebugView desktop.run-app -kAppearance light
+changes-light -kDebugView desktop.changes -kAppearance light
+diff-light -kDebugView desktop.diff -kAppearance light
+explorer-light -kDebugView desktop.explorer -kAppearance light
+file-light -kDebugView desktop.file -kAppearance light
+terminal-light -kDebugView desktop.terminal -kAppearance light
+preview-light -kDebugView desktop.preview -kAppearance light
+preview-logs-light -kDebugView desktop.preview-logs -kAppearance light
+computer-light -kDebugView desktop.computer -kAppearance light
+computer-control-light -kDebugView desktop.computer-control -kAppearance light
+computer-steps-light -kDebugView desktop.computer-steps -kAppearance light
+models-light -kDebugView desktop.models -kAppearance light
+models-engine-light -kDebugView desktop.models-engine -kAppearance light
+models-empty-light -kDebugView desktop.models-empty -kAppearance light
+models-setup-light -kDebugView desktop.models-setup -kAppearance light
+files-light -kDebugView desktop.files -kAppearance light
+files-folder-light -kDebugView desktop.files-folder -kAppearance light
+files-preview-light -kDebugView desktop.files-preview -kAppearance light
+browse-light -kDebugView desktop.browse -kAppearance light
+browse-home-light -kDebugView desktop.browse-home -kAppearance light
+browse-tabs-light -kDebugView desktop.browse-tabs -kAppearance light
+browse-site-light -kDebugView desktop.browse-site -kAppearance light
+browse-history-light -kDebugView desktop.browse-history -kAppearance light
+browse-downloads-light -kDebugView desktop.browse-downloads -kAppearance light
+browse-passwords-light -kDebugView desktop.browse-passwords -kAppearance light
+browse-ask-light -kDebugView desktop.browse-ask -kAppearance light
+browse-settings-light -kDebugView desktop.browse-settings -kAppearance light

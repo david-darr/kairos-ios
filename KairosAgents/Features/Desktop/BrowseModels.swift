@@ -165,7 +165,7 @@ nonisolated enum BrowseAddress {
         return rest
     }
 
-    enum Parsed: Equatable { case open(String), search(String), refused }
+    nonisolated enum Parsed: Equatable, Sendable { case open(String), search(String), refused }
 
     /// Bare hostnames open over https; localhost and host:port over http; other text is a search.
     static func parse(_ text: String) -> Parsed {
