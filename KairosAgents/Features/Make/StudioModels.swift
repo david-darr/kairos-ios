@@ -458,6 +458,7 @@ final class StudioStore {
     var publishFilter = "All"
     var weekOffset = 0
     var sheet: StudioSheet?
+    var pushEditor = false
 
     var hasTeam = true
     var handsOff = false
