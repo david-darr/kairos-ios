@@ -30,3 +30,7 @@ No Mac is needed to work on it: every push to `main` builds in GitHub Actions an
 ## Rules for this repository
 
 It is public. No secret, key, token or personal data goes into the code or the history. Signing keys live only in GitHub Actions secrets.
+
+## Licence
+
+MIT, the same as Kairos itself. See [LICENSE](LICENSE). The fonts in `Fonts/source/` are under the SIL Open Font License; their licence texts sit beside them.
