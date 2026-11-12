@@ -5,6 +5,8 @@ Studio, Content, video and design items belong to Make and are not listed here.
 Chat itself (composer, transcript, message actions, slash commands, attachments) and calls belong to Home and chats and Native; they are listed at the end with their owner.
 
 All screens live in `KairosAgents/Features/Bots/` and run on the sample data in `BotsStore` / `BotsSample`.
+
+When the phone is paired, three parts read the desktop instead (`BotsLive.swift`): the All bots roster (pins, needs attention, teams, the list; GET /api/agents, /api/bot-team/map, /api/agents/conversations), a bot's panel header and At a glance (GET /api/agents/{id}), and its Needs you approvals and questions (GET /api/bot-cards, POST /api/bot-cards/{id}/respond). Every other Bots page says, while paired, that it still shows sample data. While paired, actions that would only change the sample roster (new bot, duplicate, archive, reorder, chief, new room) are hidden.
 Debug names are `bots.<name>`; the picture list is `Tools/screens/bots.txt`.
 
 ## Bot page (tap the face in a chat)

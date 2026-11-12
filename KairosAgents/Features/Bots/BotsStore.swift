@@ -49,6 +49,16 @@ final class BotsStore: BotsProviding {
     var toast: String?
     private var toastTask: Task<Void, Never>?
 
+    // The paired desktop (BotsLive.swift). While `liveMode` is on, the roster, teams, pins and
+    // Needs you cards above hold the desktop's own; the sample ones wait in `sampleStash`.
+    var liveMode = false
+    var rosterLoad: BotsLiveLoad = .idle
+    var liveNeedsYou: [String: Int] = [:]
+    var details: [String: AgentDetailDTO] = [:]
+    var detailLoad: [String: BotsLiveLoad] = [:]
+    var cardsLoad: [String: BotsLiveLoad] = [:]
+    @ObservationIgnored var sampleStash: BotsSampleStash?
+
     init() {
         bots = SampleData.allBots.filter { $0.members.isEmpty }
         archived = [
@@ -75,7 +85,12 @@ final class BotsStore: BotsProviding {
     // MARK: Lookups
 
     func bot(_ id: String) -> Bot {
-        bots.first { $0.id == id } ?? archived.first { $0.id == id } ?? SampleData.bot(id)
+        if let found = bots.first(where: { $0.id == id }) ?? archived.first(where: { $0.id == id }) { return found }
+        if liveMode {
+            if let agent = details[id]?.agent { return Self.liveBot(agent) }
+            return Bot(id: id, name: "Bot", role: "", colorHex: BotAvatarRules.defaultColor(id), status: .offline, shape: BotAvatarRules.defaultShape(id))
+        }
+        return SampleData.bot(id)
     }
 
     func settings(_ botID: String) -> BotSettings {
@@ -106,7 +121,8 @@ final class BotsStore: BotsProviding {
     func team(of botID: String) -> BotTeam? { teams.first { $0.members.contains(botID) } }
 
     func needsCount(_ botID: String) -> Int {
-        needs.filter { $0.botID == botID && $0.settled == nil }.count
+        if liveMode { return liveNeedsYou[botID] ?? 0 }
+        return needs.filter { $0.botID == botID && $0.settled == nil }.count
     }
 
     func routines(for botID: String) -> [Routine] { routines.filter { $0.botID == botID } }
@@ -128,6 +144,7 @@ final class BotsStore: BotsProviding {
     }
 
     func togglePin(_ botID: String) {
+        if liveMode { pinLive(botID); return }
         if pinned.contains(botID) {
             pinned.removeAll { $0 == botID }
             say("\(bot(botID).name) is unpinned")

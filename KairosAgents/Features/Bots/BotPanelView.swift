@@ -69,6 +69,13 @@ struct BotPanelRoot: View {
             started = true
             tab = startTab
         }
+        .task(id: BotsStore.connectionKey) {
+            store.followConnection()
+            guard store.liveMode else { return }
+            await store.loadDetail(botID)
+            await store.loadCards(botID)
+            if store.rosterLoad != .loaded { await store.loadRoster() }
+        }
     }
 
     private func hero(_ bot: Bot) -> some View {
@@ -76,7 +83,7 @@ struct BotPanelRoot: View {
         return VStack(spacing: 8) {
             BotFace(bot: bot, size: 132, blinks: true)
             Text(bot.name).font(KFont.display(40)).foregroundStyle(Palette.ink)
-            Text("\(bot.role) · \(settings.model) · \(settings.approval.longTitle)")
+            Text(store.liveMode ? "\(bot.role) · \(bot.model) · \(bot.approval)" : "\(bot.role) · \(settings.model) · \(settings.approval.longTitle)")
                 .font(KFont.ui(14, relativeTo: .subheadline))
                 .foregroundStyle(Palette.inkDim)
                 .multilineTextAlignment(.center)
@@ -93,6 +100,12 @@ struct BotPanelRoot: View {
                     }
                     .buttonStyle(PressStyle())
                 }
+            }
+            if store.liveMode {
+                BotsLoadNote(state: store.detailLoad[botID] ?? .idle, waiting: "Reading this bot from your desktop.") {
+                    Task { await store.loadDetail(botID) }
+                }
+                .padding(.top, 6)
             }
         }
         .padding(.top, 4)
@@ -127,7 +140,7 @@ struct BotPanelRoot: View {
                 Button { goto = .team(team.id) } label: { Label(team.name, systemImage: "person.2") }
             }
             Button { goto = .report(botID) } label: { Label("\(bot.name)'s report", systemImage: "chart.bar.doc.horizontal") }
-            if !bot.isKip {
+            if !bot.isKip && !store.liveMode {
                 Button {
                     let copy = store.duplicate(botID)
                     goto = .botPage(copy)

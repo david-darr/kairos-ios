@@ -17,9 +17,13 @@ struct AllBotsScreen: View {
     @State private var started = false
 
     var body: some View {
-        BotsPage("All bots", subtitle: "\(store.bots.count) bots", trailing: { headerButtons }) {
+        BotsPage("All bots", subtitle: subtitle, live: true, trailing: { headerButtons }) {
             searchField
-            if search.count >= 2 {
+            if store.liveMode, store.rosterLoad != .loaded {
+                BotsLoadNote(state: store.rosterLoad, waiting: "Reading your bots from your desktop.") {
+                    Task { await store.loadRoster() }
+                }
+            } else if search.count >= 2 {
                 results
             } else if editing {
                 reorderList
@@ -30,10 +34,12 @@ struct AllBotsScreen: View {
                     section(team.name, team.members.compactMap { id in store.bots.first { $0.id == id } }, team: team)
                 }
                 section("Other bots", store.bots.filter { store.team(of: $0.id) == nil }, team: nil)
-                NavigationLink(value: BotsRoute.maker) {
-                    NavRow(title: "Make a bot", symbol: "plus.circle").kCard(radius: 20)
+                if !store.liveMode {
+                    NavigationLink(value: BotsRoute.maker) {
+                        NavRow(title: "Make a bot", symbol: "plus.circle").kCard(radius: 20)
+                    }
+                    .buttonStyle(PressStyle(scale: 0.98))
                 }
-                .buttonStyle(PressStyle(scale: 0.98))
             }
             if let undoBot {
                 HStack {
@@ -73,14 +79,30 @@ struct AllBotsScreen: View {
         .onAppear {
             guard !started else { return }
             started = true
-            editing = startEditing
+            editing = startEditing && !store.liveMode
         }
+        .task(id: BotsStore.connectionKey) {
+            store.followConnection()
+            if store.liveMode { editing = false }
+            await store.loadRoster()
+        }
+    }
+
+    private var subtitle: String {
+        if store.liveMode && store.rosterLoad != .loaded { return "Your desktop" }
+        return store.bots.count == 1 ? "1 bot" : "\(store.bots.count) bots"
     }
 
     // MARK: Header
 
     private var headerButtons: some View {
         HStack(spacing: 8) {
+            if !store.liveMode { editButton }
+            moreMenu
+        }
+    }
+
+    private var editButton: some View {
             Button {
                 Haptics.tap()
                 withAnimation(Motion.snappy) { editing.toggle() }
@@ -90,15 +112,20 @@ struct AllBotsScreen: View {
             }
             .kGlass(Capsule(), interactive: true)
             .accessibilityLabel(editing ? "Done reordering" : "Reorder bots")
+    }
+
+    private var moreMenu: some View {
             Menu {
-                Button { creating = DraftBox(draft: NewBotDraft()) } label: { Label("New bot", systemImage: "plus") }
-                Button { goto = .readyMade } label: { Label("Ready-made bots", systemImage: "sparkles") }
-                Button { newRoom = true } label: { Label("New room", systemImage: "number") }
-                Divider()
+                if !store.liveMode {
+                    Button { creating = DraftBox(draft: NewBotDraft()) } label: { Label("New bot", systemImage: "plus") }
+                    Button { goto = .readyMade } label: { Label("Ready-made bots", systemImage: "sparkles") }
+                    Button { newRoom = true } label: { Label("New room", systemImage: "number") }
+                    Divider()
+                }
                 Button { goto = .teamMap } label: { Label("Team map", systemImage: "map") }
                 Button { goto = .automations } label: { Label("Automations", systemImage: "clock.arrow.circlepath") }
                 Button { goto = .departments } label: { Label("Departments", systemImage: "building.2") }
-                if !store.archived.isEmpty {
+                if !store.archived.isEmpty && !store.liveMode {
                     Button { goto = .archived } label: { Label("Archived (\(store.archived.count))", systemImage: "archivebox") }
                 }
             } label: {
@@ -107,7 +134,6 @@ struct AllBotsScreen: View {
             }
             .kGlass(Circle(), interactive: true)
             .accessibilityLabel("New and more")
-        }
     }
 
     private var searchField: some View {
@@ -131,7 +157,7 @@ struct AllBotsScreen: View {
 
     private var results: some View {
         let bots = store.bots.filter { $0.name.localizedCaseInsensitiveContains(search) || $0.role.localizedCaseInsensitiveContains(search) }
-        let chats = store.bots.flatMap { bot in store.settings(bot.id).conversations.filter { $0.title.localizedCaseInsensitiveContains(search) }.map { (bot, $0) } }
+        let chats = store.liveMode ? [] : store.bots.flatMap { bot in store.settings(bot.id).conversations.filter { $0.title.localizedCaseInsensitiveContains(search) }.map { (bot, $0) } }
         return VStack(alignment: .leading, spacing: 14) {
             if bots.isEmpty && chats.isEmpty {
                 EmptyNote(text: "Nothing found.", symbol: "magnifyingglass").kCard(radius: 20)
@@ -264,6 +290,12 @@ struct AllBotsScreen: View {
         Button { store.togglePin(bot.id) } label: {
             Label(store.pinned.contains(bot.id) ? "Unpin" : "Pin", systemImage: store.pinned.contains(bot.id) ? "pin.slash" : "pin")
         }
+        if !store.liveMode { sampleMenuItems(bot) }
+    }
+
+    /// Menu items that only change the sample roster. Hidden while the phone shows the desktop's bots.
+    @ViewBuilder
+    private func sampleMenuItems(_ bot: Bot) -> some View {
         Button {
             var s = store.settings(bot.id)
             s.conversations.insert(BotConversation(title: "New conversation", updated: "now"), at: 1)

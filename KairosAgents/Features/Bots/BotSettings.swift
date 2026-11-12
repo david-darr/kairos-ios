@@ -11,7 +11,13 @@ struct BotSettingsList: View {
         let routines = store.routines(for: botID)
         let triggers = store.triggers.filter { $0.botID == botID }
         VStack(alignment: .leading, spacing: 18) {
-            glance(bot, s)
+            if store.liveMode {
+                liveGlance(bot)
+                HintLine(text: "The settings below are not connected to your desktop yet. They show sample data.", symbol: "info.circle")
+                    .padding(.horizontal, 4)
+            } else {
+                glance(bot, s)
+            }
 
             group("How it thinks", [
                 row(.model, "Model and effort", "cpu", value: "\(s.model) · \(s.effort.title)"),
@@ -119,6 +125,53 @@ struct BotSettingsList: View {
             .kCard(radius: 20, raised: true)
         }
         .buttonStyle(PressStyle(scale: 0.98))
+    }
+
+    /// "At a glance" from the paired desktop (GET /api/agents/{id}).
+    private func liveGlance(_ bot: Bot) -> some View {
+        let detail = store.details[botID]
+        let state = store.detailLoad[botID] ?? .idle
+        return VStack(alignment: .leading, spacing: 8) {
+            SectionLabel(text: "At a glance")
+            if let detail, let agent = detail.agent {
+                glanceLine("person", "\(bot.role). \(BotsStore.liveApproval(agent)?.hint ?? "It follows its own approval rules.")")
+                glanceLine("clock.arrow.circlepath", Self.workLine(detail, agent))
+                glanceLine("key", Self.reachLine(agent))
+                if let now = agent.statusDetail?.trimmingCharacters(in: .whitespacesAndNewlines), !now.isEmpty {
+                    glanceLine("bolt", now)
+                }
+            } else if case .failed = state {
+                glanceLine("exclamationmark.circle", "This bot could not be read. Use Try again above.")
+            } else {
+                glanceLine("arrow.down.circle", "Reading this bot from your desktop.")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .kCard(radius: 20, raised: true)
+    }
+
+    private static func count(_ n: Int, _ one: String, _ many: String) -> String {
+        "\(n) \(n == 1 ? one : many)"
+    }
+
+    private static func workLine(_ detail: AgentDetailDTO, _ agent: AgentDTO) -> String {
+        let routines = count(detail.goals?.count ?? 0, "routine", "routines")
+        let cards = count(detail.cards?.count ?? 0, "work card", "work cards")
+        let runs = count(agent.runsToday ?? 0, "run today", "runs today")
+        return "\(routines), \(cards), \(runs)"
+    }
+
+    private static func reachLine(_ agent: AgentDTO) -> String {
+        let apps = agent.integrationIds?.count ?? 0
+        let browser = agent.browserEnabled == true
+        switch (apps, browser) {
+        case (0, false): return "It cannot reach any apps yet."
+        case (0, true): return "It can use the browser."
+        default:
+            let line = "It can use " + count(apps, "connected app", "connected apps")
+            return browser ? line + " and the browser." : line + "."
+        }
     }
 
     private func glanceLine(_ symbol: String, _ text: String) -> some View {
