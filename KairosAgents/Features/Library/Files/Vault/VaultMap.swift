@@ -87,6 +87,15 @@ nonisolated enum VaultMapLayout {
     }
 }
 
+/// The vault as a graph, worked out once. Reading every note's links is slow, and the map draws
+/// thirty times a second, so nothing here may be worked out while drawing.
+struct VaultMapGraph {
+    var nodes: [VaultMapNode] = []
+    var edges: [VaultMapEdge] = []
+    var groups: [String] = []
+    var orphans: Set<String> = []
+}
+
 struct VaultMapView: View {
     let focus: String?
     @Environment(VaultNav.self) private var nav
@@ -94,6 +103,7 @@ struct VaultMapView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var store = VaultStore.shared
 
+    @State private var graph = VaultMapGraph()
     @State private var layout: [String: CGPoint] = [:]
     @State private var scale: CGFloat = 0.9
     @State private var baseScale: CGFloat = 0.9
@@ -118,7 +128,18 @@ struct VaultMapView: View {
 
     // MARK: Graph data
 
-    private var allNodes: [VaultMapNode] {
+    private var allNodes: [VaultMapNode] { graph.nodes }
+    private var allEdges: [VaultMapEdge] { graph.edges }
+    private var groups: [String] { graph.groups }
+
+    private func buildGraph() -> VaultMapGraph {
+        let nodes = buildNodes()
+        var seen: [String] = []
+        for node in nodes where node.kind == .note && !seen.contains(node.group) { seen.append(node.group) }
+        return VaultMapGraph(nodes: nodes, edges: buildEdges(), groups: Array(seen.prefix(10)), orphans: Set(store.orphans.map(\.id)))
+    }
+
+    private func buildNodes() -> [VaultMapNode] {
         let notes = store.sortedNotes
         var nodes = store.folders.enumerated().map { index, path in
             VaultMapNode(id: "f:" + path, kind: .folder, ref: path, title: store.folderName(path), group: path.split(separator: "/").first.map(String.init) ?? path, weight: store.noteCount(in: path), seed: Double(index) * 1.7)
@@ -129,7 +150,7 @@ struct VaultMapView: View {
         return nodes
     }
 
-    private var allEdges: [VaultMapEdge] {
+    private func buildEdges() -> [VaultMapEdge] {
         var edges: [VaultMapEdge] = []
         for note in store.sortedNotes {
             for target in store.outlinks(note.id).resolved {
@@ -150,7 +171,7 @@ struct VaultMapView: View {
     }
 
     private var visibleNodes: [VaultMapNode] {
-        let orphans = Set(store.orphans.map(\.id))
+        let orphans = graph.orphans
         let steps = focusSteps
         return allNodes.filter { node in
             if let steps { return node.kind == .note && steps[node.ref] != nil }
@@ -161,12 +182,6 @@ struct VaultMapView: View {
             if let project, node.group != project { return false }
             return true
         }
-    }
-
-    private var groups: [String] {
-        var seen: [String] = []
-        for node in allNodes where node.kind == .note && !seen.contains(node.group) { seen.append(node.group) }
-        return Array(seen.prefix(10))
     }
 
     private func tint(_ group: String) -> Color {
@@ -217,6 +232,10 @@ struct VaultMapView: View {
             .environment(nav)
         }
         .onAppear(perform: start)
+        .onChange(of: store.notes) {
+            guard didStart else { return }
+            graph = buildGraph()
+        }
         .animation(Motion.snappy, value: focusID)
         .animation(Motion.snappy, value: orphansOnly)
         .animation(Motion.snappy, value: hideFolders)
@@ -383,7 +402,9 @@ struct VaultMapView: View {
         if let focus {
             selected = "n:" + focus
         }
-        layout = VaultMapLayout.compute(nodes: allNodes, edges: allEdges)
+        let fresh = buildGraph()
+        graph = fresh
+        layout = VaultMapLayout.compute(nodes: fresh.nodes, edges: fresh.edges)
         if nav.debug == .focus, let focus {
             nav.debug = .none
             setFocus(focus)
@@ -391,7 +412,7 @@ struct VaultMapView: View {
             nav.debug = .none
             let id = focus ?? "Projects/Bike shop/Launch plan"
             selected = "n:" + id
-            peek = allNodes.first { $0.id == "n:" + id }
+            peek = fresh.nodes.first { $0.id == "n:" + id }
         } else if let focus {
             center(on: "n:" + focus)
         }
