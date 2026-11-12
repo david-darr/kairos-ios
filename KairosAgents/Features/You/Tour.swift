@@ -96,7 +96,7 @@ struct TourOverlay: View {
                     .frame(width: min(proxy.size.width - 32, 380))
                     .position(x: proxy.size.width / 2, y: cardY(for: local, size: proxy.size))
             }
-            .animation(reduceMotion ? .none : Motion.sheet, value: step)
+            .animation(reduceMotion ? nil : Motion.sheet, value: step)
         }
         .onAppear {
             step = min(startStep, Self.stops.count - 1)
