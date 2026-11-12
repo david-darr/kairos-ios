@@ -954,6 +954,7 @@ final class BotChatState {
             queuePaused = snapshot.queuePaused
             cardRequests = snapshot.requests
             modelLine = snapshot.modelLine
+            model = nil
             bot = store.bot(botID)
             phase = .loaded
             loadedOnce = true

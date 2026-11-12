@@ -318,6 +318,7 @@ final class LiveBackend: ChatBackend {
             if self.choices.isEmpty { self.choices = (try? await client.modelChoices()) ?? [] }
             let chat = try await chatRead
             let work = await workRead
+            await self.loadCatalog(chat.modelEndpointId, client: client)
             let settings = self.settings(for: chat)
             self.savedSettings[id] = settings
             self.markSeen(id, updated: chat.updatedAt)
@@ -344,6 +345,8 @@ final class LiveBackend: ChatBackend {
             let known = catalogs[settings.modelID ?? ""]?.first { $0.id == override }
             settings.versionName = known?.displayName ?? override
             settings.efforts = (known?.supportedEfforts ?? []).compactMap(\.effort)
+        } else {
+            settings.efforts = defaultEfforts(endpointID: settings.modelID)
         }
         settings.effort = chat.modelEffort
         if let effort = settings.effort, !settings.efforts.contains(effort) { settings.efforts.append(effort) }
@@ -351,6 +354,18 @@ final class LiveBackend: ChatBackend {
         settings.approvals = admin ? ["Ask first", "Full access"] : ["Ask first"]
         settings.approval = chat.permissionMode == "auto" && admin ? "Full access" : "Ask first"
         return settings
+    }
+
+    // No version chosen: the levels of the connection's own default version, once its catalog is known.
+    private func defaultEfforts(endpointID: String?) -> [String] {
+        guard let endpointID, let defaultVersion = choices.first(where: { $0.id == endpointID })?.model, !defaultVersion.isEmpty else { return [] }
+        let known = catalogs[endpointID]?.first { $0.id == defaultVersion }
+        return (known?.supportedEfforts ?? []).compactMap(\.effort)
+    }
+
+    private func loadCatalog(_ endpointID: String?, client: APIClient) async {
+        guard let endpointID, !endpointID.isEmpty, catalogs[endpointID] == nil else { return }
+        if let catalog = try? await client.modelCatalog(endpointId: endpointID) { catalogs[endpointID] = catalog }
     }
 
     static func sourceWord(_ choice: ModelChoiceDTO) -> String {
@@ -527,6 +542,7 @@ final class LiveBackend: ChatBackend {
         try await desk { client in
             if self.choices.isEmpty { self.choices = (try? await client.modelChoices()) ?? [] }
             let state = try await client.botChatState(threadID)
+            await self.loadCatalog(state.model?.endpointId, client: client)
             return self.botSettings(state.model, threadID: threadID)
         }
     }
@@ -545,6 +561,8 @@ final class LiveBackend: ChatBackend {
             let known = catalogs[endpointID]?.first { $0.id == version }
             settings.versionName = known?.displayName ?? version
             settings.efforts = (known?.supportedEfforts ?? []).compactMap(\.effort)
+        } else {
+            settings.efforts = defaultEfforts(endpointID: endpointID)
         }
         settings.effort = model.effort
         if let effort = settings.effort, !settings.efforts.contains(effort) { settings.efforts.append(effort) }
@@ -568,6 +586,7 @@ final class LiveBackend: ChatBackend {
                 for thread in list.threads ?? [] { self.threadFollows[thread.id] = thread.followsBotModel }
             }
             let state = try await client.botChatState(threadID)
+            await self.loadCatalog(state.model?.endpointId, client: client)
             return self.botSettings(state.model, threadID: threadID)
         }
     }
