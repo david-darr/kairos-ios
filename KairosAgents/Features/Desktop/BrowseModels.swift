@@ -75,7 +75,7 @@ nonisolated struct BrowseDownload: Identifiable, Hashable, Sendable {
     var state: DownloadState
 }
 
-nonisolated struct SavedLogin: Identifiable, Hashable, Sendable {
+nonisolated struct BrowseLogin: Identifiable, Hashable, Sendable {
     let id: String
     var host: String
     var user: String
@@ -190,7 +190,7 @@ protocol BrowseProviding: AnyObject {
     var tabs: [BrowseTab] { get }
     var history: [HistoryVisit] { get }
     var downloads: [BrowseDownload] { get }
-    var logins: [SavedLogin] { get }
+    var logins: [BrowseLogin] { get }
 }
 
 @Observable
@@ -391,7 +391,7 @@ final class BrowseStore: BrowseProviding {
         guard let offer = active.offer else { return }
         if never, !neverSave.contains(offer.host) { neverSave.append(offer.host) }
         if save {
-            logins.insert(SavedLogin(id: UUID().uuidString, host: offer.host, user: offer.user, lastUsed: "Just now"), at: 0)
+            logins.insert(BrowseLogin(id: UUID().uuidString, host: offer.host, user: offer.user, lastUsed: "Just now"), at: 0)
             editActive { $0.offer?.saved = true }
             Task {
                 try? await Task.sleep(for: .seconds(2))
@@ -531,10 +531,10 @@ nonisolated enum BrowseSample {
         BrowseDownload(id: "d4", name: "setup-old.zip", host: "files.example", state: .failed),
     ]
 
-    static let logins: [SavedLogin] = [
-        SavedLogin(id: "l1", host: "riverside-bikes.example", user: "shop-owner", lastUsed: "Last used today"),
-        SavedLogin(id: "l2", host: "trail-weather.example", user: "rider", lastUsed: "Last used Mon"),
-        SavedLogin(id: "l3", host: "recipes.example", user: "home-cook", lastUsed: "Never used"),
+    static let logins: [BrowseLogin] = [
+        BrowseLogin(id: "l1", host: "riverside-bikes.example", user: "shop-owner", lastUsed: "Last used today"),
+        BrowseLogin(id: "l2", host: "trail-weather.example", user: "rider", lastUsed: "Last used Mon"),
+        BrowseLogin(id: "l3", host: "recipes.example", user: "home-cook", lastUsed: "Never used"),
     ]
 
     static let botUses: [BotLoginUse] = [

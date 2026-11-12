@@ -169,7 +169,7 @@ struct ToolStoreScreen: View {
                 .accessibilityLabel("Show added items only")
                 .accessibilityAddTraits(addedOnly ? .isSelected : [])
             }
-            ChipPicker(items: StoreCategory.allCases, selection: $category) { $0.rawValue }
+            YouChipPicker(items: StoreCategory.allCases, selection: $category) { $0.rawValue }
 
             if let update = store.items.first(where: { $0.updateAvailable }) {
                 HStack(spacing: 10) {
@@ -213,7 +213,7 @@ struct ToolStoreScreen: View {
                 VStack(spacing: 10) {
                     Text(query.isEmpty ? "Nothing here yet" : "No matches").font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
                     Text("Try another search or category.").font(KFont.ui(15)).foregroundStyle(Palette.inkDim)
-                    PillButton(title: "Show all") {
+                    YouPillButton(title: "Show all") {
                         withAnimation(Motion.snappy) {
                             query = ""
                             category = .all
@@ -235,7 +235,7 @@ struct ToolStoreScreen: View {
             }
 
             if category == .all || category == .tabs {
-                NavRow(title: "Add a tab", detail: "Prebuilt tabs, your own, or build one", symbol: "plus.square.dashed", to: .addTab)
+                YouNavRow(title: "Add a tab", detail: "Prebuilt tabs, your own, or build one", symbol: "plus.square.dashed", to: .addTab)
                     .kCard(radius: 22)
             }
 

@@ -817,8 +817,8 @@ struct DesignListScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
                 searchField
                 HStack(spacing: 10) {
-                    PillButton(title: "New design", symbol: "plus", filled: true, expand: true) { newDesign() }
-                    PillButton(title: "Design with a model", symbol: "sparkles", expand: true) { starting = true }
+                    MakePillButton(title: "New design", symbol: "plus", filled: true, expand: true) { newDesign() }
+                    MakePillButton(title: "Design with a model", symbol: "sparkles", expand: true) { starting = true }
                 }
                 results
             }
@@ -869,14 +869,14 @@ struct DesignListScreen: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("No designs yet").font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
                 EmptyLine(text: "Start a blank design, or ask a model in a Design chat to build one.")
-                PillButton(title: "New design", symbol: "plus") { newDesign() }
+                MakePillButton(title: "New design", symbol: "plus") { newDesign() }
             }
             .padding(16)
             .kCard(radius: 22)
         } else if shown.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("No designs match").font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
-                PillButton(title: "Clear search") { withAnimation(Motion.snappy) { query = "" } }
+                MakePillButton(title: "Clear search") { withAnimation(Motion.snappy) { query = "" } }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1110,8 +1110,8 @@ struct DesignScreen: View {
                 .font(KFont.ui(15, .medium, relativeTo: .subheadline))
                 .foregroundStyle(Palette.ink)
             HStack(spacing: 8) {
-                PillButton(title: "Restore this version", filled: true) { restore(number) }
-                PillButton(title: "Back to current") { withAnimation(Motion.snappy) { previewing = nil } }
+                MakePillButton(title: "Restore this version", filled: true) { restore(number) }
+                MakePillButton(title: "Back to current") { withAnimation(Motion.snappy) { previewing = nil } }
             }
         }
         .padding(12)
@@ -2034,10 +2034,10 @@ struct DesignFocusView: View {
             }
 
             HStack(spacing: 10) {
-                PillButton(title: "Previous", symbol: "chevron.left", expand: true) { step(-1) }
+                MakePillButton(title: "Previous", symbol: "chevron.left", expand: true) { step(-1) }
                     .disabled(index <= 0)
                     .opacity(index <= 0 ? 0.45 : 1)
-                PillButton(title: "Next", symbol: "chevron.right", expand: true) { step(1) }
+                MakePillButton(title: "Next", symbol: "chevron.right", expand: true) { step(1) }
                     .disabled(index >= boards.count - 1)
                     .opacity(index >= boards.count - 1 ? 0.45 : 1)
             }
@@ -2065,7 +2065,7 @@ struct DesignStartSheet: View {
     var body: some View {
         FittedSheet(estimate: 520) {
             VStack(alignment: .leading, spacing: 18) {
-                SheetTitle(title: "Design with a model", detail: "Describe what you want and the model builds the boards.")
+                MakeSheetTitle(title: "Design with a model", detail: "Describe what you want and the model builds the boards.")
                 MakeField(label: "Describe it", text: $prompt, prompt: "A booking page for a bike shop", limit: 2000, lines: 3...6)
                 VStack(alignment: .leading, spacing: 6) {
                     SectionLabel(text: "Format")
@@ -2107,7 +2107,7 @@ struct DesignCommentSheet: View {
     var body: some View {
         FittedSheet(estimate: 440) {
             VStack(spacing: 16) {
-                SheetTitle(title: "What should change?", detail: detail)
+                MakeSheetTitle(title: "What should change?", detail: detail)
                 MakeField(label: "Comment", text: $text, prompt: "Say what to change", limit: 4000, lines: 3...8)
                 GoldButton(title: "Pin comment") {
                     onPin(text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -2140,7 +2140,7 @@ struct DesignTextSheet: View {
     var body: some View {
         FittedSheet(estimate: 400) {
             VStack(spacing: 16) {
-                SheetTitle(title: "Edit text", detail: detail)
+                MakeSheetTitle(title: "Edit text", detail: detail)
                 MakeField(label: "Text", text: $text, limit: 400, lines: 2...6)
                 GoldButton(title: "Save") {
                     onSave(text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -2173,7 +2173,7 @@ struct DesignVersionsSheet: View {
         let groups = DesignVersionGroup.make(doc?.versions ?? [])
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                SheetTitle(title: "Versions", detail: "Version \(current) is current")
+                MakeSheetTitle(title: "Versions", detail: "Version \(current) is current")
                 ForEach(Array(groups.enumerated()), id: \.element.id) { offset, group in
                     VStack(alignment: .leading, spacing: 8) {
                         SectionLabel(text: group.title)
@@ -2221,18 +2221,18 @@ struct DesignVersionsSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
-                    PillButton(title: "Preview") { onPreview(version.number) }
-                    PillButton(title: "Compare") { onCompare(version.number) }
+                    MakePillButton(title: "Preview") { onPreview(version.number) }
+                    MakePillButton(title: "Compare") { onCompare(version.number) }
                         .disabled(isCurrent)
                         .opacity(isCurrent ? 0.4 : 1)
-                    PillButton(title: "Restore") { onRestore(version.number) }
+                    MakePillButton(title: "Restore") { onRestore(version.number) }
                         .disabled(isCurrent)
                         .opacity(isCurrent ? 0.4 : 1)
-                    PillButton(title: version.name == nil ? "Name" : "Rename") {
+                    MakePillButton(title: version.name == nil ? "Name" : "Rename") {
                         nameDraft = version.name ?? ""
                         renaming = version.number
                     }
-                    PillButton(title: "Duplicate as new design") { onDuplicate(version.number) }
+                    MakePillButton(title: "Duplicate as new design") { onDuplicate(version.number) }
                 }
             }
             .scrollIndicators(.hidden)
@@ -2258,7 +2258,7 @@ struct DesignCompareSheet: View {
         let older = oldBoards.first { $0.id == chosenID }
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Compare v\(number) with current", detail: "Version \(number) above, the current design below.")
+                MakeSheetTitle(title: "Compare v\(number) with current", detail: "Version \(number) above, the current design below.")
                 if shared.isEmpty {
                     EmptyLine(text: "That version shares no boards with the current design.")
                 } else {
@@ -2316,14 +2316,14 @@ struct DesignCommentsSheet: View {
         let canSend = !chosen.isEmpty && chat != nil
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                SheetTitle(title: "Comments", detail: openIDs.count == 1 ? "1 open" : "\(openIDs.count) open")
+                MakeSheetTitle(title: "Comments", detail: openIDs.count == 1 ? "1 open" : "\(openIDs.count) open")
                 if comments.isEmpty { EmptyLine(text: "No comments yet.") }
                 ForEach(Array(comments.enumerated()), id: \.element.id) { offset, comment in
                     row(comment, current: current).arrives(offset)
                 }
                 if chat == nil {
                     EmptyLine(text: "Link this design to a chat to send comments to a model.")
-                    PillButton(title: "Link a chat", symbol: "link") { onLink() }
+                    MakePillButton(title: "Link a chat", symbol: "link") { onLink() }
                 }
                 GoldButton(title: chosen.count == 1 ? "Send 1 comment" : "Send \(chosen.count) comments") { onSend(chosen) }
                     .disabled(!canSend)
@@ -2380,11 +2380,11 @@ struct DesignCommentsSheet: View {
                     .foregroundStyle(Palette.inkFaint)
                 HStack(spacing: 6) {
                     if comment.state == .resolved {
-                        PillButton(title: "Reopen") { onState(comment.id, .open) }
+                        MakePillButton(title: "Reopen") { onState(comment.id, .open) }
                     } else {
-                        PillButton(title: "Resolve") { onState(comment.id, .resolved) }
+                        MakePillButton(title: "Resolve") { onState(comment.id, .resolved) }
                     }
-                    PillButton(title: "Delete", danger: true) { onDelete(comment.id) }
+                    MakePillButton(title: "Delete", danger: true) { onDelete(comment.id) }
                 }
             }
         }
@@ -2417,7 +2417,7 @@ struct DesignExportSheet: View {
     var body: some View {
         FittedSheet(estimate: 460) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Export")
+                MakeSheetTitle(title: "Export")
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { offset, row in
                         Button {
@@ -2477,7 +2477,7 @@ struct DesignTokensSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SheetTitle(title: "Tokens", detail: "Changes show on every board right away.")
+                MakeSheetTitle(title: "Tokens", detail: "Changes show on every board right away.")
                 if let board {
                     DesignFitted(aspect: board.aspect, maxHeight: 170) { _ in
                         DesignBoardView(board: board, tokens: draft)
@@ -2563,7 +2563,7 @@ struct DesignChatSheet: View {
         let options: [String?] = [nil] + DesignSample.chats.map { Optional($0) }
         FittedSheet(estimate: 420) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Chat that changes this design", detail: "Your selections, comments and messages go to this chat.")
+                MakeSheetTitle(title: "Chat that changes this design", detail: "Your selections, comments and messages go to this chat.")
                 VStack(spacing: 0) {
                     ForEach(Array(options.enumerated()), id: \.offset) { offset, option in
                         Button {

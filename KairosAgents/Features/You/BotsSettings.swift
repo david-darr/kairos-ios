@@ -25,7 +25,7 @@ nonisolated struct BotLogin: Identifiable, Hashable, Sendable {
     var lastUsed: String
 }
 
-nonisolated struct LearnedFact: Identifiable, Hashable, Sendable {
+nonisolated struct YouLearnedFact: Identifiable, Hashable, Sendable {
     let id: String
     var text: String
     var bot: String
@@ -87,10 +87,10 @@ final class BotsSettingsSample {
     var vaults: [(name: String, allBots: Bool)] = [("Shop", true), ("Personal", false)]
 
     var aboutText = "I run a small bike shop. Keep replies short. Friday afternoons are for the weekly report."
-    var learned: [LearnedFact] = [
-        LearnedFact(id: "f1", text: "Prefers prices in a table", bot: "Scout", when: "Tuesday"),
-        LearnedFact(id: "f2", text: "The shop is closed on Sundays", bot: "Kip", when: "last week"),
-        LearnedFact(id: "f3", text: "Uses metric sizes for frames", bot: "Mason", when: "last week"),
+    var learned: [YouLearnedFact] = [
+        YouLearnedFact(id: "f1", text: "Prefers prices in a table", bot: "Scout", when: "Tuesday"),
+        YouLearnedFact(id: "f2", text: "The shop is closed on Sundays", bot: "Kip", when: "last week"),
+        YouLearnedFact(id: "f3", text: "Uses metric sizes for frames", bot: "Mason", when: "last week"),
     ]
 
     var skills: [LibrarySkill] = [
@@ -151,17 +151,17 @@ struct BotPrefsScreen: View {
                 PickRow(title: "Interface", detail: "Advanced shows threads and runs", selection: $interface, options: ["Simple", "Advanced"]) { $0 }
                 PickRow(title: "Chat width", detail: "On your desktop", selection: $width, options: ["Default", "Wide", "Full"]) { $0 }
                 PickRow(title: "Chat font", selection: $font, options: ["Inter", "System", "Serif"]) { $0 }
-                ToggleRow(title: "Colour your bubbles", isOn: $colourBubbles)
-                ToggleRow(title: "Show threads", isOn: $threads)
-                ToggleRow(title: "Pinned circles", detail: "Pinned bots as faces above the list", isOn: $circles)
-                ToggleRow(title: "Run card", detail: "A live card while a bot works", isOn: $runCard)
-                ToggleRow(title: "Universal pins", detail: "In Advanced, pinned bots from every team stay on top", isOn: $universalPins)
-                ToggleRow(title: "Show tool calls", isOn: $toolCalls)
+                YouToggleRow(title: "Colour your bubbles", isOn: $colourBubbles)
+                YouToggleRow(title: "Show threads", isOn: $threads)
+                YouToggleRow(title: "Pinned circles", detail: "Pinned bots as faces above the list", isOn: $circles)
+                YouToggleRow(title: "Run card", detail: "A live card while a bot works", isOn: $runCard)
+                YouToggleRow(title: "Universal pins", detail: "In Advanced, pinned bots from every team stay on top", isOn: $universalPins)
+                YouToggleRow(title: "Show tool calls", isOn: $toolCalls)
                 PickRow(title: "Sidebar density", detail: "On your desktop", selection: $density, options: ["Comfortable", "Compact", "Icons only"]) { $0 }
             }
             SettingsGroup("New bots", footer: "How many threads one bot may run at once.") {
                 ActionRow(title: "New bot defaults", detail: "Model, approval and voice for new bots", symbol: "slider.horizontal.3") { defaultsOpen = true }
-                StepperRow(title: "Thread concurrency", value: $concurrency, range: 1...16)
+                YouStepperRow(title: "Thread concurrency", value: $concurrency, range: 1...16)
             }
             SettingsGroup("Get started") {
                 ActionRow(title: "Replay the tour", symbol: "hand.point.up.left") {
@@ -266,7 +266,7 @@ struct BotKeysScreen: View {
                 }
                 .tint(Palette.gold)
                 .padding(.horizontal, 16).frame(minHeight: 56)
-                StepperRow(title: "Wait before saving memories", value: $sample.waitMinutes, range: 1...60, unit: "min")
+                YouStepperRow(title: "Wait before saving memories", value: $sample.waitMinutes, range: 1...60, unit: "min")
                 PickRow(title: "Remember what is said in rooms", selection: $sample.roomCapture, options: ["Never", "Ask me first", "Always"]) { $0 }
                 ActionRow(title: "Save", symbol: "checkmark", tone: .gold) { YouStore.shared.say("Saved.") }
             }
@@ -285,7 +285,7 @@ struct BotKeysScreen: View {
             }
             if key.managedInModels {
                 Text("Change it in Settings, Models.").font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
-                HStack { PillButton(title: "Test") { test(key) } }
+                HStack { YouPillButton(title: "Test") { test(key) } }
             } else {
                 SecureField(key.lastFour == nil ? "Paste the key" : "Saved. Type to replace.", text: Binding(get: { drafts[key.id] ?? "" }, set: { drafts[key.id] = $0 }))
                     .font(KFont.ui(15))
@@ -294,10 +294,10 @@ struct BotKeysScreen: View {
                     .frame(height: 42)
                     .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 HStack(spacing: 6) {
-                    PillButton(title: "Save", prominent: true) { save(key) }
+                    YouPillButton(title: "Save", prominent: true) { save(key) }
                     if key.lastFour != nil {
-                        PillButton(title: "Test") { test(key) }
-                        PillButton(title: "Clear", danger: true) { clear(key) }
+                        YouPillButton(title: "Test") { test(key) }
+                        YouPillButton(title: "Clear", danger: true) { clear(key) }
                     }
                 }
             }
@@ -378,7 +378,7 @@ struct BotLoginsScreen: View {
             SettingsGroup("1Password", footer: "A service-account token lets bots fill from the vaults you choose. It stays on your desktop.") {
                 if sample.onePasswordConnected {
                     ForEach(Array(sample.vaults.enumerated()), id: \.offset) { index, vault in
-                        ToggleRow(title: vault.name, detail: vault.allBots ? "All bots" : "No bots", isOn: Binding(get: { sample.vaults[index].allBots }, set: { sample.vaults[index].allBots = $0 }))
+                        YouToggleRow(title: vault.name, detail: vault.allBots ? "All bots" : "No bots", isOn: Binding(get: { sample.vaults[index].allBots }, set: { sample.vaults[index].allBots = $0 }))
                     }
                     ActionRow(title: "Refresh vaults", symbol: "arrow.clockwise") { YouStore.shared.say("Vaults are up to date") }
                     ActionRow(title: "Disconnect", symbol: "xmark", tone: .danger) {
@@ -434,13 +434,13 @@ private struct LoginEditSheet: View {
                         FieldRow(title: "Username", text: $login.username, prompt: "name or email")
                         FieldRow(title: "Password", text: $password, prompt: login.id == "new" ? "Password" : "Saved. Leave blank to keep it.", secure: true)
                         FieldRow(title: "One-time-code seed (optional)", text: $seed, prompt: "Secret or otpauth link", secure: true)
-                        ToggleRow(title: "This exact site only", detail: "Off lets it fill on subdomains too", isOn: $login.exactSite)
+                        YouToggleRow(title: "This exact site only", detail: "Off lets it fill on subdomains too", isOn: $login.exactSite)
                     }
                     SettingsGroup("Which bots may use it") {
-                        ToggleRow(title: "Only these bots", detail: onlyThese ? nil : "All bots may use it", isOn: $onlyThese)
+                        YouToggleRow(title: "Only these bots", detail: onlyThese ? nil : "All bots may use it", isOn: $onlyThese)
                         if onlyThese {
                             ForEach(SampleData.allBots.filter { $0.members.isEmpty }) { bot in
-                                ToggleRow(title: bot.name, isOn: Binding(get: { login.bots.contains(bot.id) }, set: { on in
+                                YouToggleRow(title: bot.name, isOn: Binding(get: { login.bots.contains(bot.id) }, set: { on in
                                     if on { login.bots.append(bot.id) } else { login.bots.removeAll { $0 == bot.id } }
                                 }))
                             }
@@ -522,7 +522,7 @@ struct AboutYouScreen: View {
                 ForEach(sample.learned) { fact in
                     HStack(spacing: 8) {
                         RowLabel(title: fact.text, detail: "Learned by \(fact.bot), \(fact.when)")
-                        PillButton(title: "Remove", danger: true) {
+                        YouPillButton(title: "Remove", danger: true) {
                             withAnimation(Motion.snappy) { sample.learned.removeAll { $0.id == fact.id } }
                             YouStore.shared.say("Removed. Bots will not learn that again.")
                         }
@@ -569,20 +569,20 @@ struct SkillLibraryScreen: View {
                     VStack(alignment: .leading, spacing: 8) {
                         RowLabel(title: "Share /\(share)?", detail: "Atlas wants to add it to the library.", symbol: "bookmark")
                         HStack {
-                            PillButton(title: "Share", prominent: true) {
+                            YouPillButton(title: "Share", prominent: true) {
                                 withAnimation(Motion.snappy) {
                                     sample.skills.append(LibrarySkill(id: UUID().uuidString, name: share, origin: "Shared by Atlas", summary: "Keeps a trip under budget", tags: ["travel"], on: false, everyBot: false, body: "# Trip budget\n\nAdd up costs and flag anything over the limit."))
                                     sample.pendingShare = nil
                                 }
                             }
-                            PillButton(title: "Not now") { withAnimation(Motion.snappy) { sample.pendingShare = nil } }
+                            YouPillButton(title: "Not now") { withAnimation(Motion.snappy) { sample.pendingShare = nil } }
                         }
                     }
                     .padding(.horizontal, 16).padding(.vertical, 12)
                 }
             }
             SearchField(prompt: "Search skills", text: $query)
-            ChipPicker(items: tags, selection: $tag) { $0 == "All" ? "All" : "#\($0)" }
+            YouChipPicker(items: tags, selection: $tag) { $0 == "All" ? "All" : "#\($0)" }
             SettingsGroup(shown.count == sample.skills.count ? "Library (\(sample.skills.count))" : "Library (\(shown.count) of \(sample.skills.count))") {
                 if shown.isEmpty {
                     EmptyRow(text: sample.skills.isEmpty ? "The library is empty." : "No skills match.")
@@ -613,7 +613,7 @@ struct SkillLibraryScreen: View {
             }
         }
         .sheet(item: $reviewing) { skill in
-            SkillReviewSheet(skill: skill)
+            YouSkillReviewSheet(skill: skill)
         }
         .confirmationDialog("Remove /\(removing?.name ?? "") from the library?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
@@ -634,14 +634,14 @@ struct SkillLibraryScreen: View {
             }
             HStack(spacing: 6) {
                 if skill.on {
-                    PillButton(title: "Turn off") {
+                    YouPillButton(title: "Turn off") {
                         if let index { withAnimation(Motion.snappy) { sample.skills[index].on = false } }
                     }
                 } else {
-                    PillButton(title: "Review and turn on", prominent: true) { reviewing = skill }
+                    YouPillButton(title: "Review and turn on", prominent: true) { reviewing = skill }
                 }
-                PillButton(title: "Read") { reviewing = skill }
-                PillButton(title: "Remove", danger: true) { removing = skill }
+                YouPillButton(title: "Read") { reviewing = skill }
+                YouPillButton(title: "Remove", danger: true) { removing = skill }
             }
             if skill.on, let index {
                 Toggle("Every bot", isOn: Binding(get: { sample.skills[index].everyBot }, set: { sample.skills[index].everyBot = $0 }))
@@ -653,7 +653,7 @@ struct SkillLibraryScreen: View {
     }
 }
 
-private struct SkillReviewSheet: View {
+private struct YouSkillReviewSheet: View {
     let skill: LibrarySkill
     @Environment(\.dismiss) private var dismiss
     private let sample = BotsSettingsSample.shared
@@ -743,7 +743,7 @@ struct BotUsageScreen: View {
                     .padding(.horizontal, 16).frame(minHeight: 52)
                 }
             }
-            NavRow(title: "Housekeeping", detail: "How long run details are kept", symbol: "archivebox", to: .botHousekeeping)
+            YouNavRow(title: "Housekeeping", detail: "How long run details are kept", symbol: "archivebox", to: .botHousekeeping)
                 .kCard(radius: 22)
         }
         .onAppear { capText = sample.monthlyCap == 0 ? "" : "\(sample.monthlyCap)" }
@@ -758,8 +758,8 @@ struct BotHousekeepingScreen: View {
     var body: some View {
         SettingsPage("Housekeeping", subtitle: "Remove old trace details. Run totals and usage history are kept.") {
             SettingsGroup {
-                StepperRow(title: "Keep trace details", value: $sample.traceDays, range: 1...3650, unit: "days")
-                StepperRow(title: "Trace size cap", value: $sample.traceMegabytes, range: 1...4096, step: 16, unit: "MB")
+                YouStepperRow(title: "Keep trace details", value: $sample.traceDays, range: 1...3650, unit: "days")
+                YouStepperRow(title: "Trace size cap", value: $sample.traceMegabytes, range: 1...4096, step: 16, unit: "MB")
                 ActionRow(title: "Save housekeeping", symbol: "checkmark", tone: .gold) {
                     YouStore.shared.say("Saved. Applies on the next daily cleanup.")
                 }
@@ -799,15 +799,15 @@ struct BotTemplatesScreen: View {
             case "Share":
                 SettingsGroup("Share bot personas", footer: "Preview what travels. Keys, models, access and chats stay here.") {
                     ForEach(SampleData.allBots.filter { !$0.isKip && $0.members.isEmpty }) { bot in
-                        ToggleRow(title: bot.name, detail: bot.role, isOn: Binding(get: { chosen.contains(bot.id) }, set: { on in
+                        YouToggleRow(title: bot.name, detail: bot.role, isOn: Binding(get: { chosen.contains(bot.id) }, set: { on in
                             if on { chosen.insert(bot.id) } else { chosen.remove(bot.id) }
                         }))
                     }
                 }
                 SettingsGroup {
-                    ToggleRow(title: "Include paused routines", isOn: $routines)
-                    ToggleRow(title: "Include their teams", isOn: $teams)
-                    ToggleRow(title: "Include their rooms", isOn: $rooms)
+                    YouToggleRow(title: "Include paused routines", isOn: $routines)
+                    YouToggleRow(title: "Include their teams", isOn: $teams)
+                    YouToggleRow(title: "Include their rooms", isOn: $rooms)
                     ActionRow(title: "Preview export", symbol: "eye") { previewOpen = true }
                     ShareLink(item: packageText, preview: SharePreview("bots.kairos.json")) {
                         RowLabel(title: "Share the package", symbol: "square.and.arrow.up", tint: Palette.goldText, titleColor: Palette.goldText)
@@ -830,7 +830,7 @@ struct BotTemplatesScreen: View {
                             if added.contains(team.0) {
                                 StatusPill(text: "Added \(team.2) bots", tone: .ok)
                             } else {
-                                PillButton(title: "Add", prominent: true) {
+                                YouPillButton(title: "Add", prominent: true) {
                                     withAnimation(Motion.snappy) { _ = added.insert(team.0) }
                                     YouStore.shared.say("Added \(team.2) bots.")
                                 }
@@ -893,8 +893,8 @@ struct BotComputersScreen: View {
                 StatusRow(title: "Docker", detail: "Runs each computer in its own box", symbol: "shippingbox", status: "Ready")
             }
             SettingsGroup("Limits") {
-                StepperRow(title: "Running computers", value: $sample.maxComputers, range: 1...8)
-                StepperRow(title: "Idle minutes", detail: "Sleep after this long", value: $sample.idleMinutes, range: 5...1440, step: 5)
+                YouStepperRow(title: "Running computers", value: $sample.maxComputers, range: 1...8)
+                YouStepperRow(title: "Idle minutes", detail: "Sleep after this long", value: $sample.idleMinutes, range: 5...1440, step: 5)
                 ActionRow(title: "Save limits", symbol: "checkmark", tone: .gold) { YouStore.shared.say("Limits saved") }
             }
             SettingsGroup("Computers") {
@@ -905,7 +905,7 @@ struct BotComputersScreen: View {
                         BotFace(bot: bot, size: 38)
                         RowLabel(title: bot.name, detail: computer.state)
                         if computer.state != "Asleep" {
-                            PillButton(title: "Sleep") {
+                            YouPillButton(title: "Sleep") {
                                 withAnimation(Motion.snappy) { sample.computers[index].state = "Asleep" }
                             }
                         }
@@ -938,7 +938,7 @@ struct ConnectedAppsScreen: View {
         SettingsPage("Connected apps", subtitle: "The apps and tool servers your bots can use. Each bot gets only the ones you choose in its Access settings.") {
             NoteText(text: "Ledger has no apps. Allow some in its Access settings.", symbol: "exclamationmark.triangle")
             SearchField(prompt: "Search apps", text: $query)
-            ChipPicker(items: ["All", "Connected", "MCP"], selection: $show) { $0 }
+            YouChipPicker(items: ["All", "Connected", "MCP"], selection: $show) { $0 }
 
             if show != "MCP" {
                 ForEach(Array(Set(apps.map(\.category))).sorted(), id: \.self) { category in
@@ -997,11 +997,11 @@ struct ConnectedAppsScreen: View {
                         .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     HStack(spacing: 6) {
-                        PillButton(title: "Save alias") { YouStore.shared.say("Alias saved") }
+                        YouPillButton(title: "Save alias") { YouStore.shared.say("Alias saved") }
                         if app.state != "Connected" {
-                            PillButton(title: "Reconnect", prominent: true) { reconnect(app) }
+                            YouPillButton(title: "Reconnect", prominent: true) { reconnect(app) }
                         }
-                        PillButton(title: "Disconnect", danger: true) {
+                        YouPillButton(title: "Disconnect", danger: true) {
                             if let index = sample.apps.firstIndex(where: { $0.id == app.id }) {
                                 withAnimation(Motion.snappy) { sample.apps[index].state = "Not connected" }
                             }
@@ -1044,7 +1044,7 @@ struct ConnectedAppsScreen: View {
             HStack(spacing: 6) {
                 StatusPill(text: server.health, tone: server.health.hasPrefix("Working") ? .ok : .muted)
                 Spacer()
-                PillButton(title: "Test") {
+                YouPillButton(title: "Test") {
                     guard let index, sample.servers[index].on else { return }
                     sample.servers[index].health = "Checking..."
                     Task {
@@ -1052,8 +1052,8 @@ struct ConnectedAppsScreen: View {
                         withAnimation(Motion.snappy) { sample.servers[index].health = "Working · 12 tools" }
                     }
                 }
-                PillButton(title: "Edit") { editing = server }
-                PillButton(title: "Remove", danger: true) {
+                YouPillButton(title: "Edit") { editing = server }
+                YouPillButton(title: "Remove", danger: true) {
                     withAnimation(Motion.snappy) { sample.servers.removeAll { $0.id == server.id } }
                 }
             }
@@ -1083,7 +1083,7 @@ private struct MCPServerEditSheet: View {
                         PickRow(title: "Connection type", selection: $server.transport, options: ["HTTP", "Stream (SSE)"]) { $0 }
                     }
                     SettingsGroup("Limits") {
-                        StepperRow(title: "Longest call", value: $server.longestCall, range: 1...60, unit: "min")
+                        YouStepperRow(title: "Longest call", value: $server.longestCall, range: 1...60, unit: "min")
                     }
                     if let note {
                         Text(note).font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.danger)

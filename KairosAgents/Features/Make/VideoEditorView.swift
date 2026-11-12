@@ -38,8 +38,8 @@ struct VideoEditorScreen: View {
                 transport
                 workArea
                 HStack(spacing: 10) {
-                    PillButton(title: "Ask Kairos", symbol: "sparkles", expand: true) { model.sheet = .ask }
-                    PillButton(title: renderTitle, symbol: "film", filled: true, expand: true) { model.startRender() }
+                    MakePillButton(title: "Ask Kairos", symbol: "sparkles", expand: true) { model.sheet = .ask }
+                    MakePillButton(title: renderTitle, symbol: "film", filled: true, expand: true) { model.startRender() }
                         .editorEnabled(!model.isRendering)
                 }
                 if model.render != .idle {
@@ -121,10 +121,10 @@ struct VideoEditorScreen: View {
 
     private var workArea: some View {
         HStack(spacing: 8) {
-            PillButton(title: "In") { model.setIn() }
-            PillButton(title: "Out") { model.setOut() }
+            MakePillButton(title: "In") { model.setIn() }
+            MakePillButton(title: "Out") { model.setOut() }
             if model.workIn != nil || model.workOut != nil {
-                PillButton(title: "Clear") { model.clearWork() }
+                MakePillButton(title: "Clear") { model.clearWork() }
             }
             Text(model.workText)
                 .font(KFont.ui(13, relativeTo: .footnote))
@@ -1373,13 +1373,13 @@ struct EditorTimeline: View {
             HStack(spacing: 8) {
                 EditorIconButton(symbol: "minus.magnifyingglass", label: "Zoom out") { model.zoomOut() }
                 EditorIconButton(symbol: "plus.magnifyingglass", label: "Zoom in") { model.zoomIn() }
-                PillButton(title: "Fit", symbol: "arrow.left.and.right") { model.fit(width: visibleWidth) }
+                MakePillButton(title: "Fit", symbol: "arrow.left.and.right") { model.fit(width: visibleWidth) }
                 EditorTogglePill(title: "Snap", isOn: model.snap) { model.snap.toggle() }
                 EditorTogglePill(title: "Ripple", isOn: model.ripple) { model.ripple.toggle() }
-                PillButton(title: "Text", symbol: "plus") { model.addClip(.text) }
+                MakePillButton(title: "Text", symbol: "plus") { model.addClip(.text) }
                     .editorEnabled(canAdd)
                     .accessibilityLabel("Add a text clip at the playhead")
-                PillButton(title: "Shape", symbol: "plus") { model.addClip(.shape) }
+                MakePillButton(title: "Shape", symbol: "plus") { model.addClip(.shape) }
                     .editorEnabled(canAdd)
                     .accessibilityLabel("Add a shape clip at the playhead")
             }
@@ -1764,7 +1764,7 @@ struct EditorTrackRow: View {
                         .font(KFont.ui(15, relativeTo: .subheadline))
                         .foregroundStyle(Palette.inkDim)
                     Spacer(minLength: 4)
-                    PillButton(title: "Add overlay track", symbol: "plus") { model.addTrack() }
+                    MakePillButton(title: "Add overlay track", symbol: "plus") { model.addTrack() }
                 }
             } else {
                 HStack(spacing: 6) {
@@ -1779,13 +1779,13 @@ struct EditorTrackRow: View {
                     if s.trackLocked { StatePill(text: "Locked", tone: .warn) }
                 }
                 HStack(spacing: 8) {
-                    PillButton(title: s.trackHidden ? "Show" : "Hide", symbol: s.trackHidden ? "eye" : "eye.slash", expand: true) {
+                    MakePillButton(title: s.trackHidden ? "Show" : "Hide", symbol: s.trackHidden ? "eye" : "eye.slash", expand: true) {
                         model.toggleHidden()
                     }
-                    PillButton(title: s.trackLocked ? "Unlock" : "Lock", symbol: s.trackLocked ? "lock.open.fill" : "lock.fill", expand: true) {
+                    MakePillButton(title: s.trackLocked ? "Unlock" : "Lock", symbol: s.trackLocked ? "lock.open.fill" : "lock.fill", expand: true) {
                         model.toggleLocked()
                     }
-                    PillButton(title: "Remove", symbol: "trash", danger: true, expand: true) { model.removeTrack() }
+                    MakePillButton(title: "Remove", symbol: "trash", danger: true, expand: true) { model.removeTrack() }
                 }
                 if s.trackLocked {
                     Text(EditorOptions.lockNote)
@@ -1830,9 +1830,9 @@ struct EditorSelectionPanel: View {
                 .lineLimit(2)
         }
         HStack(spacing: 8) {
-            PillButton(title: "Move earlier", symbol: "chevron.left", expand: true) { model.moveBeat(beat.id, by: -1) }
+            MakePillButton(title: "Move earlier", symbol: "chevron.left", expand: true) { model.moveBeat(beat.id, by: -1) }
                 .editorEnabled(index > 0)
-            PillButton(title: "Move later", symbol: "chevron.right", expand: true) { model.moveBeat(beat.id, by: 1) }
+            MakePillButton(title: "Move later", symbol: "chevron.right", expand: true) { model.moveBeat(beat.id, by: 1) }
                 .editorEnabled(index < count - 1)
         }
         if beat.narrated {
@@ -1847,8 +1847,8 @@ struct EditorSelectionPanel: View {
                 .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         HStack(spacing: 8) {
-            PillButton(title: "Edit beat", symbol: "slider.horizontal.3", filled: true, expand: true) { model.sheet = .beat(beat.id) }
-            PillButton(title: "Duplicate", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
+            MakePillButton(title: "Edit beat", symbol: "slider.horizontal.3", filled: true, expand: true) { model.sheet = .beat(beat.id) }
+            MakePillButton(title: "Duplicate", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
             EditorIconButton(symbol: "trash", label: "Delete beat", enabled: count > 1) { model.deleteBeat(beat.id) }
         }
     }
@@ -1879,20 +1879,20 @@ struct EditorSelectionPanel: View {
                               plus: { model.trimClip(clip.id, edge: .end, by: 0.25) })
             }
             .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            PillButton(title: "Split at playhead", symbol: "scissors", expand: true) { model.splitClip(clip.id) }
+            MakePillButton(title: "Split at playhead", symbol: "scissors", expand: true) { model.splitClip(clip.id) }
                 .editorEnabled(model.canSplit(clip) && !locked)
             HStack(spacing: 8) {
-                PillButton(title: "Delete", symbol: "trash", danger: true, expand: true) {
+                MakePillButton(title: "Delete", symbol: "trash", danger: true, expand: true) {
                     model.deleteClip(clip.id, closeGap: model.ripple)
                 }
-                PillButton(title: "Close the gap", symbol: "arrow.left.to.line", danger: true, expand: true) {
+                MakePillButton(title: "Close the gap", symbol: "arrow.left.to.line", danger: true, expand: true) {
                     model.deleteClip(clip.id, closeGap: true)
                 }
                 .accessibilityLabel("Delete and close the gap")
             }
         }
         .disabled(locked)
-        PillButton(title: "Edit clip", symbol: "slider.horizontal.3", filled: true, expand: true) { model.sheet = .clip(clip.id) }
+        MakePillButton(title: "Edit clip", symbol: "slider.horizontal.3", filled: true, expand: true) { model.sheet = .clip(clip.id) }
     }
 }
 
@@ -1942,7 +1942,7 @@ struct EditorRenderCard: View {
                     .foregroundStyle(Palette.inkDim)
                     .contentTransition(.numericText())
                 Spacer()
-                PillButton(title: "Stop", symbol: "stop.fill") { model.stopRender() }
+                MakePillButton(title: "Stop", symbol: "stop.fill") { model.stopRender() }
             }
         case .stopped(let p):
             progress(p)
@@ -1951,8 +1951,8 @@ struct EditorRenderCard: View {
                     .font(KFont.ui(14.5, relativeTo: .subheadline))
                     .foregroundStyle(Palette.inkDim)
                 Spacer(minLength: 4)
-                PillButton(title: "Cancel") { model.closeRender() }
-                PillButton(title: "Resume", symbol: "play.fill", filled: true) { model.resumeRender() }
+                MakePillButton(title: "Cancel") { model.closeRender() }
+                MakePillButton(title: "Resume", symbol: "play.fill", filled: true) { model.resumeRender() }
             }
         case .done:
             Text("Rendered. \(EditorFormat.clock(model.total)), 1080 x 1920.")
@@ -1975,11 +1975,11 @@ struct EditorRenderCard: View {
                 Spacer(minLength: 0)
             }
             HStack(spacing: 8) {
-                PillButton(title: "Watch", symbol: "play.fill", expand: true) {
+                MakePillButton(title: "Watch", symbol: "play.fill", expand: true) {
                     model.seek(0)
                     model.play()
                 }
-                PillButton(title: "Close", expand: true) { model.closeRender() }
+                MakePillButton(title: "Close", expand: true) { model.closeRender() }
             }
         case .idle:
             EmptyView()
@@ -2043,7 +2043,7 @@ struct EditorBeatForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SheetTitle(title: "\(beat.kind.title) beat \(number)", detail: "\(EditorArt.label(beat)). \(EditorFormat.seconds(beat.length)).")
+            MakeSheetTitle(title: "\(beat.kind.title) beat \(number)", detail: "\(EditorArt.label(beat)). \(EditorFormat.seconds(beat.length)).")
             MakeField(label: "Caption", text: $beat.caption, prompt: "What this beat says", limit: 140, lines: 1...3)
             lengthGroup
             switch beat.kind {
@@ -2053,8 +2053,8 @@ struct EditorBeatForm: View {
             case .blocky: blockyFields
             }
             HStack(spacing: 8) {
-                PillButton(title: "Duplicate beat", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
-                PillButton(title: "Delete beat", symbol: "trash", danger: true, expand: true) { model.deleteBeat(beat.id) }
+                MakePillButton(title: "Duplicate beat", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
+                MakePillButton(title: "Delete beat", symbol: "trash", danger: true, expand: true) { model.deleteBeat(beat.id) }
                     .editorEnabled(model.state.beats.count > 1)
             }
             .padding(.top, 4)
@@ -2091,13 +2091,13 @@ struct EditorBeatForm: View {
         ForEach(beat.characters) { character in
             characterCard(character.id)
         }
-        PillButton(title: "Add a character", symbol: "plus") { addCharacter() }
+        MakePillButton(title: "Add a character", symbol: "plus") { addCharacter() }
             .editorEnabled(beat.characters.count < 3)
         SectionLabel(text: "Props (\(beat.props.count) of 6)")
         ForEach(beat.props) { prop in
             propCard(prop.id)
         }
-        PillButton(title: "Add a prop", symbol: "plus") { addProp() }
+        MakePillButton(title: "Add a prop", symbol: "plus") { addProp() }
             .editorEnabled(beat.props.count < 6)
     }
 
@@ -2205,7 +2205,7 @@ struct EditorBeatForm: View {
                 }
             }
         }
-        PillButton(title: "Add a shot", symbol: "plus") { beat.shots.append("medium") }
+        MakePillButton(title: "Add a shot", symbol: "plus") { beat.shots.append("medium") }
             .editorEnabled(beat.shots.count < 3)
     }
 
@@ -2263,7 +2263,7 @@ struct EditorClipForm: View {
     var body: some View {
         let locked = model.state.trackLocked
         VStack(alignment: .leading, spacing: 16) {
-            SheetTitle(title: "\(clip.kind.title) clip \(clip.id)",
+            MakeSheetTitle(title: "\(clip.kind.title) clip \(clip.id)",
                        detail: "Overlay 1, \(EditorFormat.timecode(clip.start)) to \(EditorFormat.timecode(clip.end)), \(EditorFormat.seconds(clip.length))")
             if locked {
                 Text(EditorOptions.lockNote)
@@ -2379,7 +2379,7 @@ struct EditorClipForm: View {
                               isOn: animateBinding(name), last: name == "Opacity")
             }
         }
-        PillButton(title: "Add keyframes here", symbol: "diamond.fill") { model.addKeys(clip.id) }
+        MakePillButton(title: "Add keyframes here", symbol: "diamond.fill") { model.addKeys(clip.id) }
             .editorEnabled(inside)
         if !inside {
             Text("Move the playhead inside the clip to add keyframes.")
@@ -2416,12 +2416,12 @@ struct EditorClipForm: View {
 
     private var actions: some View {
         VStack(spacing: 8) {
-            PillButton(title: "Split at playhead", symbol: "scissors", expand: true) { model.splitClip(clip.id) }
+            MakePillButton(title: "Split at playhead", symbol: "scissors", expand: true) { model.splitClip(clip.id) }
                 .editorEnabled(model.canSplit(clip))
-            PillButton(title: "Delete clip", symbol: "trash", danger: true, expand: true) {
+            MakePillButton(title: "Delete clip", symbol: "trash", danger: true, expand: true) {
                 model.deleteClip(clip.id, closeGap: model.ripple)
             }
-            PillButton(title: "Delete and close the gap", symbol: "arrow.left.to.line", danger: true, expand: true) {
+            MakePillButton(title: "Delete and close the gap", symbol: "arrow.left.to.line", danger: true, expand: true) {
                 model.deleteClip(clip.id, closeGap: true)
             }
         }
@@ -2440,7 +2440,7 @@ struct EditorAskSheet: View {
     var body: some View {
         FittedSheet(estimate: 440) {
             VStack(alignment: .leading, spacing: 16) {
-                SheetTitle(title: "Ask Kairos", detail: "Kairos changes the video for you. Undo takes any change back.")
+                MakeSheetTitle(title: "Ask Kairos", detail: "Kairos changes the video for you. Undo takes any change back.")
                 MakeField(label: "What should change?", text: $text, prompt: "Make the opening shorter", lines: 2...4)
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
@@ -2630,7 +2630,7 @@ struct EditorRemoveRow: View {
     var body: some View {
         HStack {
             Spacer()
-            PillButton(title: "Remove", symbol: "minus.circle", danger: true, action: action)
+            MakePillButton(title: "Remove", symbol: "minus.circle", danger: true, action: action)
         }
         .padding(10)
     }

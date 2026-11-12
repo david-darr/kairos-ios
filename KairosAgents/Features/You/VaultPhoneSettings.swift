@@ -217,7 +217,7 @@ struct PhoneLineScreen: View {
                     secrets = [:]
                 }), options: PhoneLineSample.providers) { $0 == "telnyx" ? "Telnyx" : "Twilio" }
                 StatusRow(title: "Phone", detail: status.detail, symbol: "phone", status: status.word, tone: status.tone)
-                ToggleRow(title: "Phone on", isOn: Binding(get: { form.enabled }, set: { on in
+                YouToggleRow(title: "Phone on", isOn: Binding(get: { form.enabled }, set: { on in
                     form.enabled = on
                     if line.configured {
                         line.enabled = on
@@ -251,7 +251,7 @@ struct PhoneLineScreen: View {
 
             SettingsGroup("Incoming call PIN", footer: "Caller ID can be faked, so when you call in, Kairos asks for this PIN on the keypad (then #) before it connects you. Three tries a call, and five wrong tries in an hour lock incoming calls for an hour. Calls Kairos places to you never ask.") {
                 FieldRow(title: "PIN (4 to 8 digits)", text: $pin, prompt: line.pinSet ? "Saved. Leave empty to keep it." : "4 to 8 digits", secure: true, keyboard: .numberPad)
-                ToggleRow(title: "Ask for the PIN", detail: "Turn this off only if you accept the risk below.", symbol: "lock", isOn: Binding(get: { form.requirePin }, set: { on in
+                YouToggleRow(title: "Ask for the PIN", detail: "Turn this off only if you accept the risk below.", symbol: "lock", isOn: Binding(get: { form.requirePin }, set: { on in
                     form.requirePin = on
                     if line.configured {
                         line.requirePin = on
@@ -277,7 +277,7 @@ struct PhoneLineScreen: View {
             NoteText(text: "Calls from a bot to you always start with \"This is Kip, an AI assistant from Kairos\" and go only to your mobile.", symbol: "info.circle")
 
             SettingsGroup("Calls to other people", footer: "A bot can phone someone for you, such as a restaurant or a client. You approve every call before it is placed. The call opens by saying it is an AI assistant calling for you and that it is transcribed. You see a live transcript, can answer the bot's questions and can hang up. A summary lands in the bot's chat afterwards.") {
-                ToggleRow(title: "Calls to other people", detail: "Off by default.", symbol: "phone", isOn: Binding(get: { form.othersEnabled }, set: { on in
+                YouToggleRow(title: "Calls to other people", detail: "Off by default.", symbol: "phone", isOn: Binding(get: { form.othersEnabled }, set: { on in
                     if on && form.callerName.trimmingCharacters(in: .whitespaces).isEmpty {
                         YouStore.shared.say("Enter your name for calls first.")
                         return
@@ -311,7 +311,7 @@ struct PhoneLineScreen: View {
                         HStack(spacing: 8) {
                             RowLabel(title: "\(call.bot) called \(call.who)", detail: callDetail(call))
                             if call.live { StatusPill(text: "On the call", tone: .working) }
-                            PillButton(title: call.live ? "Watch" : "Transcript") { openCall = call }
+                            YouPillButton(title: call.live ? "Watch" : "Transcript") { openCall = call }
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -325,7 +325,7 @@ struct PhoneLineScreen: View {
                 ForEach(blocked, id: \.self) { number in
                     HStack(spacing: 8) {
                         RowLabel(title: number, detail: "Bots will not call this number.", symbol: "hand.raised")
-                        PillButton(title: "Unblock") {
+                        YouPillButton(title: "Unblock") {
                             withAnimation(Motion.snappy) { blocked.removeAll { $0 == number } }
                             YouStore.shared.say("Unblocked.")
                         }
@@ -336,7 +336,7 @@ struct PhoneLineScreen: View {
                 }
                 FieldRow(title: "Block a number", text: $blockNumber, prompt: "+15551234567", keyboard: .phonePad)
                 RowButtons {
-                    PillButton(title: "Block", symbol: "hand.raised") { block() }
+                    YouPillButton(title: "Block", symbol: "hand.raised") { block() }
                 }
             }
             .arrives(8)
@@ -451,7 +451,7 @@ struct PhoneLineScreen: View {
                 .foregroundStyle(Palette.goldText)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            PillButton(title: "Copy", symbol: "square.and.arrow.up") {
+            YouPillButton(title: "Copy", symbol: "square.and.arrow.up") {
                 UIPasteboard.general.string = address
                 Haptics.success()
                 YouStore.shared.say("Copied.")

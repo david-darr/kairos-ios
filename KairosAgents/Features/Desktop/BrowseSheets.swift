@@ -118,7 +118,7 @@ private struct RoundAction: View {
     }
 }
 
-private struct SearchField: View {
+private struct BrowseSearchField: View {
     let prompt: String
     @Binding var text: String
 
@@ -162,12 +162,12 @@ struct BrowseTabsSheet: View {
                 .padding(.horizontal, 16)
 
                 HStack(spacing: 10) {
-                    PillButton(title: "New tab", symbol: "plus", filled: true) {
+                    DeskPillButton(title: "New tab", symbol: "plus", filled: true) {
                         store.openNewTab()
                         dismiss()
                     }
                     if !store.closed.isEmpty {
-                        PillButton(title: "Reopen closed tab", symbol: "arrow.uturn.backward") {
+                        DeskPillButton(title: "Reopen closed tab", symbol: "arrow.uturn.backward") {
                             store.reopenClosed()
                             dismiss()
                         }
@@ -411,11 +411,11 @@ struct BrowseHistorySheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 BrowseSheetHeader(title: "History", subtitle: "The last 200 visits on your PC")
-                SearchField(prompt: "Search history", text: $query)
+                BrowseSearchField(prompt: "Search history", text: $query)
                     .padding(.horizontal, 16)
 
                 if visits.isEmpty {
-                    EmptyNote(symbol: "clock", title: query.isEmpty ? "Nothing in history yet" : "No matches",
+                    DeskEmptyNote(symbol: "clock", title: query.isEmpty ? "Nothing in history yet" : "No matches",
                               text: query.isEmpty ? "Pages you open in Browse show up here." : "Nothing in history matches that.")
                 } else {
                     BrowseCard {
@@ -477,7 +477,7 @@ struct BrowseDownloadsSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 BrowseSheetHeader(title: "Downloads", subtitle: "Saved to the Downloads folder on your PC")
                 if store.downloads.isEmpty {
-                    EmptyNote(symbol: "arrow.down.circle", title: "No downloads yet", text: "Files you download in Browse show up here.")
+                    DeskEmptyNote(symbol: "arrow.down.circle", title: "No downloads yet", text: "Files you download in Browse show up here.")
                 } else {
                     VStack(spacing: 10) {
                         ForEach(store.downloads) { item in
@@ -574,10 +574,10 @@ struct BrowseDownloadsSheet: View {
 
 struct BrowsePasswordsSheet: View {
     @State private var query = ""
-    @State private var pendingDelete: SavedLogin?
+    @State private var pendingDelete: BrowseLogin?
     private var store: BrowseStore { .shared }
 
-    private var logins: [SavedLogin] {
+    private var logins: [BrowseLogin] {
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return store.logins }
         return store.logins.filter { $0.host.lowercased().contains(q) || $0.user.lowercased().contains(q) }
@@ -599,11 +599,11 @@ struct BrowsePasswordsSheet: View {
                 .kCard(radius: 18, raised: true)
                 .padding(.horizontal, 16)
 
-                SearchField(prompt: "Search passwords", text: $query)
+                BrowseSearchField(prompt: "Search passwords", text: $query)
                     .padding(.horizontal, 16)
 
                 if logins.isEmpty {
-                    EmptyNote(symbol: "key", title: query.isEmpty ? "No saved passwords yet" : "No matches",
+                    DeskEmptyNote(symbol: "key", title: query.isEmpty ? "No saved passwords yet" : "No matches",
                               text: query.isEmpty ? "Sign in to a site in Browse and choose Save." : "No saved password matches that.")
                 } else {
                     BrowseCard {
@@ -966,7 +966,7 @@ struct BrowseBotWorkSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 BrowseSheetHeader(title: "Bot work", subtitle: "Bots browsing in their own computers")
                 if store.botWork.isEmpty {
-                    EmptyNote(symbol: "person.2", title: "No bots are browsing", text: "When a bot opens a page in its own computer, it shows here.")
+                    DeskEmptyNote(symbol: "person.2", title: "No bots are browsing", text: "When a bot opens a page in its own computer, it shows here.")
                 } else {
                     BrowseCard {
                         ForEach(Array(store.botWork.enumerated()), id: \.element.id) { index, work in
@@ -1029,11 +1029,11 @@ struct BrowseSiteForm: View {
                 GoldButton(title: site == nil ? "Add" : "Save") { save() }
                 if let site {
                     HStack(spacing: 8) {
-                        PillButton(title: "Open in a new tab", symbol: "plus.square.on.square") {
+                        DeskPillButton(title: "Open in a new tab", symbol: "plus.square.on.square") {
                             store.go(site.url, newTab: true)
                             dismiss()
                         }
-                        PillButton(title: "Refresh picture", symbol: "arrow.clockwise") {
+                        DeskPillButton(title: "Refresh picture", symbol: "arrow.clockwise") {
                             chrome.say("The picture updates the next time you open the site.")
                         }
                     }

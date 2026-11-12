@@ -118,13 +118,13 @@ struct LocalModelsSetupSheet: View {
     private func actionButton(_ choice: SetupChoice) -> some View {
         switch choice.state {
         case .ready:
-            PillButton(title: "Review setup") {
+            DeskPillButton(title: "Review setup") {
                 if choice.id == "local" { showLocal = true } else { store.choose(choice.id) }
             }
         case .waiting:
-            PillButton(title: "Cancel waiting") { store.cancelWaiting(choice.id) }
+            DeskPillButton(title: "Cancel waiting") { store.cancelWaiting(choice.id) }
         case .notSet, .notInstalled:
-            PillButton(title: "Choose this", filled: true) {
+            DeskPillButton(title: "Choose this", filled: true) {
                 if choice.id == "local" { showLocal = true } else { store.choose(choice.id) }
             }
         }
@@ -184,10 +184,10 @@ struct LocalModelsSetupSheet: View {
                     .font(KFont.ui(15.5, .medium, relativeTo: .subheadline))
                     .foregroundStyle(Palette.ink)
                 HStack(spacing: 10) {
-                    PillButton(title: "Not now") {
+                    DeskPillButton(title: "Not now") {
                         withAnimation(Motion.snappy) { store.recommend = .idle }
                     }
-                    PillButton(title: "Download", symbol: "arrow.down", filled: true) { store.downloadRecommended() }
+                    DeskPillButton(title: "Download", symbol: "arrow.down", filled: true) { store.downloadRecommended() }
                 }
             }
             .padding(14)
@@ -218,7 +218,7 @@ struct LocalModelsSetupSheet: View {
                 Label("Your local model is connected. Chats can use it now.", systemImage: "checkmark.circle.fill")
                     .font(KFont.ui(15.5, .medium, relativeTo: .subheadline))
                     .foregroundStyle(Palette.success)
-                PillButton(title: "Return to setup") { showLocal = false }
+                DeskPillButton(title: "Return to setup") { showLocal = false }
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)

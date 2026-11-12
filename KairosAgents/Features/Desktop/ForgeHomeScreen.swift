@@ -38,7 +38,7 @@ struct ForgeHomeScreen: View {
                     widgetView(widget).arrives(index + 1)
                 }
                 if store.widgets.isEmpty {
-                    EmptyNote(symbol: "square.grid.2x2", title: "No widgets shown", text: "Choose what Forge Home shows.", action: "Customize") { showCustomize = true }
+                    DeskEmptyNote(symbol: "square.grid.2x2", title: "No widgets shown", text: "Choose what Forge Home shows.", action: "Customize") { showCustomize = true }
                 }
             }
             .padding(.horizontal, 16)
@@ -166,7 +166,7 @@ struct ForgeHomeScreen: View {
             Text("A session needs one commit to branch from. Kairos can make it, then start your task.")
                 .font(KFont.ui(14.5, relativeTo: .subheadline))
                 .foregroundStyle(Palette.inkDim)
-            PillButton(title: "Make the first commit", symbol: "checkmark.circle", filled: true) {
+            DeskPillButton(title: "Make the first commit", symbol: "checkmark.circle", filled: true) {
                 needsFirstCommit = false
                 toast = "First commit made"
                 launch()
@@ -202,7 +202,7 @@ struct ForgeHomeScreen: View {
     private var contextSheet: some View {
         FittedSheet(estimate: 620) {
             VStack(alignment: .leading, spacing: 16) {
-                SheetTitle(text: "Session context")
+                DeskSheetTitle(text: "Session context")
                 SectionLabel(text: "Project")
                 VStack(spacing: 0) {
                     ForEach(Array(store.projects.enumerated()), id: \.element.id) { index, item in
@@ -254,7 +254,7 @@ struct ForgeHomeScreen: View {
     private var customizeSheet: some View {
         FittedSheet(estimate: 480) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(text: "Customize Forge Home", detail: "Saved on this phone.")
+                DeskSheetTitle(text: "Customize Forge Home", detail: "Saved on this phone.")
                 VStack(spacing: 0) {
                     ForEach(Array(ForgeWidget.allCases.enumerated()), id: \.element) { index, widget in
                         Toggle(isOn: Binding(
@@ -299,7 +299,7 @@ struct ForgeHomeScreen: View {
         return VStack(alignment: .leading, spacing: 10) {
             SectionTitle(text: "Working now")
             if live.isEmpty {
-                EmptyNote(symbol: "hammer", title: "Ready to build", text: "No Forge sessions running.", action: "New session") { typing = true }
+                DeskEmptyNote(symbol: "hammer", title: "Ready to build", text: "No Forge sessions running.", action: "New session") { typing = true }
                     .kCard(radius: 22)
             } else {
                 VStack(spacing: 0) {

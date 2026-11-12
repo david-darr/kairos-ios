@@ -124,15 +124,15 @@ struct YouHome: View {
                     results
                 } else {
                     SettingsGroup {
-                        NavRow(title: "Your account", detail: "Colour, PIN, password and two-step sign-in", symbol: "person.crop.circle", to: .account)
-                        NavRow(title: "Your desktop", detail: "Connected on sample data", symbol: "desktopcomputer", to: .connection)
+                        YouNavRow(title: "Your account", detail: "Colour, PIN, password and two-step sign-in", symbol: "person.crop.circle", to: .account)
+                        YouNavRow(title: "Your desktop", detail: "Connected on sample data", symbol: "desktopcomputer", to: .connection)
                     }
                     .arrives(3)
 
                     ForEach(Array(YouIndex.groups.enumerated()), id: \.offset) { index, group in
                         SettingsGroup(group.title) {
                             ForEach(group.entries) { entry in
-                                NavRow(title: entry.title, symbol: entry.symbol, value: value(for: entry.route), to: entry.route)
+                                YouNavRow(title: entry.title, symbol: entry.symbol, value: value(for: entry.route), to: entry.route)
                             }
                         }
                         .arrives(index + 4)
@@ -140,7 +140,7 @@ struct YouHome: View {
 
                     SettingsGroup("Your tabs") {
                         ForEach(SampleData.addedTabs) { tab in
-                            NavRow(title: tab.title, symbol: tab.symbol, to: .addedTab(tab.title))
+                            YouNavRow(title: tab.title, symbol: tab.symbol, to: .addedTab(tab.title))
                         }
                     }
 
@@ -155,7 +155,7 @@ struct YouHome: View {
                             router.select(.home)
                             TourPresenter.start(after: 0.6)
                         }
-                        NavRow(title: "Help", detail: "What each part does, the version and updates", symbol: "questionmark.circle", to: .help)
+                        YouNavRow(title: "Help", detail: "What each part does, the version and updates", symbol: "questionmark.circle", to: .help)
                     }
 
                     SettingsGroup {
@@ -320,7 +320,7 @@ struct YouHome: View {
             } else {
                 SettingsGroup("Settings") {
                     ForEach(hits) { entry in
-                        NavRow(title: entry.title, symbol: entry.symbol, to: entry.route)
+                        YouNavRow(title: entry.title, symbol: entry.symbol, to: entry.route)
                     }
                 }
             }

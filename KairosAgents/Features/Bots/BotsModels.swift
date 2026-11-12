@@ -63,7 +63,7 @@ nonisolated enum Effort: String, CaseIterable, Hashable, Sendable {
     }
 }
 
-nonisolated struct ModelOption: Identifiable, Hashable, Sendable {
+nonisolated struct BotModelOption: Identifiable, Hashable, Sendable {
     var id: String { name }
     var name: String
     var source: String

@@ -177,7 +177,7 @@ struct StatBox: View {
 }
 
 /// A compact capsule button. Filled is gold (the main choice); otherwise a quiet ink wash.
-struct PillButton: View {
+struct MakePillButton: View {
     let title: String
     var symbol: String? = nil
     var filled = false
@@ -295,7 +295,7 @@ struct MakeChoiceRow: View {
 
 /// The "Swipe up to buy" pattern, for risky actions: approve a post, turn on hands-off posting.
 /// Drag the gold knob to the top to confirm. VoiceOver gets a plain Confirm action.
-struct SwipeUpConfirm: View {
+struct MakeSwipeUpConfirm: View {
     let title: String
     let detail: String
     var points: [String] = []
@@ -405,7 +405,7 @@ struct SwipeUpConfirm: View {
 }
 
 /// A small label in a sheet title area, leaving room under the grab bar.
-struct SheetTitle: View {
+struct MakeSheetTitle: View {
     let title: String
     var detail: String? = nil
 

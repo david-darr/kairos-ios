@@ -149,7 +149,7 @@ struct ForgeFileScreen: View {
     var body: some View {
         Group {
             if binary {
-                EmptyNote(symbol: "photo", title: "Binary file. Read only.", text: "Open it on your PC to see it.")
+                DeskEmptyNote(symbol: "photo", title: "Binary file. Read only.", text: "Open it on your PC to see it.")
                     .frame(maxHeight: .infinity)
             } else if editing {
                 TextEditor(text: $text)

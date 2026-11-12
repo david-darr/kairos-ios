@@ -38,7 +38,7 @@ struct ForgeChangesScreen: View {
             VStack(alignment: .leading, spacing: 14) {
                 if let session {
                     if session.changes.isEmpty {
-                        EmptyNote(symbol: "checkmark.circle", title: "No changes", text: "No changes from the session baseline.")
+                        DeskEmptyNote(symbol: "checkmark.circle", title: "No changes", text: "No changes from the session baseline.")
                     } else {
                         HStack {
                             Text("\(session.changes.count) files").font(KFont.ui(15, .medium)).foregroundStyle(Palette.inkDim)
@@ -87,7 +87,7 @@ struct ForgeChangesScreen: View {
                         }
                     }
                 } else {
-                    EmptyNote(symbol: "questionmark.folder", title: "No session", text: "Select a session to review its changes.")
+                    DeskEmptyNote(symbol: "questionmark.folder", title: "No session", text: "Select a session to review its changes.")
                 }
             }
             .padding(.horizontal, 16)
@@ -149,7 +149,7 @@ struct ForgeDiffScreen: View {
                         DiffCount(added: change.added, removed: change.removed, size: 14)
                     }
                     if change.binary {
-                        EmptyNote(symbol: "doc.richtext", title: "Binary file", text: "Text diff is unavailable.")
+                        DeskEmptyNote(symbol: "doc.richtext", title: "Binary file", text: "Text diff is unavailable.")
                             .kCard(radius: 20)
                     }
                     ForEach(change.hunks) { hunk in
@@ -181,7 +181,7 @@ struct ForgeDiffScreen: View {
                     }
                     if blocked { NoteLine(text: "Revert is off while the agent is working or after the session ended.") }
                 } else {
-                    EmptyNote(symbol: "checkmark.circle", title: "Nothing to show", text: "This file has no changes now. It may have been reverted.")
+                    DeskEmptyNote(symbol: "checkmark.circle", title: "Nothing to show", text: "This file has no changes now. It may have been reverted.")
                 }
             }
             .padding(.horizontal, 16)
@@ -240,7 +240,7 @@ struct ForgeGitSheet: View {
                 if let session {
                     content(session)
                 } else {
-                    EmptyNote(symbol: "arrow.triangle.branch", title: "No session", text: "Select an active session to use Git.")
+                    DeskEmptyNote(symbol: "arrow.triangle.branch", title: "No session", text: "Select an active session to use Git.")
                 }
             }
             .scrollIndicators(.hidden)
@@ -254,7 +254,7 @@ struct ForgeGitSheet: View {
         let total = git.staged.count + git.unstaged.count
         let running = session.state == .working
         return VStack(alignment: .leading, spacing: 16) {
-            SheetTitle(text: "Git")
+            DeskSheetTitle(text: "Git")
             HStack(spacing: 12) {
                 Image(systemName: "arrow.triangle.branch").font(.system(size: 18, weight: .medium)).foregroundStyle(Palette.goldText)
                 VStack(alignment: .leading, spacing: 2) {
@@ -295,12 +295,12 @@ struct ForgeGitSheet: View {
             }
 
             HStack(spacing: 10) {
-                PillButton(title: git.upstream == nil ? "Publish" : "Push", symbol: "arrow.up.circle") {
+                DeskPillButton(title: git.upstream == nil ? "Publish" : "Push", symbol: "arrow.up.circle") {
                     run(git.upstream == nil ? "Published to origin" : "Pushed") { store.push(sessionID) }
                 }
                 .disabled(running || working || (git.ahead == 0 && git.upstream != nil))
                 .opacity(running || working || (git.ahead == 0 && git.upstream != nil) ? 0.45 : 1)
-                PillButton(title: git.behind > 0 ? "Pull \(git.behind)" : "Pull", symbol: "arrow.down.circle") {
+                DeskPillButton(title: git.behind > 0 ? "Pull \(git.behind)" : "Pull", symbol: "arrow.down.circle") {
                     run("Pulled") { store.pull(sessionID) }
                 }
                 .disabled(running || working || git.upstream == nil)
@@ -326,7 +326,7 @@ struct ForgeGitSheet: View {
                         .padding(.horizontal, 14)
                         .frame(minHeight: 46)
                         .kCard(radius: 16)
-                    PillButton(title: "Create", symbol: "plus") {
+                    DeskPillButton(title: "Create", symbol: "plus") {
                         let name = newBranch.trimmingCharacters(in: .whitespaces)
                         run("Created \(name)") { store.createBranch(sessionID, name) }
                         newBranch = ""

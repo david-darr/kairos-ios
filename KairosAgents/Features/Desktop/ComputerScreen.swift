@@ -144,7 +144,7 @@ struct ComputerScreen: View {
                             Text("Computer closed")
                                 .font(KFont.ui(17, .semibold))
                                 .foregroundStyle(Palette.cream)
-                            PillButton(title: "Watch again", symbol: "play.fill", tint: Palette.cream) {
+                            DeskPillButton(title: "Watch again", symbol: "play.fill", tint: Palette.cream) {
                                 store.reconnect()
                             }
                         }

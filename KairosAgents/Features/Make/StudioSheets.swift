@@ -30,7 +30,7 @@ struct StudioSheetView: View {
             }
         case .approvePost(let id):
             let post = studio.post(id)
-            SwipeUpConfirm(
+            MakeSwipeUpConfirm(
                 title: "Approve this post?",
                 detail: "\(post?.title ?? "") for \(studio.channel(post?.channelID ?? "")?.handle ?? "").",
                 points: ["It moves to Publishing, ready to prepare.", "Nothing is posted until you press Post yourself."],
@@ -41,19 +41,19 @@ struct StudioSheetView: View {
             }
         case .approveAll:
             let count = studio.scoped(studio.posts).filter { $0.publish == .awaiting }.count
-            SwipeUpConfirm(title: "Approve all \(count) posts?", detail: "Each post is approved as it is. Nothing is posted.", confirmLabel: "Swipe up to approve all") {
+            MakeSwipeUpConfirm(title: "Approve all \(count) posts?", detail: "Each post is approved as it is. Nothing is posted.", confirmLabel: "Swipe up to approve all") {
                 let done = studio.approveAll()
                 toast.say(done == 1 ? "Approved 1 post." : "Approved \(done) posts.")
             }
         case .youtube(let id):
-            SwipeUpConfirm(
+            MakeSwipeUpConfirm(
                 title: "Post to YouTube?",
                 detail: "\(studio.post(id)?.title ?? "") is uploaded exactly as approved.",
                 points: ["Privacy: \(studio.uploadPrivacy).", "The AI content label is on.", "It may stay private until your Google project passes YouTube's audit."],
                 confirmLabel: "Swipe up to post"
             ) { toast.say(studio.publishNow(id)) }
         case .instagram(let id):
-            SwipeUpConfirm(
+            MakeSwipeUpConfirm(
                 title: "Post to Instagram?",
                 detail: "\(studio.post(id)?.title ?? "") goes out now as a Reel with Meta's AI label. Instagram has no schedule here.",
                 confirmLabel: "Swipe up to post"
@@ -67,7 +67,7 @@ struct StudioSheetView: View {
                 return true
             }
         case .handsOff:
-            SwipeUpConfirm(
+            MakeSwipeUpConfirm(
                 title: "Turn on hands-off posting?",
                 detail: "The Producer approves the team's posts and Kairos posts them on schedule.",
                 points: ["At most the niche's slots a day per channel.", "TikTok still waits for your tap.", "You still get the weekly report and alerts for platform warnings, spend, failures, retirements and TikTok taps."],
@@ -78,7 +78,7 @@ struct StudioSheetView: View {
             }
         case .runCycle:
             let channel = studio.liveChannels.first { $0.state == .live }
-            ConfirmSheet(title: "Run one cycle for \(channel?.handle ?? "")?", detail: "The Producer researches, writes and renders one post. It still waits for your OK.", button: studio.cycleRunning ? "Cycle running" : "Run one cycle now") {
+            MakeConfirmSheet(title: "Run one cycle for \(channel?.handle ?? "")?", detail: "The Producer researches, writes and renders one post. It still waits for your OK.", button: studio.cycleRunning ? "Cycle running" : "Run one cycle now") {
                 if studio.cycleRunning {
                     toast.say("That cycle is already running.")
                 } else {
@@ -88,7 +88,7 @@ struct StudioSheetView: View {
             }
         case .resolve(let id):
             let channel = studio.channel(id)
-            ConfirmSheet(title: "Resume this channel?", detail: channel?.warning ?? "", button: "Resume") {
+            MakeConfirmSheet(title: "Resume this channel?", detail: channel?.warning ?? "", button: "Resume") {
                 studio.setChannel(id) {
                     $0.state = .live
                     $0.warning = nil
@@ -96,13 +96,13 @@ struct StudioSheetView: View {
                 toast.say("Channel resumed.")
             }
         case .archive(let id):
-            ConfirmSheet(title: "Archive this channel?", detail: "Its history is kept. Nothing is posted from it until you restore it.", button: "Archive", danger: true) {
+            MakeConfirmSheet(title: "Archive this channel?", detail: "Its history is kept. Nothing is posted from it until you restore it.", button: "Archive", danger: true) {
                 studio.setChannel(id) { $0.state = .archived }
                 toast.say("Channel archived.")
             }
         case .decision(let id):
             let decision = studio.decisions.first { $0.id == id }
-            ConfirmSheet(title: "\(decision?.title ?? "")?", detail: decision?.title.hasPrefix("Retire") == true ? "The channel is archived and keeps its history. Its slot goes back to the niche." : "The Producer goes ahead with this.", button: "Confirm") {
+            MakeConfirmSheet(title: "\(decision?.title ?? "")?", detail: decision?.title.hasPrefix("Retire") == true ? "The channel is archived and keeps its history. Its slot goes back to the niche." : "The Producer goes ahead with this.", button: "Confirm") {
                 if let index = studio.decisions.firstIndex(where: { $0.id == id }) {
                     withAnimation(Motion.snappy) { studio.decisions[index].status = .confirmed }
                 }
@@ -170,7 +170,7 @@ struct NoteSheet: View {
     var body: some View {
         FittedSheet(estimate: 380) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: title, detail: detail)
+                MakeSheetTitle(title: title, detail: detail)
                 MakeField(label: label, text: $text, limit: limit, lines: 2...6)
                 if let error { Text(error).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.danger) }
                 GoldButton(title: button) {
@@ -192,7 +192,7 @@ struct NoteSheet: View {
 }
 
 /// A plain confirm: a question, one sentence, the button.
-struct ConfirmSheet: View {
+struct MakeConfirmSheet: View {
     let title: String
     let detail: String
     let button: String
@@ -203,9 +203,9 @@ struct ConfirmSheet: View {
     var body: some View {
         FittedSheet(estimate: 300) {
             VStack(spacing: 14) {
-                SheetTitle(title: title, detail: detail)
+                MakeSheetTitle(title: title, detail: detail)
                 if danger {
-                    PillButton(title: button, danger: true, expand: true) {
+                    MakePillButton(title: button, danger: true, expand: true) {
                         action()
                         dismiss()
                     }
@@ -235,7 +235,7 @@ struct SetupSheet: View {
         let studio = make.studio
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                SheetTitle(title: "Content setup", detail: "\(studio.setupRequired - studio.setupLeft) of \(studio.setupRequired) required steps done. \(studio.approvalLine)")
+                MakeSheetTitle(title: "Content setup", detail: "\(studio.setupRequired - studio.setupLeft) of \(studio.setupRequired) required steps done. \(studio.approvalLine)")
                 ForEach(studio.setupSteps) { step in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 10) {
@@ -258,7 +258,7 @@ struct SetupSheet: View {
                     .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                 Text("Kairos never creates accounts.").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                 if studio.setupHidden {
-                    PillButton(title: "Show setup on the dashboard") {
+                    MakePillButton(title: "Show setup on the dashboard") {
                         studio.setupHidden = false
                         dismiss()
                     }
@@ -278,35 +278,35 @@ struct SetupSheet: View {
             switch step.number {
             case 1:
                 if !studio.hasTeam {
-                    PillButton(title: "Add the Content Studio team", filled: true) { studio.hasTeam = true; toast.say("Team added. Its routines start paused.") }
+                    MakePillButton(title: "Add the Content Studio team", filled: true) { studio.hasTeam = true; toast.say("Team added. Its routines start paused.") }
                 } else {
-                    PillButton(title: "Templates") { go(.library(.templates)) }
+                    MakePillButton(title: "Templates") { go(.library(.templates)) }
                 }
             case 2:
-                PillButton(title: studio.liveChannels.isEmpty ? "Add your first channel" : "Add another channel") { studio.sheet = .addChannel }
+                MakePillButton(title: studio.liveChannels.isEmpty ? "Add your first channel" : "Add another channel") { studio.sheet = .addChannel }
             case 3:
                 if let channel = studio.liveChannels.first(where: { $0.pack.isEmpty }) ?? studio.liveChannels.first {
-                    PillButton(title: "Open \(channel.handle) settings") {
+                    MakePillButton(title: "Open \(channel.handle) settings") {
                         studio.go(.channel(channel.id))
                         studio.tab = .settings
                         dismiss()
                     }
                 }
             case 4:
-                if step.state == .waiting { PillButton(title: "Review in Approvals", filled: true) { studio.open(.approvals); dismiss() } }
-                PillButton(title: "Styles") { go(.library(.styles)) }
-                PillButton(title: "Characters") { go(.library(.characters)) }
+                if step.state == .waiting { MakePillButton(title: "Review in Approvals", filled: true) { studio.open(.approvals); dismiss() } }
+                MakePillButton(title: "Styles") { go(.library(.styles)) }
+                MakePillButton(title: "Characters") { go(.library(.characters)) }
             case 5:
                 if step.state == .fix, let channel = studio.channels.first(where: { $0.platform == .youtube && $0.connection != "Connected" }) {
-                    PillButton(title: "Choose \(channel.handle)'s Google account", filled: true) { studio.sheet = .accountChooser(channel.id) }
+                    MakePillButton(title: "Choose \(channel.handle)'s Google account", filled: true) { studio.sheet = .accountChooser(channel.id) }
                 } else {
-                    PillButton(title: "Open Connections") { go(.library(.connections)) }
+                    MakePillButton(title: "Open Connections") { go(.library(.connections)) }
                 }
             case 6:
-                PillButton(title: "Open Connections") { go(.library(.connections)) }
+                MakePillButton(title: "Open Connections") { go(.library(.connections)) }
             case 7:
-                PillButton(title: studio.cycleRunning ? "Cycle running" : "Run one cycle now", filled: !studio.cycleRunning) { studio.sheet = .runCycle }
-                PillButton(title: studio.routinesOn == studio.routinesTotal ? "Pause routines" : "Turn on daily routines") {
+                MakePillButton(title: studio.cycleRunning ? "Cycle running" : "Run one cycle now", filled: !studio.cycleRunning) { studio.sheet = .runCycle }
+                MakePillButton(title: studio.routinesOn == studio.routinesTotal ? "Pause routines" : "Turn on daily routines") {
                     if studio.routinesOn == studio.routinesTotal {
                         studio.routinesOn = 0
                         toast.say("Routines paused.")
@@ -317,9 +317,9 @@ struct SetupSheet: View {
                 }
             default:
                 if studio.posts.contains(where: { $0.publish == .awaiting }) {
-                    PillButton(title: "Go to Approvals", filled: true) { studio.open(.approvals); dismiss() }
+                    MakePillButton(title: "Go to Approvals", filled: true) { studio.open(.approvals); dismiss() }
                 }
-                PillButton(title: "Open Publishing") { studio.open(.publishing); dismiss() }
+                MakePillButton(title: "Open Publishing") { studio.open(.publishing); dismiss() }
             }
         }
         .scrollableRow()
@@ -357,7 +357,7 @@ struct AddChannelSheet: View {
         let options = studio.niches.filter { !$0.retired }.map(\.name) + ["A new niche"]
         FittedSheet(estimate: 560) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Add a channel", detail: "Kairos never creates accounts. Make the channel on the platform first.")
+                MakeSheetTitle(title: "Add a channel", detail: "Kairos never creates accounts. Make the channel on the platform first.")
                 VStack(spacing: 0) {
                     MakeChoiceRow(title: "Niche", options: options, selection: $niche, last: true)
                 }
@@ -413,7 +413,7 @@ struct PostDetailsSheet: View {
             if let post = studio.post(postID) {
                 let channel = studio.channel(post.channelID)
                 VStack(alignment: .leading, spacing: 14) {
-                    SheetTitle(title: post.title)
+                    MakeSheetTitle(title: post.title)
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                         StatBox(value: post.stage.rawValue, label: "Step")
                         StatBox(value: post.ageText, label: "Age")
@@ -427,7 +427,7 @@ struct PostDetailsSheet: View {
                     }
                     if post.publish == .rejected {
                         Text("Rejected: \(post.rejectReason ?? "")").font(KFont.ui(14.5)).foregroundStyle(Palette.danger)
-                        PillButton(title: "Redraft", filled: true) {
+                        MakePillButton(title: "Redraft", filled: true) {
                             studio.redraft(post.id, note: "")
                             toast.say("Sent back to drafting.")
                         }
@@ -448,20 +448,20 @@ struct PostDetailsSheet: View {
         let studio = make.studio
         switch post.publish {
         case .awaiting:
-            PillButton(title: "Go to Approvals", filled: true, expand: true) { studio.open(.approvals); dismiss() }
+            MakePillButton(title: "Go to Approvals", filled: true, expand: true) { studio.open(.approvals); dismiss() }
         case .approved, .prepared, .waitingForYou, .failed:
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     if post.publish == .approved || post.publish == .failed {
-                        PillButton(title: "Prepare post", filled: true, expand: true) { toast.say(studio.prepare(post.id)) }
+                        MakePillButton(title: "Prepare post", filled: true, expand: true) { toast.say(studio.prepare(post.id)) }
                     } else {
-                        PillButton(title: "Open in Publishing", filled: true, expand: true) { studio.open(.publishing); dismiss() }
+                        MakePillButton(title: "Open in Publishing", filled: true, expand: true) { studio.open(.publishing); dismiss() }
                     }
-                    PillButton(title: "Mark as posted", expand: true) { studio.sheet = .markPosted(post.id) }
+                    MakePillButton(title: "Mark as posted", expand: true) { studio.sheet = .markPosted(post.id) }
                 }
                 if channel?.platform == .youtube {
                     if studio.postingConnected {
-                        PillButton(title: "Post to YouTube", expand: true) { studio.sheet = .youtube(post.id) }
+                        MakePillButton(title: "Post to YouTube", expand: true) { studio.sheet = .youtube(post.id) }
                     } else {
                         Text("Posting straight to YouTube: connect posting in Connections first.").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                     }
@@ -516,7 +516,7 @@ struct ChecklistSheet: View {
         ScrollView {
             if let post = studio.post(postID), let channel = studio.channel(post.channelID) {
                 VStack(alignment: .leading, spacing: 14) {
-                    SheetTitle(title: post.title)
+                    MakeSheetTitle(title: post.title)
                     HStack(spacing: 6) {
                         StatePill(text: channel.platform.name, tone: .muted)
                         StatePill(text: post.publish.rawValue, tone: post.publish.tone)
@@ -594,7 +594,7 @@ struct EditPostSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Edit post")
+                MakeSheetTitle(title: "Edit post")
                 MakeField(label: "Title", text: $title, limit: 200, lines: 1...3)
                 MakeField(label: "Caption", text: $caption, limit: 5000, lines: 2...6)
                 MakeField(label: "Script", text: $script, limit: 20000, lines: 3...10)
@@ -645,7 +645,7 @@ struct TikTokPostSheet: View {
         let canPost = !visibility.isEmpty && consent && studio.tiktokAppSaved
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Post to TikTok", detail: post?.title)
+                MakeSheetTitle(title: "Post to TikTok", detail: post?.title)
                 Text("Posting as \(studio.channel(post?.channelID ?? "")?.handle ?? ""). Until your app passes TikTok's audit, posts stay visible only to you.")
                     .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                 if !studio.tiktokAppSaved {
@@ -699,7 +699,7 @@ struct ScheduleSheet: View {
         let platform = studio.channel(post?.channelID ?? "")?.platform ?? .youtube
         FittedSheet(estimate: 520) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Schedule", detail: post?.title)
+                MakeSheetTitle(title: "Schedule", detail: post?.title)
                 SectionLabel(text: "When")
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
                     ForEach(0..<7, id: \.self) { index in
@@ -777,9 +777,9 @@ struct ImportNumbersSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Import numbers", detail: "Numbers attach to posted posts.")
+                MakeSheetTitle(title: "Import numbers", detail: "Numbers attach to posted posts.")
                 MakeField(label: "Paste rows", text: $text, limit: 20000, lines: 4...10)
-                PillButton(title: "Read columns", filled: !read) {
+                MakePillButton(title: "Read columns", filled: !read) {
                     guard rows.count > 1 else { toast.say("Add a header row and at least one row of numbers."); return }
                     withAnimation(Motion.snappy) { read = true }
                 }
@@ -824,7 +824,7 @@ struct AccountChooserSheet: View {
         let channel = make.studio.channel(channelID)
         FittedSheet(estimate: 520) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Google account for \(channel?.handle ?? "")")
+                MakeSheetTitle(title: "Google account for \(channel?.handle ?? "")")
                 VStack(spacing: 0) {
                     ForEach(accounts, id: \.0) { account in
                         Button {
@@ -880,7 +880,7 @@ struct SocialAppSheet: View {
         let saved = platform == .tiktok ? studio.tiktokAppSaved : studio.instagramAppSaved
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: platform == .tiktok ? "Your TikTok app" : "Your Instagram (Meta) app", detail: "Your own app lets Kairos post and read numbers. Keys stay on your desktop.")
+                MakeSheetTitle(title: platform == .tiktok ? "Your TikTok app" : "Your Instagram (Meta) app", detail: "Your own app lets Kairos post and read numbers. Keys stay on your desktop.")
                 MakeField(label: platform == .tiktok ? "Client key" : "App ID", text: $key, prompt: saved ? "Saved. Paste a new one to replace it." : "")
                 VStack(alignment: .leading, spacing: 6) {
                     Text(platform == .tiktok ? "Client secret" : "App secret").font(KFont.ui(13.5, .medium, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
@@ -902,7 +902,7 @@ struct SocialAppSheet: View {
                         Text("http://localhost/callback").font(KFont.ui(14.5)).foregroundStyle(Palette.ink)
                     }
                     Spacer()
-                    PillButton(title: "Copy") {
+                    MakePillButton(title: "Copy") {
                         UIPasteboard.general.string = "http://localhost/callback"
                         toast.say("Redirect URI copied.")
                     }
@@ -921,7 +921,7 @@ struct SocialAppSheet: View {
                     dismiss()
                 }
                 if saved {
-                    PillButton(title: "Remove app", danger: true, expand: true) {
+                    MakePillButton(title: "Remove app", danger: true, expand: true) {
                         if platform == .tiktok { studio.tiktokAppSaved = false } else { studio.instagramAppSaved = false }
                         toast.say("\(platform.name) app removed. Its channel connections are forgotten.")
                         dismiss()
@@ -942,7 +942,7 @@ struct TeamReportSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                SheetTitle(title: "Team report", detail: "Content Studio team, this week. Asked you 4 times.")
+                MakeSheetTitle(title: "Team report", detail: "Content Studio team, this week. Asked you 4 times.")
                 MakeTile(title: "What the team made", symbol: "film") {
                     Text("6 videos posted, 3 waiting for approval, 1 long video plan.").font(KFont.ui(15)).foregroundStyle(Palette.ink)
                 }

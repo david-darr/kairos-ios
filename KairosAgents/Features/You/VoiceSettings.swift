@@ -141,7 +141,7 @@ struct VoiceScreen: View {
             NoteText(text: "On this phone, calls and dictation use the iPhone's own microphone and speaker.", symbol: "iphone")
 
             SettingsGroup {
-                NavRow(title: "Bot call voice", detail: "The live voice each bot uses on a call.", symbol: "phone", to: .botVoice)
+                YouNavRow(title: "Bot call voice", detail: "The live voice each bot uses on a call.", symbol: "phone", to: .botVoice)
             }
 
             NoteText(text: "Voice servers and the graphics card setup are changed on the desktop.", symbol: "desktopcomputer")
@@ -240,13 +240,13 @@ struct VoiceScreen: View {
             }
             HStack(spacing: 8) {
                 if choice == .elevenLabs {
-                    PillButton(title: "Check") { check(choice, use: false) }
+                    YouPillButton(title: "Check") { check(choice, use: false) }
                 }
-                PillButton(title: checking ? "Checking..." : (engine == choice ? "Check" : "Check and use"), prominent: true) {
+                YouPillButton(title: checking ? "Checking..." : (engine == choice ? "Check" : "Check and use"), prominent: true) {
                     check(choice, use: engine != choice)
                 }
                 if choice == .elevenLabs && elevenSaved {
-                    PillButton(title: "Remove key", danger: true) { removeElevenKey() }
+                    YouPillButton(title: "Remove key", danger: true) { removeElevenKey() }
                 }
             }
         }
@@ -507,7 +507,7 @@ struct VoiceScreen: View {
                 } else if let progress = model.progress {
                     progressText(progress)
                 } else if isAdmin {
-                    PillButton(title: "Download", symbol: "square.and.arrow.down") { download(model.id) }
+                    YouPillButton(title: "Download", symbol: "square.and.arrow.down") { download(model.id) }
                 } else {
                     Text("An admin can download this.")
                         .font(KFont.ui(13.5, relativeTo: .footnote))
@@ -589,9 +589,9 @@ struct VoiceScreen: View {
             } else if isAdmin {
                 HStack(spacing: 8) {
                     if ready {
-                        PillButton(title: "Remove", danger: true) { removeOptional(item, title: title) }
+                        YouPillButton(title: "Remove", danger: true) { removeOptional(item, title: title) }
                     } else {
-                        PillButton(title: "Download · \(size)", symbol: "square.and.arrow.down") { downloadOptional(item, title: title) }
+                        YouPillButton(title: "Download · \(size)", symbol: "square.and.arrow.down") { downloadOptional(item, title: title) }
                     }
                 }
                 .padding(.leading, 38)
@@ -670,8 +670,8 @@ struct VoiceScreen: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     HStack(spacing: 8) {
-                        PillButton(title: geminiChecking ? "Checking..." : "Check and connect", prominent: true) { connectGemini() }
-                        PillButton(title: "Cancel") {
+                        YouPillButton(title: geminiChecking ? "Checking..." : "Check and connect", prominent: true) { connectGemini() }
+                        YouPillButton(title: "Cancel") {
                             withAnimation(Motion.snappy) {
                                 geminiEditing = false
                                 geminiKey = ""
@@ -753,8 +753,8 @@ struct BotVoiceScreen: View {
             .arrives(1)
 
             SettingsGroup("During a call") {
-                ToggleRow(title: "Read typed replies", detail: "Speak the replies to messages you type during a call.", isOn: binding(\.readTyped))
-                StepperRow(title: "End an idle call after", detail: "Minutes with nobody talking.", value: binding(\.idleMinutes), range: 1...60, unit: "min")
+                YouToggleRow(title: "Read typed replies", detail: "Speak the replies to messages you type during a call.", isOn: binding(\.readTyped))
+                YouStepperRow(title: "End an idle call after", detail: "Minutes with nobody talking.", value: binding(\.idleMinutes), range: 1...60, unit: "min")
             }
             .arrives(2)
 

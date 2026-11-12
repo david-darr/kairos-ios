@@ -24,7 +24,7 @@ struct AddedTabScreen: View {
                         .frame(width: 72, height: 72).kGlass(Circle())
                     Text("\(title) is off").font(KFont.display(30)).foregroundStyle(Palette.ink)
                     Text("Turn it on to use it again.").font(KFont.ui(16)).foregroundStyle(Palette.inkDim)
-                    PillButton(title: "Turn on", prominent: true) {
+                    YouPillButton(title: "Turn on", prominent: true) {
                         if let id = item?.id { store.update(id) { $0.on = true } }
                         withAnimation(Motion.snappy) { turnedOff = false }
                     }

@@ -167,7 +167,7 @@ struct ChannelDashboard: View {
                         } else {
                             EmptyLine(text: "No numbers yet. They come from the platform once it is read (Analytics).")
                         }
-                        PillButton(title: "Open post") { studio.sheet = .post(latest.id) }
+                        MakePillButton(title: "Open post") { studio.sheet = .post(latest.id) }
                     } else {
                         EmptyLine(text: "Nothing posted on this channel yet.")
                     }
@@ -230,7 +230,7 @@ struct ApprovalsView: View {
                 .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
             if studio.batchApproval && posts.count > 1 {
-                PillButton(title: "Approve all \(posts.count)", symbol: "checkmark.circle", filled: true, expand: true) { studio.sheet = .approveAll }
+                MakePillButton(title: "Approve all \(posts.count)", symbol: "checkmark.circle", filled: true, expand: true) { studio.sheet = .approveAll }
             }
             if empty {
                 EmptyLine(text: studio.currentChannelID == nil ? "Nothing is waiting for you. Posts appear here when the Producer brings them for approval." : "Nothing from this channel is waiting for you.")
@@ -279,8 +279,8 @@ struct ApprovalPostCard: View {
                 Text(post.why).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
             }
             HStack(spacing: 8) {
-                PillButton(title: "Approve", filled: true, expand: true) { studio.sheet = .approvePost(post.id) }
-                PillButton(title: "Edit") { studio.sheet = .editPost(post.id) }
+                MakePillButton(title: "Approve", filled: true, expand: true) { studio.sheet = .approvePost(post.id) }
+                MakePillButton(title: "Edit") { studio.sheet = .editPost(post.id) }
                 Menu {
                     Button("Reject", systemImage: "xmark") { studio.sheet = .rejectPost(post.id) }
                     Button("Redraft", systemImage: "arrow.uturn.backward") { studio.sheet = .redraftPost(post.id) }
@@ -327,13 +327,13 @@ struct PlanCard: View {
             .foregroundStyle(Palette.ink)
             .tint(Palette.goldText)
             HStack(spacing: 8) {
-                PillButton(title: "Approve plan", filled: true, expand: true) {
+                MakePillButton(title: "Approve plan", filled: true, expand: true) {
                     if let index = studio.plans.firstIndex(where: { $0.id == plan.id }) {
                         withAnimation(Motion.snappy) { studio.plans[index].approved = true }
                     }
                     toast.say("Plan approved. The team can render it now.")
                 }
-                PillButton(title: "Reject") { studio.sheet = .planReject(plan.id) }
+                MakePillButton(title: "Reject") { studio.sheet = .planReject(plan.id) }
             }
         }
         .padding(14)
@@ -355,11 +355,11 @@ struct SheetApprovalCard: View {
             CharacterSheetArt(version: version, family: character.family).frame(height: 120)
             Text(version.note).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
             HStack(spacing: 8) {
-                PillButton(title: "Approve", filled: true, expand: true) {
+                MakePillButton(title: "Approve", filled: true, expand: true) {
                     studio.setCharacter(character.id, version: version.number, status: .approved)
                     toast.say("\(character.name) version \(version.number) approved.")
                 }
-                PillButton(title: "Reject") { studio.sheet = .sheetReject("\(character.id)#\(version.number)") }
+                MakePillButton(title: "Reject") { studio.sheet = .sheetReject("\(character.id)#\(version.number)") }
             }
         }
         .padding(14)
@@ -391,11 +391,11 @@ struct PackApprovalCard: View {
                 }
             }
             HStack(spacing: 8) {
-                PillButton(title: "Approve", filled: true, expand: true) {
+                MakePillButton(title: "Approve", filled: true, expand: true) {
                     studio.setPack(pack.id, version: version.number, status: .approved)
                     toast.say("\(pack.name) version \(version.number) approved.")
                 }
-                PillButton(title: "Reject") { studio.sheet = .packReject("\(pack.id)#\(version.number)") }
+                MakePillButton(title: "Reject") { studio.sheet = .packReject("\(pack.id)#\(version.number)") }
             }
         }
         .padding(14)
@@ -492,7 +492,7 @@ struct StudioCalendarView: View {
                 GlassIconButton(symbol: "chevron.right", label: "Next week", size: 40) { withAnimation(Motion.snappy) { studio.weekOffset += 1 } }
             }
             if studio.weekOffset != 0 {
-                PillButton(title: "This week") { withAnimation(Motion.snappy) { studio.weekOffset = 0 } }
+                MakePillButton(title: "This week") { withAnimation(Motion.snappy) { studio.weekOffset = 0 } }
             }
             ForEach(0..<7, id: \.self) { day in
                 let items = studio.weekOffset == 0 ? list.filter { $0.scheduledDay == day } : []
@@ -641,29 +641,29 @@ struct PostActions: View {
             HStack(spacing: 8) {
                 switch post.publish {
                 case .awaiting:
-                    PillButton(title: "Go to Approvals", filled: true) { studio.open(.approvals) }
+                    MakePillButton(title: "Go to Approvals", filled: true) { studio.open(.approvals) }
                 case .approved:
-                    PillButton(title: "Prepare post", filled: true) { toast.say(studio.prepare(post.id)) }
-                    PillButton(title: "Schedule") { studio.sheet = .schedule(post.id) }
+                    MakePillButton(title: "Prepare post", filled: true) { toast.say(studio.prepare(post.id)) }
+                    MakePillButton(title: "Schedule") { studio.sheet = .schedule(post.id) }
                 case .prepared, .waitingForYou:
-                    PillButton(title: "Checklist", filled: true) { studio.sheet = .checklist(post.id) }
+                    MakePillButton(title: "Checklist", filled: true) { studio.sheet = .checklist(post.id) }
                     if platform == .youtube, studio.postingConnected {
-                        PillButton(title: "Post to YouTube") { studio.sheet = .youtube(post.id) }
+                        MakePillButton(title: "Post to YouTube") { studio.sheet = .youtube(post.id) }
                     }
                     if platform == .tiktok {
-                        PillButton(title: "Post to TikTok") { studio.sheet = .tiktok(post.id) }
+                        MakePillButton(title: "Post to TikTok") { studio.sheet = .tiktok(post.id) }
                     }
                     if platform == .instagram, studio.instagramAppSaved {
-                        PillButton(title: "Post to Instagram") { studio.sheet = .instagram(post.id) }
+                        MakePillButton(title: "Post to Instagram") { studio.sheet = .instagram(post.id) }
                     }
-                    PillButton(title: post.publish == .waitingForYou ? "Open upload page again" : "Open upload page") {
+                    MakePillButton(title: post.publish == .waitingForYou ? "Open upload page again" : "Open upload page") {
                         toast.say("Open upload page needs the Kairos desktop app. The checklist has everything to post it by hand.")
                     }
-                    PillButton(title: "Schedule") { studio.sheet = .schedule(post.id) }
-                    PillButton(title: "Mark posted") { studio.sheet = .markPosted(post.id) }
+                    MakePillButton(title: "Schedule") { studio.sheet = .schedule(post.id) }
+                    MakePillButton(title: "Mark posted") { studio.sheet = .markPosted(post.id) }
                 case .failed:
-                    PillButton(title: "Prepare again", filled: true) { toast.say(studio.prepare(post.id)) }
-                    PillButton(title: "Mark posted") { studio.sheet = .markPosted(post.id) }
+                    MakePillButton(title: "Prepare again", filled: true) { toast.say(studio.prepare(post.id)) }
+                    MakePillButton(title: "Mark posted") { studio.sheet = .markPosted(post.id) }
                 case .posted:
                     if let link = post.link, let url = URL(string: link) {
                         Link(destination: url) {
@@ -672,9 +672,9 @@ struct PostActions: View {
                         }
                     }
                 case .rejected:
-                    PillButton(title: "Redraft", filled: true) { studio.sheet = .redraftPost(post.id) }
+                    MakePillButton(title: "Redraft", filled: true) { studio.sheet = .redraftPost(post.id) }
                 case .drafted:
-                    PillButton(title: "Details") { studio.sheet = .post(post.id) }
+                    MakePillButton(title: "Details") { studio.sheet = .post(post.id) }
                 }
             }
         }
@@ -712,7 +712,7 @@ struct RoutesPanel: View {
                 Text(state).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
             }
             Spacer(minLength: 0)
-            if let button { PillButton(title: button, action: action) }
+            if let button { MakePillButton(title: button, action: action) }
         }
         .frame(minHeight: 44)
     }
@@ -750,7 +750,7 @@ struct ScoreboardView: View {
                     HStack {
                         Text(post.title).font(KFont.ui(15)).foregroundStyle(Palette.ink).lineLimit(1)
                         Spacer(minLength: 8)
-                        PillButton(title: "Open post") { studio.sheet = .post(post.id) }
+                        MakePillButton(title: "Open post") { studio.sheet = .post(post.id) }
                     }
                 }
             }
@@ -776,7 +776,7 @@ struct ScoreboardView: View {
                             Text("%").foregroundStyle(Palette.inkFaint)
                         }
                     }
-                    PillButton(title: "Save weights", filled: true, expand: true) { saveWeights() }
+                    MakePillButton(title: "Save weights", filled: true, expand: true) { saveWeights() }
                     Toggle(isOn: Binding(get: { studio.batchApproval }, set: { value in
                         studio.batchApproval = value
                         toast.say(value ? "One-tap batch approval is on." : "One-tap batch approval is off.")
@@ -821,8 +821,8 @@ struct ScoreboardView: View {
             if let evidence = decision.evidence { Text(evidence).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkDim) }
             if actions {
                 HStack(spacing: 8) {
-                    PillButton(title: "Confirm", filled: true) { studio.sheet = .decision(decision.id) }
-                    PillButton(title: "Reject") {
+                    MakePillButton(title: "Confirm", filled: true) { studio.sheet = .decision(decision.id) }
+                    MakePillButton(title: "Reject") {
                         if let index = studio.decisions.firstIndex(where: { $0.id == decision.id }) {
                             withAnimation(Motion.snappy) { studio.decisions[index].status = .rejected }
                         }
@@ -881,7 +881,7 @@ struct ChannelAnalyticsView: View {
                                 .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
                         }
                         Spacer(minLength: 6)
-                        PillButton(title: "Open post") { studio.sheet = .post(post.id) }
+                        MakePillButton(title: "Open post") { studio.sheet = .post(post.id) }
                     }
                 }
             }
@@ -904,9 +904,9 @@ struct ChannelAnalyticsView: View {
                             }
                             Spacer()
                             if channel.connection == "Connected" {
-                                PillButton(title: "Sync now") { toast.say("Stored numbers for 2 posts.") }
+                                MakePillButton(title: "Sync now") { toast.say("Stored numbers for 2 posts.") }
                             } else {
-                                PillButton(title: "Connections") { studio.go(.library(.connections)) }
+                                MakePillButton(title: "Connections") { studio.go(.library(.connections)) }
                             }
                         }
                     } else {
@@ -916,13 +916,13 @@ struct ChannelAnalyticsView: View {
                                 Text(studio.pageReads[channel.platform] == true ? "On" : "Off").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                             }
                             Spacer()
-                            PillButton(title: "Connections") { studio.go(.library(.connections)) }
+                            MakePillButton(title: "Connections") { studio.go(.library(.connections)) }
                         }
                     }
                     HStack {
                         Text("Import numbers").font(KFont.ui(15)).foregroundStyle(Palette.ink)
                         Spacer()
-                        PillButton(title: "Open") { studio.sheet = .importNumbers }
+                        MakePillButton(title: "Open") { studio.sheet = .importNumbers }
                     }
                 }
             }
@@ -949,7 +949,7 @@ struct ReportView: View {
                         }
                     }
                 }
-                PillButton(title: studio.reportSent ? "Sent to your Inbox" : "Send to my Inbox", symbol: studio.reportSent ? "checkmark" : "tray.and.arrow.down", filled: !studio.reportSent) {
+                MakePillButton(title: studio.reportSent ? "Sent to your Inbox" : "Send to my Inbox", symbol: studio.reportSent ? "checkmark" : "tray.and.arrow.down", filled: !studio.reportSent) {
                     guard !studio.reportSent else { return }
                     withAnimation(Motion.snappy) { studio.reportSent = true }
                     toast.say("Report sent to your Inbox.")
@@ -957,7 +957,7 @@ struct ReportView: View {
             }
             MakeTile(title: "Import numbers", symbol: "square.and.arrow.down") {
                 Text("Paste rows from a CSV file to attach numbers to posted posts.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-                PillButton(title: "Import numbers") { studio.sheet = .importNumbers }
+                MakePillButton(title: "Import numbers") { studio.sheet = .importNumbers }
             }
         }
     }
@@ -981,15 +981,15 @@ struct ChannelSettingsView: View {
                     HStack(spacing: 8) {
                         switch channel.state {
                         case .archived:
-                            PillButton(title: "Restore", filled: true) {
+                            MakePillButton(title: "Restore", filled: true) {
                                 studio.setChannel(channel.id) { $0.state = .live }
                                 toast.say("Channel restored.")
                             }
                         case .paused:
-                            PillButton(title: "Resolve warning", filled: true) { studio.sheet = .resolve(channel.id) }
-                            PillButton(title: "Archive", danger: true) { studio.sheet = .archive(channel.id) }
+                            MakePillButton(title: "Resolve warning", filled: true) { studio.sheet = .resolve(channel.id) }
+                            MakePillButton(title: "Archive", danger: true) { studio.sheet = .archive(channel.id) }
                         case .live:
-                            PillButton(title: "Archive", danger: true) { studio.sheet = .archive(channel.id) }
+                            MakePillButton(title: "Archive", danger: true) { studio.sheet = .archive(channel.id) }
                         }
                     }
                 }
@@ -1018,9 +1018,9 @@ struct ChannelSettingsView: View {
                 Text(channel.connection == "Connected" ? "Uses \(channel.connectedAs ?? "") for analytics and posting. Last synced today." : "Not connected. Choose the Google account that owns this channel.")
                     .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                 HStack(spacing: 8) {
-                    PillButton(title: channel.connection == "Connected" ? "Change" : "Connect", filled: channel.connection != "Connected") { studio.sheet = .accountChooser(channel.id) }
+                    MakePillButton(title: channel.connection == "Connected" ? "Change" : "Connect", filled: channel.connection != "Connected") { studio.sheet = .accountChooser(channel.id) }
                     if channel.connection == "Connected" {
-                        PillButton(title: "Disconnect", danger: true) {
+                        MakePillButton(title: "Disconnect", danger: true) {
                             studio.setChannel(channel.id) { $0.connection = "Not connected"; $0.connectedAs = nil }
                             toast.say("\(channel.handle) disconnected from YouTube.")
                         }
@@ -1030,17 +1030,17 @@ struct ChannelSettingsView: View {
                 let appReady = channel.platform == .tiktok ? studio.tiktokAppSaved : studio.instagramAppSaved
                 if !appReady {
                     Text("Your \(channel.platform.name) app first.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-                    PillButton(title: "Connections") { studio.go(.library(.connections)) }
+                    MakePillButton(title: "Connections") { studio.go(.library(.connections)) }
                 } else if channel.connection == "Connected" {
                     HStack(spacing: 8) {
-                        PillButton(title: "Sync numbers now") { toast.say("Stored 3 number sets; 1 post now has its link.") }
-                        PillButton(title: "Disconnect", danger: true) {
+                        MakePillButton(title: "Sync numbers now") { toast.say("Stored 3 number sets; 1 post now has its link.") }
+                        MakePillButton(title: "Disconnect", danger: true) {
                             studio.setChannel(channel.id) { $0.connection = "Not connected"; $0.connectedAs = nil }
                             toast.say("\(channel.handle) disconnected.")
                         }
                     }
                 } else {
-                    PillButton(title: "Connect", filled: true) {
+                    MakePillButton(title: "Connect", filled: true) {
                         studio.setChannel(channel.id) { $0.connection = "Connected"; $0.connectedAs = "Shop page" }
                         toast.say("Finish signing in on your desktop. Connected for this sample.")
                     }

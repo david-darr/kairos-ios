@@ -120,12 +120,12 @@ struct StylesLibrary: View {
         let studio = make.studio
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                PillButton(title: "New from a brief", symbol: "plus", filled: true) { studio.sheet = .newBrief }
-                PillButton(title: "Import") { studio.sheet = .importPack }
+                MakePillButton(title: "New from a brief", symbol: "plus", filled: true) { studio.sheet = .newBrief }
+                MakePillButton(title: "Import") { studio.sheet = .importPack }
             }
             .scrollableRow()
             if !studio.packs.contains(where: { $0.name == "Blocky voxel 3D starter" }) {
-                PillButton(title: "Add Blocky voxel 3D starter") {
+                MakePillButton(title: "Add Blocky voxel 3D starter") {
                     withAnimation(Motion.snappy) {
                         studio.packs.append(StudioPack(id: UUID().uuidString, name: "Blocky voxel 3D starter", origin: "Starter pack", summary: "Toy blocks, bright worlds.", brief: "The starter voxel look.", versions: [PackVersion(number: 1, status: .draft, note: "Starter.")]))
                     }
@@ -212,7 +212,7 @@ struct PackGroup: View {
             HStack(spacing: 8) {
                 switch version.status {
                 case .draft, .rejected, .failed:
-                    PillButton(title: "Make sample", filled: true) {
+                    MakePillButton(title: "Make sample", filled: true) {
                         studio.makeSample(pack.id, version: version.number)
                         toast.say("Rendering the sample. It takes a few minutes.")
                     }
@@ -223,11 +223,11 @@ struct PackGroup: View {
                     }
                     .frame(minHeight: 44)
                 case .waiting:
-                    PillButton(title: "Review", filled: true) { studio.open(.approvals) }
-                    PillButton(title: "Watch the sample") { toast.say("The sample plays on your desktop. Connect it to watch here.") }
+                    MakePillButton(title: "Review", filled: true) { studio.open(.approvals) }
+                    MakePillButton(title: "Watch the sample") { toast.say("The sample plays on your desktop. Connect it to watch here.") }
                 case .approved:
-                    PillButton(title: "Watch the sample") { toast.say("The sample plays on your desktop. Connect it to watch here.") }
-                    PillButton(title: "Contact sheet") { toast.say("The contact sheet opens on your desktop.") }
+                    MakePillButton(title: "Watch the sample") { toast.say("The sample plays on your desktop. Connect it to watch here.") }
+                    MakePillButton(title: "Contact sheet") { toast.say("The contact sheet opens on your desktop.") }
                 }
             }
             .scrollableRow()
@@ -248,7 +248,7 @@ struct BriefSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "New style pack", detail: "Describe the look and sound. Kairos turns it into a pack.")
+                MakeSheetTitle(title: "New style pack", detail: "Describe the look and sound. Kairos turns it into a pack.")
                 MakeField(label: "Brief", text: $brief, prompt: "Warm paper colours, hand-drawn arrows, calm narration...", limit: 12000, lines: 4...10)
                 MakeField(label: "Name (optional)", text: $name, limit: 80)
                 if working {
@@ -288,7 +288,7 @@ struct EditPackSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "Edit style pack", detail: "Saving makes a new draft version.")
+                MakeSheetTitle(title: "Edit style pack", detail: "Saving makes a new draft version.")
                 if draft != nil {
                     MakeField(label: "Name", text: bind(\.name), limit: 80)
                     MakeField(label: "Summary", text: bind(\.summary), limit: 300, lines: 2...4)
@@ -338,8 +338,8 @@ struct ImportPackSheet: View {
     var body: some View {
         FittedSheet(estimate: 340) {
             VStack(spacing: 14) {
-                SheetTitle(title: "Import a style pack", detail: "Choose a .json pack file.")
-                PillButton(title: fileName ?? "Choose a file", symbol: "doc", expand: true) { picking = true }
+                MakeSheetTitle(title: "Import a style pack", detail: "Choose a .json pack file.")
+                MakePillButton(title: fileName ?? "Choose a file", symbol: "doc", expand: true) { picking = true }
                 GoldButton(title: "Import") {
                     guard let fileName else { toast.say("Choose a pack file first."); return }
                     let name = fileName.replacingOccurrences(of: ".json", with: "")
@@ -369,7 +369,7 @@ struct CharactersLibrary: View {
     var body: some View {
         let studio = make.studio
         VStack(alignment: .leading, spacing: 12) {
-            PillButton(title: "New character", symbol: "plus", filled: true) { studio.sheet = .newCharacter }
+            MakePillButton(title: "New character", symbol: "plus", filled: true) { studio.sheet = .newCharacter }
             if studio.characters.isEmpty {
                 EmptyLine(text: "No characters yet. Make one here, or the Editor makes one when a channel uses the Flat 2D pack.")
             }
@@ -381,7 +381,7 @@ struct CharactersLibrary: View {
                             Text("\(character.family) family · \(character.castable)").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                         }
                         Spacer()
-                        PillButton(title: "New version") { studio.sheet = .characterVersion(character.id) }
+                        MakePillButton(title: "New version") { studio.sheet = .characterVersion(character.id) }
                     }
                     ForEach(character.versions.reversed()) { version in
                         HStack(alignment: .top, spacing: 12) {
@@ -395,12 +395,12 @@ struct CharactersLibrary: View {
                                 Text(version.note).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                                 if let reason = version.rejection { Text("Rejected: \(reason)").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.danger) }
                                 if version.status == .draft || version.status == .rejected {
-                                    PillButton(title: "Make sheet", filled: true) {
+                                    MakePillButton(title: "Make sheet", filled: true) {
                                         studio.setCharacter(character.id, version: version.number, status: .waiting)
                                         toast.say("Sheet made. It is waiting for your OK in Approvals.")
                                     }
                                 } else if version.status == .waiting {
-                                    PillButton(title: "Review", filled: true) { studio.open(.approvals) }
+                                    MakePillButton(title: "Review", filled: true) { studio.open(.approvals) }
                                 }
                             }
                         }
@@ -425,7 +425,7 @@ struct NewCharacterSheet: View {
     var body: some View {
         FittedSheet(estimate: 420) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "New character")
+                MakeSheetTitle(title: "New character")
                 GlassSwitch(items: ["Round", "Square", "Triangle"], selection: $family) { $0 }
                 MakeField(label: "Name (optional)", text: $name, limit: 40)
                 GoldButton(title: "Make character") {
@@ -458,7 +458,7 @@ struct CharacterVersionSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(title: "New version", detail: make.studio.character(characterID)?.name)
+                MakeSheetTitle(title: "New version", detail: make.studio.character(characterID)?.name)
                 CharacterSheetArt(version: CharacterVersion(number: 0, status: .draft, note: "", body: body_, accent: accent, accessory: accessory), family: make.studio.character(characterID)?.family ?? "Round")
                     .frame(height: 120)
                 swatchRow("Body", selection: $body_)
@@ -531,13 +531,13 @@ struct ConnectionsLibrary: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Kairos reads numbers through your own Google project and your own apps. It posts only what you approve.")
                 .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
-            PillButton(title: "Add a channel", symbol: "plus") { studio.sheet = .addChannel }
+            MakePillButton(title: "Add a channel", symbol: "plus") { studio.sheet = .addChannel }
             MakeTile(title: "YouTube", symbol: "play.rectangle") {
                 if !studio.youtubeConfigured {
                     Text("Google first: set up your Kairos Google project on your desktop.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
                 } else {
                     row("Analytics", state: studio.analyticsConnected ? "Connected" : "Not connected") {
-                        PillButton(title: "Sync now") { toast.say("Stored numbers for 3 posts.") }
+                        MakePillButton(title: "Sync now") { toast.say("Stored numbers for 3 posts.") }
                     }
                     Text("Reads views, watch time, likes and follows once a day. Read-only: it never posts.").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                     row("Posting", state: studio.postingConnected ? "Connected" : "Not connected") { EmptyView() }
@@ -556,13 +556,13 @@ struct ConnectionsLibrary: View {
                                 Text(channel.connection).font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(channel.connection == "Connected" ? Palette.success : Palette.danger)
                             }
                             Spacer(minLength: 0)
-                            PillButton(title: channel.connection == "Connected" ? "Change" : "Connect") { studio.sheet = .accountChooser(channel.id) }
+                            MakePillButton(title: channel.connection == "Connected" ? "Change" : "Connect") { studio.sheet = .accountChooser(channel.id) }
                         }
                         if channel.connection == "Needs sign-in" {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Sign in again").font(KFont.ui(14.5, .semibold)).foregroundStyle(Palette.ink)
                                 Text("Google signed this channel out. Choose its account again.").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-                                PillButton(title: "Check again") { toast.say("Google says: the channel still needs sign-in.") }
+                                MakePillButton(title: "Check again") { toast.say("Google says: the channel still needs sign-in.") }
                             }
                             .padding(12)
                             .background(Palette.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -579,7 +579,7 @@ struct ConnectionsLibrary: View {
                         toast.say("\(platform.name) page reads \(value ? "on" : "off").")
                     }), last: true)
                 }
-                PillButton(title: "Read now") { toast.say("Reading pages, 20 seconds apart. The desktop app must be open.") }
+                MakePillButton(title: "Read now") { toast.say("Reading pages, 20 seconds apart. The desktop app must be open.") }
                 Text("Read-only, from your own signed-in pages in the Kairos Browser. At most 12 pages a day per platform.").font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
             }
             MakeTile(title: "Niches", symbol: "square.grid.2x2") {
@@ -614,7 +614,7 @@ struct ConnectionsLibrary: View {
         return MakeTile(title: "\(platform.name) app", symbol: "app.badge") {
             Text(saved ? "Your app is saved. Channels connect in their settings." : "No app yet. Without one, Prepare post fills the upload page and page reads bring the numbers.")
                 .font(KFont.ui(14)).foregroundStyle(Palette.inkDim).fixedSize(horizontal: false, vertical: true)
-            PillButton(title: saved ? "Edit app" : "Set up your app", filled: !saved) { studio.sheet = .socialApp(platform) }
+            MakePillButton(title: saved ? "Edit app" : "Set up your app", filled: !saved) { studio.sheet = .socialApp(platform) }
         }
     }
 }
@@ -641,7 +641,7 @@ struct TemplatesLibrary: View {
                     }
                     .scrollableRow()
                     if !template.added {
-                        PillButton(title: "Add this team", filled: true) {
+                        MakePillButton(title: "Add this team", filled: true) {
                             if let index = studio.templates.firstIndex(where: { $0.id == template.id }) {
                                 withAnimation(Motion.snappy) { studio.templates[index].added = true }
                             }

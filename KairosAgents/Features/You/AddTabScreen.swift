@@ -53,7 +53,7 @@ struct AddTabScreen: View {
                     HStack(spacing: 10) {
                         Image(systemName: tab.symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(Palette.goldText).frame(width: 26)
                         RowLabel(title: tab.name, detail: tab.summary)
-                        PillButton(title: "Add", prominent: true) {
+                        YouPillButton(title: "Add", prominent: true) {
                             withAnimation(Motion.snappy) { store.update(tab.id) { $0.added = true; $0.on = true } }
                             YouStore.shared.say("\(tab.name) added. It is in Jump to.")
                         }
@@ -63,9 +63,9 @@ struct AddTabScreen: View {
             }
 
             SettingsGroup("Make your own") {
-                NavRow(title: "Build your own tab", detail: "Describe it, and Kairos builds it", symbol: "wand.and.stars", to: .buildTab)
+                YouNavRow(title: "Build your own tab", detail: "Describe it, and Kairos builds it", symbol: "wand.and.stars", to: .buildTab)
                 ActionRow(title: "Install a tab", detail: "From a .kairostab file or a GitHub folder", symbol: "tray.and.arrow.down") { installing = true }
-                NavRow(title: "Tabs in the Tool Store", symbol: "bag", to: .toolStore)
+                YouNavRow(title: "Tabs in the Tool Store", symbol: "bag", to: .toolStore)
             }
         }
         .sheet(isPresented: $installing) { StoreSheetView(which: .installTab) }

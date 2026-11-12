@@ -273,7 +273,7 @@ struct IntegrationsScreen: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 SearchField(prompt: "Search integrations", text: Binding(get: { store.query }, set: { store.query = $0 }))
-                ChipPicker(items: IntegrationFilter.allCases, selection: Binding(get: { store.filter }, set: { store.filter = $0 })) { $0.title }
+                YouChipPicker(items: IntegrationFilter.allCases, selection: Binding(get: { store.filter }, set: { store.filter = $0 })) { $0.title }
             }
             .arrives(1)
 
@@ -291,9 +291,9 @@ struct IntegrationsScreen: View {
             .arrives(2)
 
             SettingsGroup("More") {
-                NavRow(title: "MCP catalog", detail: "Known tool servers, added in one step", symbol: "square.grid.2x2", value: "\(store.catalog.count)", to: .mcpCatalog)
-                NavRow(title: "Google accounts", detail: "Gmail, Calendar and Drive", symbol: "person.crop.circle", value: "\(store.googleAccounts.count)", to: .google)
-                NavRow(title: "Image generation", detail: "Your own image key for designs", symbol: "photo", to: .images)
+                YouNavRow(title: "MCP catalog", detail: "Known tool servers, added in one step", symbol: "square.grid.2x2", value: "\(store.catalog.count)", to: .mcpCatalog)
+                YouNavRow(title: "Google accounts", detail: "Gmail, Calendar and Drive", symbol: "person.crop.circle", value: "\(store.googleAccounts.count)", to: .google)
+                YouNavRow(title: "Image generation", detail: "Your own image key for designs", symbol: "photo", to: .images)
             }
             .arrives(3)
         }
@@ -332,7 +332,7 @@ struct IntegrationsScreen: View {
             HStack(spacing: 8) {
                 RowLabel(title: "GitHub", detail: "GitHub's remote tool server. It needs a personal access token: GitHub Settings, Developer settings, Personal access tokens.", symbol: "puzzlepiece.extension")
                 if !githubOpen {
-                    PillButton(title: "Connect", prominent: true) {
+                    YouPillButton(title: "Connect", prominent: true) {
                         withAnimation(Motion.snappy) { githubOpen = true }
                     }
                 }
@@ -345,7 +345,7 @@ struct IntegrationsScreen: View {
                     IntegrationErrorLine(text: githubError)
                 }
                 RowButtons {
-                    PillButton(title: "Cancel") {
+                    YouPillButton(title: "Cancel") {
                         withAnimation(Motion.snappy) {
                             githubOpen = false
                             githubToken = ""
@@ -355,7 +355,7 @@ struct IntegrationsScreen: View {
                     if githubSaving {
                         IntegrationBusyLabel(text: "Saving...")
                     } else {
-                        PillButton(title: "Save", prominent: true) { saveGitHub() }
+                        YouPillButton(title: "Save", prominent: true) { saveGitHub() }
                     }
                 }
             }
@@ -430,7 +430,7 @@ struct IntegrationDetailScreen: View {
                         HStack(spacing: 8) {
                             IntegrationBusyLabel(text: "Waiting for sign-in...")
                             Spacer(minLength: 0)
-                            PillButton(title: "Cancel") {
+                            YouPillButton(title: "Cancel") {
                                 withAnimation(Motion.snappy) { signingIn = false }
                                 YouStore.shared.say("Sign-in did not finish.")
                             }
@@ -783,7 +783,7 @@ struct MCPCatalogScreen: View {
                 .foregroundStyle(Palette.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                PillButton(title: "Docs", symbol: "doc.text") {
+                YouPillButton(title: "Docs", symbol: "doc.text") {
                     if let link = URL(string: server.docs) { openURL(link) }
                 }
                 Spacer(minLength: 0)
@@ -802,7 +802,7 @@ struct MCPCatalogScreen: View {
         } else if store.isAdded(server) {
             StatusPill(text: "Added", tone: .ok)
         } else {
-            PillButton(title: server.signIn ? "Add and sign in" : "Add", prominent: true) { add(server) }
+            YouPillButton(title: server.signIn ? "Add and sign in" : "Add", prominent: true) { add(server) }
         }
     }
 
@@ -882,7 +882,7 @@ struct GoogleScreen: View {
                       status: account.needsReconnect ? "Reconnect" : "Connected", tone: account.needsReconnect ? .warn : .ok)
             HStack(spacing: 4) {
                 FieldRow(title: "Alias", text: Binding(get: { aliasDrafts[account.id] ?? account.alias }, set: { aliasDrafts[account.id] = $0 }), prompt: "Shop, Home ...")
-                PillButton(title: "Save") { saveAlias(account) }
+                YouPillButton(title: "Save") { saveAlias(account) }
                     .padding(.trailing, 12)
             }
             StatusRow(title: "Gmail", symbol: "envelope", status: serviceText(account.gmail, account), tone: serviceTone(account.gmail, account))
@@ -892,9 +892,9 @@ struct GoogleScreen: View {
                 if reconnecting.contains(account.id) {
                     IntegrationBusyLabel(text: "Finish on your desktop...")
                 } else if account.needsReconnect {
-                    PillButton(title: "Reconnect", symbol: "arrow.clockwise", prominent: true) { reconnect(account) }
+                    YouPillButton(title: "Reconnect", symbol: "arrow.clockwise", prominent: true) { reconnect(account) }
                 }
-                PillButton(title: "Disconnect", danger: true) { disconnectTarget = account }
+                YouPillButton(title: "Disconnect", danger: true) { disconnectTarget = account }
             }
         }
     }
@@ -1112,7 +1112,7 @@ struct ImageGenerationScreen: View {
                     FieldRow(title: "Address", text: $address, prompt: "https://images.example.com/v1", keyboard: .URL)
                 }
                 FieldRow(title: "Model", text: $model, prompt: provider.defaultModel.isEmpty ? "Model name" : provider.defaultModel)
-                StepperRow(title: "Daily limit", detail: limit == 0 ? "No limit" : "Images a day", value: $limit, range: 0...500, step: 10)
+                YouStepperRow(title: "Daily limit", detail: limit == 0 ? "No limit" : "Images a day", value: $limit, range: 0...500, step: 10)
             }
             .arrives(1)
 

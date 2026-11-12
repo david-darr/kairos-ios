@@ -93,9 +93,9 @@ struct LocalModelsScreen: View {
             Text("Install Ollama on your PC from ollama.com and open it, then check again. Or use the built-in engine, which needs nothing else.")
                 .font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.inkDim)
             HStack(spacing: 8) {
-                PillButton(title: store.checking ? "Checking..." : "Check again", symbol: "arrow.clockwise") { store.recheck() }
+                DeskPillButton(title: store.checking ? "Checking..." : "Check again", symbol: "arrow.clockwise") { store.recheck() }
                     .disabled(store.checking)
-                PillButton(title: "Use built-in engine", symbol: "cpu") {
+                DeskPillButton(title: "Use built-in engine", symbol: "cpu") {
                     withAnimation(Motion.snappy) { store.engine = .builtIn }
                 }
             }
@@ -157,7 +157,7 @@ struct LocalModelsScreen: View {
                         Text("http://127.0.0.1:8091").font(CodeFont.mono(12.5)).foregroundStyle(Palette.inkFaint)
                     }
                     Spacer(minLength: 4)
-                    PillButton(title: "Stop", symbol: "stop.fill") {
+                    DeskPillButton(title: "Stop", symbol: "stop.fill") {
                         store.stopEngine()
                         toast = "\(running.name) stopped"
                     }
@@ -188,7 +188,7 @@ struct LocalModelsScreen: View {
                 }
             }
             if all.isEmpty {
-                EmptyNote(
+                DeskEmptyNote(
                     symbol: "shippingbox",
                     title: store.engine == .ollama ? "No models installed yet" : "No models downloaded yet",
                     text: store.engine == .ollama ? "Choose a local model from the catalog." : "Choose a model to run on this computer.",
@@ -332,12 +332,12 @@ struct LocalModelsScreen: View {
                         .font(KFont.ui(13.5, relativeTo: .footnote))
                         .foregroundStyle(Palette.danger)
                     Spacer(minLength: 4)
-                    PillButton(title: "Retry", symbol: "arrow.clockwise") { store.pull(entry, into: store.engine) }
+                    DeskPillButton(title: "Retry", symbol: "arrow.clockwise") { store.pull(entry, into: store.engine) }
                 case .some(.done), .none:
                     if installed {
                         Chip(text: state == .some(.done) ? "Done. Installed" : "Installed", symbol: "checkmark", filled: true)
                     } else {
-                        PillButton(title: "Pull", symbol: "arrow.down", filled: true) { store.pull(entry, into: store.engine) }
+                        DeskPillButton(title: "Pull", symbol: "arrow.down", filled: true) { store.pull(entry, into: store.engine) }
                     }
                     Spacer()
                 }

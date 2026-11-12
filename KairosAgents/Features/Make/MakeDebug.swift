@@ -13,7 +13,7 @@ enum MakeDebug {
         case "documents": return host(MadeListScreen(kind: .document))
         case "confirm":
             return AnyView(Color.clear.kScreen().sheet(isPresented: .constant(true)) {
-                SwipeUpConfirm(title: "Approve this post?", detail: "Clean your chain in 60 seconds, for @trailtips.", points: ["It moves to Publishing, ready to prepare.", "Nothing is posted until you press Post."], confirmLabel: "Swipe up to approve") {}
+                MakeSwipeUpConfirm(title: "Approve this post?", detail: "Clean your chain in 60 seconds, for @trailtips.", points: ["It moves to Publishing, ready to prepare.", "Nothing is posted until you press Post."], confirmLabel: "Swipe up to approve") {}
             })
         default:
             break

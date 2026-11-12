@@ -231,7 +231,7 @@ struct SectionTitle: View {
 }
 
 /// A pill-shaped secondary button with an icon.
-struct PillButton: View {
+struct DeskPillButton: View {
     let title: String
     var symbol: String? = nil
     var tint: Color = Palette.ink
@@ -273,7 +273,7 @@ struct NoteLine: View {
 }
 
 /// An empty state inside a screen: an icon, a title, one line and an optional action.
-struct EmptyNote: View {
+struct DeskEmptyNote: View {
     let symbol: String
     let title: String
     let text: String
@@ -290,7 +290,7 @@ struct EmptyNote: View {
             Text(title).font(KFont.ui(18, .semibold, relativeTo: .headline)).foregroundStyle(Palette.ink)
             Text(text).font(KFont.ui(15, relativeTo: .subheadline)).foregroundStyle(Palette.inkDim).multilineTextAlignment(.center)
             if let action, let perform {
-                PillButton(title: action, symbol: nil, action: perform).padding(.top, 4)
+                DeskPillButton(title: action, symbol: nil, action: perform).padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity)

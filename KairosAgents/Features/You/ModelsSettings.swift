@@ -201,12 +201,12 @@ struct ModelsScreen: View {
     var body: some View {
         SettingsPage("Models", subtitle: "The models your chats and bots can use.", trailing: {
             if !sample.connections.isEmpty {
-                PillButton(title: "Test all", symbol: "bolt") { testAll() }
+                YouPillButton(title: "Test all", symbol: "bolt") { testAll() }
             }
         }) {
             SettingsGroup {
-                NavRow(title: "Add a model", detail: "A CLI, a local server or an API key.", symbol: "plus", to: .addModel)
-                NavRow(title: "Help me set up a model", detail: "A step-by-step guide, with sign-in.", symbol: "wand.and.stars", to: .modelGuide)
+                YouNavRow(title: "Add a model", detail: "A CLI, a local server or an API key.", symbol: "plus", to: .addModel)
+                YouNavRow(title: "Help me set up a model", detail: "A step-by-step guide, with sign-in.", symbol: "wand.and.stars", to: .modelGuide)
             }
             .arrives(0)
 
@@ -237,7 +237,7 @@ struct ModelsScreen: View {
             }
 
             SettingsGroup("Long chats", footer: "When a chat fills 85% of the model's context window, Kairos summarises its earlier part in the background. The whole chat stays, the last messages stay word for word, and nothing is deleted. Claude Code and Codex manage their own.") {
-                ToggleRow(title: "Compact local and API chats automatically", isOn: Binding(
+                YouToggleRow(title: "Compact local and API chats automatically", isOn: Binding(
                     get: { sample.autoCompact },
                     set: { on in
                         sample.autoCompact = on
@@ -382,14 +382,14 @@ struct ModelsScreen: View {
             }
 
             HStack(spacing: 8) {
-                PillButton(title: "Test", symbol: "bolt") { test(connection) }
+                YouPillButton(title: "Test", symbol: "bolt") { test(connection) }
                 if canShare(connection) {
-                    PillButton(title: connection.sharedWith.isEmpty ? "Share" : "Shared with \(connection.sharedWith.count)", symbol: "person.2") {
+                    YouPillButton(title: connection.sharedWith.isEmpty ? "Share" : "Shared with \(connection.sharedWith.count)", symbol: "person.2") {
                         sharing = connection
                     }
                 }
                 if own {
-                    PillButton(title: "Remove", danger: true) { removing = connection }
+                    YouPillButton(title: "Remove", danger: true) { removing = connection }
                 }
             }
         }
@@ -574,7 +574,7 @@ struct AddModelScreen: View {
             GoldButton(title: kind == .antigravity ? "Connect to Kairos" : "Add model") { add() }
 
             SettingsGroup {
-                NavRow(title: "Help me set up a model", detail: "A step-by-step guide, with sign-in.", symbol: "wand.and.stars", to: .modelGuide)
+                YouNavRow(title: "Help me set up a model", detail: "A step-by-step guide, with sign-in.", symbol: "wand.and.stars", to: .modelGuide)
             }
         }
         .animation(Motion.snappy, value: kind)
@@ -629,7 +629,7 @@ struct AddModelScreen: View {
                 FieldRow(title: "Server URL", text: $url, prompt: "http://localhost:11434/v1", keyboard: .URL)
                 FieldRow(title: "Model id", text: $model, prompt: "qwen3:8b")
                 FieldRow(title: "Context window", text: $context, prompt: "16384", keyboard: .numberPad)
-                ToggleRow(title: "Accepts images", detail: "The model can read pictures you attach.", isOn: $images)
+                YouToggleRow(title: "Accepts images", detail: "The model can read pictures you attach.", isOn: $images)
             }
         }
     }
@@ -647,7 +647,7 @@ struct AddModelScreen: View {
             FieldRow(title: "Base URL", text: $url, prompt: "https://openrouter.ai/api/v1", keyboard: .URL)
             FieldRow(title: "Model id", text: $model, prompt: "Model id")
             FieldRow(title: "API key", text: $key, prompt: "API key", secure: true)
-            ToggleRow(title: "Accepts images", detail: "The model can read pictures you attach.", isOn: $images)
+            YouToggleRow(title: "Accepts images", detail: "The model can read pictures you attach.", isOn: $images)
         }
     }
 
@@ -860,7 +860,7 @@ struct ModelGuideScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 if !isBlocked(choice) {
-                    PillButton(title: ready ? "Review setup" : "Choose this", prominent: !ready) { choose(choice) }
+                    YouPillButton(title: ready ? "Review setup" : "Choose this", prominent: !ready) { choose(choice) }
                 }
             }
         }

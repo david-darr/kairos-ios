@@ -380,7 +380,7 @@ private extension View {
 }
 
 /// A row that opens another You screen.
-struct NavRow: View {
+struct YouNavRow: View {
     let title: String
     var detail: String?
     var symbol: String?
@@ -447,7 +447,7 @@ struct ActionRow: View {
 }
 
 /// A switch row. The switch changes at once.
-struct ToggleRow: View {
+struct YouToggleRow: View {
     let title: String
     var detail: String?
     var symbol: String?
@@ -576,7 +576,7 @@ struct FieldRow: View {
 }
 
 /// A number with minus and plus.
-struct StepperRow: View {
+struct YouStepperRow: View {
     let title: String
     var detail: String?
     @Binding var value: Int
@@ -700,7 +700,7 @@ struct RowButtons<Content: View>: View {
 }
 
 /// A small capsule button for inside rows.
-struct PillButton: View {
+struct YouPillButton: View {
     let title: String
     var symbol: String?
     var prominent = false
@@ -755,7 +755,7 @@ struct SearchField: View {
 }
 
 /// Small choice chips that scroll sideways (filters, categories).
-struct ChipPicker<Item: Hashable>: View {
+struct YouChipPicker<Item: Hashable>: View {
     let items: [Item]
     @Binding var selection: Item
     let title: (Item) -> String

@@ -280,7 +280,7 @@ struct LookScreen: View {
                 SliderRow(title: "Swirl", value: $look.swirl) { percent($0) }
                 SliderRow(title: "Grain mixer", value: $look.grainMixer) { percent($0) }
                 SliderRow(title: "Grain overlay", value: $look.grainOverlay) { percent($0) }
-                ToggleRow(title: "Animate background", isOn: $look.animateFlow)
+                YouToggleRow(title: "Animate background", isOn: $look.animateFlow)
             }
         case .image:
             imageGroup
@@ -429,7 +429,7 @@ struct LookScreen: View {
             SettingsGroup("How it plays", footer: "Art from ASCII Magic (MIT). Reduce Motion shows the first frame.") {
                 PickRow(title: "Look", selection: $look.artLook, options: ["As made", "Halftone dots", "ASCII", "Dithered", "Blocks"]) { $0 }
                 SliderRow(title: "Show art through panels", value: $look.artPanels) { percent($0) }
-                ToggleRow(title: "Animate art", isOn: $look.animateArt)
+                YouToggleRow(title: "Animate art", isOn: $look.animateArt)
             }
         }
     }
@@ -457,18 +457,18 @@ struct LookScreen: View {
     private var effectGroup: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel(text: "Background effect").padding(.leading, 6)
-            ChipPicker(items: LookEffect.allCases, selection: $look.effect) { $0.title }
+            YouChipPicker(items: LookEffect.allCases, selection: $look.effect) { $0.title }
             SettingsGroup {
-                StepperRow(title: "Density", detail: "Cell size in points", value: Binding(get: { Int(look.density) }, set: { look.density = Double($0) }), range: 3...24)
+                YouStepperRow(title: "Density", detail: "Cell size in points", value: Binding(get: { Int(look.density) }, set: { look.density = Double($0) }), range: 3...24)
                 PickRow(title: "Tint", selection: $look.effectTint, options: look.effect == .dithered ? ["Original palette", "Theme accent", "Picture colours"] : ["Theme accent", "Picture colours"]) { $0 }
-                ToggleRow(title: "Animate effect", isOn: $look.animateEffect)
+                YouToggleRow(title: "Animate effect", isOn: $look.animateEffect)
             }
         }
     }
 
     private var scenesGroup: some View {
         SettingsGroup("Halftone scenes", footer: "Dotted pictures behind Home and chats. Your own pictures stay on this phone.") {
-            ToggleRow(title: "Halftone backgrounds", isOn: $look.halftone)
+            YouToggleRow(title: "Halftone backgrounds", isOn: $look.halftone)
             if look.halftone {
                 ForEach(["Home", "New chat", "Conversation"], id: \.self) { scene in
                     sceneRow(scene)
@@ -484,12 +484,12 @@ struct LookScreen: View {
                 .frame(width: 56, height: 40)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             RowLabel(title: scene, detail: custom ? "Your picture" : "Kairos default")
-            PillButton(title: "Replace") {
+            YouPillButton(title: "Replace") {
                 withAnimation(Motion.snappy) { look.scenes[scene] = true }
                 YouStore.shared.say("\(scene) scene replaced")
             }
             if custom {
-                PillButton(title: "Reset") {
+                YouPillButton(title: "Reset") {
                     withAnimation(Motion.snappy) { look.scenes[scene] = false }
                 }
             }
@@ -955,7 +955,7 @@ struct LayoutScreen: View {
             LayoutArrow(symbol: "arrow.down", enabled: index < layout.pins.count - 1, label: "Move \(layout.title(of: id)) down") {
                 withAnimation(Motion.snappy) { layout.movePin(index, by: 1) }
             }
-            PillButton(title: "Unpin") {
+            YouPillButton(title: "Unpin") {
                 withAnimation(Motion.snappy) { layout.pins.removeAll { $0 == id } }
             }
         }

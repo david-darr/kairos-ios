@@ -101,12 +101,12 @@ struct StoreItemScreen: View {
                         .padding(10)
                         .kCard(radius: 18)
                     HStack {
-                        PillButton(title: "Save", prominent: true) {
+                        YouPillButton(title: "Save", prominent: true) {
                             store.update(item.id) { $0.body = bodyDraft }
                             withAnimation(Motion.snappy) { editing = false }
                             YouStore.shared.say("Saved \(item.name)")
                         }
-                        PillButton(title: "Cancel") {
+                        YouPillButton(title: "Cancel") {
                             bodyDraft = item.body
                             withAnimation(Motion.snappy) { editing = false }
                         }
@@ -163,7 +163,7 @@ struct StoreItemScreen: View {
                         HStack {
                             Text(tool).font(.system(size: 15, design: .monospaced)).foregroundStyle(Palette.ink)
                             Spacer()
-                            PillButton(title: "Accept") {
+                            YouPillButton(title: "Accept") {
                                 store.update(item.id) { $0.heldTools.removeAll { $0 == tool } }
                             }
                         }
@@ -178,7 +178,7 @@ struct StoreItemScreen: View {
                 if item.needsSignIn {
                     ActionRow(title: "Sign in", detail: "Finish it in the browser on your desktop", symbol: "person.crop.circle", tone: .gold) { signIn(item) }
                 }
-                NavRow(title: "Manage", detail: "Settings, Integrations", symbol: "slider.horizontal.3", to: .integrations)
+                YouNavRow(title: "Manage", detail: "Settings, Integrations", symbol: "slider.horizontal.3", to: .integrations)
                 ActionRow(title: "Remove", symbol: "trash", tone: .danger) { confirmRemove = true }
             }
         } else {
@@ -199,7 +199,7 @@ struct StoreItemScreen: View {
         }
         SettingsGroup {
             if item.added {
-                ToggleRow(title: "Enabled", isOn: Binding(get: { item.on }, set: { on in store.update(item.id) { $0.on = on } }))
+                YouToggleRow(title: "Enabled", isOn: Binding(get: { item.on }, set: { on in store.update(item.id) { $0.on = on } }))
                 ActionRow(title: "Reinstall", symbol: "arrow.clockwise") { YouStore.shared.say("Reinstalled. Restart Kairos to load its workspace.") }
                 ActionRow(title: "Remove add-on", symbol: "trash", tone: .danger) { confirmRemove = true }
             } else {
@@ -226,8 +226,8 @@ struct StoreItemScreen: View {
                     YouStore.shared.say("\(item.name) approved and on")
                 }
             } else if item.added {
-                ToggleRow(title: "On", detail: "Off hides it everywhere", isOn: Binding(get: { item.on }, set: { on in store.update(item.id) { $0.on = on } }))
-                NavRow(title: "Open \(item.name)", symbol: item.symbol, to: .addedTab(item.name))
+                YouToggleRow(title: "On", detail: "Off hides it everywhere", isOn: Binding(get: { item.on }, set: { on in store.update(item.id) { $0.on = on } }))
+                YouNavRow(title: "Open \(item.name)", symbol: item.symbol, to: .addedTab(item.name))
             }
             if item.prebuilt && !item.added {
                 ActionRow(title: "Add", symbol: "plus", tone: .gold) {
@@ -250,7 +250,7 @@ struct StoreItemScreen: View {
     private func automationPart(_ item: StoreItem) -> some View {
         SettingsGroup(footer: "Added automations start turned off. Choose delivery and a model in Tasks.") {
             if item.added {
-                ToggleRow(title: "On", isOn: Binding(get: { item.on }, set: { on in store.update(item.id) { $0.on = on } }))
+                YouToggleRow(title: "On", isOn: Binding(get: { item.on }, set: { on in store.update(item.id) { $0.on = on } }))
                 ActionRow(title: "Remove", symbol: "trash", tone: .danger) { confirmRemove = true }
             } else {
                 ActionRow(title: "Add", symbol: "plus", tone: .gold) {
@@ -496,7 +496,7 @@ private struct PublishSheet: View {
                                 ValueRow(title: "\(slug)/store.json", value: "1 kB")
                             }
                             SettingsGroup {
-                                ToggleRow(title: "I understand it will be public on GitHub under the MIT licence", isOn: $consent)
+                                YouToggleRow(title: "I understand it will be public on GitHub under the MIT licence", isOn: $consent)
                             }
                         }
                         if !previewed {
@@ -630,7 +630,7 @@ private struct CustomServerSheet: View {
                         FieldRow(title: "Token", text: $token, prompt: "Paste the token", secure: true)
                     }
                 }
-                NavRow(title: "Advanced connection settings", symbol: "slider.horizontal.3", to: .integrations).kCard(radius: 22)
+                YouNavRow(title: "Advanced connection settings", symbol: "slider.horizontal.3", to: .integrations).kCard(radius: 22)
                 if let note { Text(note).font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.danger) }
                 GoldButton(title: adding ? "Adding server..." : "Add server") { add() }
                 QuietButton(title: "Cancel") { dismiss() }
@@ -723,7 +723,7 @@ private struct InstallTabSheet: View {
                 SettingsGroup {
                     ActionRow(title: "Choose a .kairostab file", symbol: "doc.badge.plus") { picking = true }
                     FieldRow(title: "Or a GitHub folder", text: $link, prompt: "https://github.com/.../my-tab", keyboard: .URL)
-                    ToggleRow(title: "Replace an existing tab of mine", detail: replace ? "Its approval is revoked until you review it again" : nil, isOn: $replace)
+                    YouToggleRow(title: "Replace an existing tab of mine", detail: replace ? "Its approval is revoked until you review it again" : nil, isOn: $replace)
                 }
                 if scanning {
                     HStack(spacing: 10) {
@@ -770,7 +770,7 @@ private struct GitHubSignInSheet: View {
                 HStack {
                     Text(code).font(.system(size: 30, weight: .semibold, design: .monospaced)).foregroundStyle(Palette.ink)
                     Spacer()
-                    PillButton(title: "Copy code", symbol: "doc.on.doc") {
+                    YouPillButton(title: "Copy code", symbol: "doc.on.doc") {
                         UIPasteboard.general.string = code
                         YouStore.shared.say("Code copied")
                     }
@@ -887,7 +887,7 @@ struct BuildTabScreen: View {
             }
             SettingsGroup {
                 FieldRow(title: "Another source", text: $other, prompt: "Optional")
-                ToggleRow(title: "This tab saves its own data", isOn: $savesData)
+                YouToggleRow(title: "This tab saves its own data", isOn: $savesData)
                 if savesData {
                     FieldRow(title: "What it saves", text: $fields, prompt: "Item, shelf, count, date")
                 }

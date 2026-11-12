@@ -147,7 +147,7 @@ struct ReachMeScreen: View {
     var body: some View {
         SettingsPage("Reach me", subtitle: "Where your bots reach you, in the order you choose. A bot tries the first way that is set up, then the next.") {
             SettingsGroup("Messages and calls from bots") {
-                ToggleRow(title: store.pausedNote == nil ? "Bots may reach me" : "Paused: bots will not message or call you", detail: pauseDetail, symbol: "hand.raised", isOn: Binding(get: { store.pausedNote == nil }, set: { on in
+                YouToggleRow(title: store.pausedNote == nil ? "Bots may reach me" : "Paused: bots will not message or call you", detail: pauseDetail, symbol: "hand.raised", isOn: Binding(get: { store.pausedNote == nil }, set: { on in
                     store.pausedNote = on ? nil : "Paused \(Date().formatted(date: .abbreviated, time: .shortened)) here."
                     YouStore.shared.say(on ? "Bots can reach you again." : "Paused everywhere.")
                 }))
@@ -165,7 +165,7 @@ struct ReachMeScreen: View {
             .arrives(2)
 
             SettingsGroup("Quiet hours", footer: "In your own time zone. Messages wait until quiet hours end; calls are not made.") {
-                ToggleRow(title: "Quiet hours", detail: store.quietNow ? "It is quiet hours now." : nil, symbol: "moon", isOn: $store.quietOn)
+                YouToggleRow(title: "Quiet hours", detail: store.quietNow ? "It is quiet hours now." : nil, symbol: "moon", isOn: $store.quietOn)
                 ReachMeTimeRow(title: "From", time: $store.quietFrom)
                 ReachMeTimeRow(title: "Until", time: $store.quietUntil)
             }
@@ -185,7 +185,7 @@ struct ReachMeScreen: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
-                NavRow(title: "Phone line", symbol: "phone", to: .phone)
+                YouNavRow(title: "Phone line", symbol: "phone", to: .phone)
             }
             .arrives(5)
 

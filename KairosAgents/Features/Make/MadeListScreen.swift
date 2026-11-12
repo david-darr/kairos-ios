@@ -55,7 +55,7 @@ struct MadeListScreen: View {
                         Text(query.isEmpty ? "Nothing here yet." : "No \(kind.plural.lowercased()) match.")
                             .font(KFont.ui(16)).foregroundStyle(Palette.inkDim)
                         if !query.isEmpty || onlyNew {
-                            PillButton(title: "Show all") {
+                            MakePillButton(title: "Show all") {
                                 query = ""
                                 onlyNew = false
                             }

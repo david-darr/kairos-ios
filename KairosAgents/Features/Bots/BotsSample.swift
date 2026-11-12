@@ -2,12 +2,12 @@ import Foundation
 
 /// Made-up content for the Bots area. Nothing here is real, and nothing here is anyone's data.
 nonisolated enum BotsSample {
-    static let models: [ModelOption] = [
-        ModelOption(name: "Claude Sonnet", source: "Claude subscription", about: "Fast and careful. The default for most bots."),
-        ModelOption(name: "Claude Opus", source: "Claude subscription", about: "The strongest. Slower and uses more of your plan."),
-        ModelOption(name: "Claude Haiku", source: "Claude subscription", about: "Quick and light. Good for reminders and sorting."),
-        ModelOption(name: "GPT-6.1 Sol", source: "Codex", about: "Strong at code and long tasks."),
-        ModelOption(name: "Qwen local", source: "This PC", about: "Runs on your desktop. Free and private, slower."),
+    static let models: [BotModelOption] = [
+        BotModelOption(name: "Claude Sonnet", source: "Claude subscription", about: "Fast and careful. The default for most bots."),
+        BotModelOption(name: "Claude Opus", source: "Claude subscription", about: "The strongest. Slower and uses more of your plan."),
+        BotModelOption(name: "Claude Haiku", source: "Claude subscription", about: "Quick and light. Good for reminders and sorting."),
+        BotModelOption(name: "GPT-6.1 Sol", source: "Codex", about: "Strong at code and long tasks."),
+        BotModelOption(name: "Qwen local", source: "This PC", about: "Runs on your desktop. Free and private, slower."),
     ]
 
     static let voices = ["Iris", "Ryan", "Nova", "Sage", "Device voice"]

@@ -25,7 +25,7 @@ struct ForgeProjectsScreen: View {
             VStack(alignment: .leading, spacing: 14) {
                 MachineSearchField(prompt: "Search projects", text: $search)
                 if store.projects.isEmpty {
-                    EmptyNote(symbol: "folder.badge.plus", title: "No projects yet", text: "Open a folder to begin.", action: "Add project") { showAdd = true }
+                    DeskEmptyNote(symbol: "folder.badge.plus", title: "No projects yet", text: "Open a folder to begin.", action: "Add project") { showAdd = true }
                 } else if shown.isEmpty {
                     NoteLine(text: "No project matches that.").padding(.top, 8)
                 } else {
@@ -145,7 +145,7 @@ struct AddProjectSheet: View {
     var body: some View {
         FittedSheet(estimate: 700) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(text: "Add project")
+                DeskSheetTitle(text: "Add project")
                 ChoiceRow(items: AddProjectKind.allCases, selection: $kind, title: { $0.rawValue })
                 switch kind {
                 case .folder: folderForm
@@ -323,7 +323,7 @@ struct ForgeProjectScreen: View {
                 group("Today", shown.filter(\.today))
                 group("Earlier", shown.filter { !$0.today })
                 if shown.isEmpty {
-                    EmptyNote(symbol: "bubble.left.and.text.bubble.right", title: search.isEmpty ? "No sessions" : "No matching sessions", text: search.isEmpty ? "Start a session with New session." : "Try another word.")
+                    DeskEmptyNote(symbol: "bubble.left.and.text.bubble.right", title: search.isEmpty ? "No sessions" : "No matching sessions", text: search.isEmpty ? "Start a session with New session." : "Try another word.")
                 }
             }
             .padding(.horizontal, 16)

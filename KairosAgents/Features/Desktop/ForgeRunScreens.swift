@@ -300,7 +300,7 @@ struct ForgePreviewScreen: View {
                     .scrollIndicators(.hidden)
                 }
             } else {
-                EmptyNote(symbol: "play.rectangle", title: "App stopped", text: "Run the app to preview it here.", action: "Run app") { showRun = true }
+                DeskEmptyNote(symbol: "play.rectangle", title: "App stopped", text: "Run the app to preview it here.", action: "Run app") { showRun = true }
                     .frame(maxHeight: .infinity)
             }
         }
@@ -383,7 +383,7 @@ struct ForgePreviewScreen: View {
 
     private var logsSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SheetTitle(text: "Logs", detail: app.map { $0.command.replacingOccurrences(of: "{port}", with: String($0.port)) })
+            DeskSheetTitle(text: "Logs", detail: app.map { $0.command.replacingOccurrences(of: "{port}", with: String($0.port)) })
             ScrollView {
                 Text(ForgeSample.appLogs.joined(separator: "\n"))
                     .font(CodeFont.mono(12.5))
@@ -395,7 +395,7 @@ struct ForgePreviewScreen: View {
             .defaultScrollAnchor(.bottom)
             .background(Palette.groundDeep.opacity(0.85), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             HStack(spacing: 10) {
-                PillButton(title: "Restart", symbol: "arrow.clockwise") {
+                DeskPillButton(title: "Restart", symbol: "arrow.clockwise") {
                     logsOpen = false
                     starting = true
                     Task {
@@ -403,7 +403,7 @@ struct ForgePreviewScreen: View {
                         withAnimation(Motion.snappy) { starting = false }
                     }
                 }
-                PillButton(title: "Stop app", symbol: "stop.fill", tint: Palette.danger) {
+                DeskPillButton(title: "Stop app", symbol: "stop.fill", tint: Palette.danger) {
                     logsOpen = false
                     if let app { withAnimation(Motion.snappy) { store.stopApp(app.id) } }
                 }

@@ -23,7 +23,7 @@ struct ComputerStepsSheet: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 30)
                 if runs.isEmpty {
-                    EmptyNote(symbol: "list.number", title: "No steps yet", text: "No computer steps are kept for this computer yet.")
+                    DeskEmptyNote(symbol: "list.number", title: "No steps yet", text: "No computer steps are kept for this computer yet.")
                 } else if let run {
                     viewer(run)
                 } else {
@@ -128,13 +128,13 @@ struct ComputerStepsSheet: View {
             .kCard(radius: 18)
 
             HStack(spacing: 10) {
-                PillButton(title: "Previous", symbol: "chevron.left") {
+                DeskPillButton(title: "Previous", symbol: "chevron.left") {
                     withAnimation(Motion.snappy) { index = max(0, index - 1) }
                 }
                 .disabled(index == 0)
                 .opacity(index == 0 ? 0.4 : 1)
                 Spacer()
-                PillButton(title: "Next", symbol: "chevron.right") {
+                DeskPillButton(title: "Next", symbol: "chevron.right") {
                     withAnimation(Motion.snappy) { index = min(run.steps.count - 1, index + 1) }
                 }
                 .disabled(index >= run.steps.count - 1)
@@ -150,7 +150,7 @@ struct ComputerStepsSheet: View {
                         .frame(minHeight: 44)
                         .background(Palette.ink.opacity(0.1), in: Capsule())
                 }
-                PillButton(title: "Make a skill", symbol: "wand.and.stars", filled: true) { onSkill() }
+                DeskPillButton(title: "Make a skill", symbol: "wand.and.stars", filled: true) { onSkill() }
             }
             NoteLine(text: "Export shares the steps as text. The full export with pictures is on your PC.")
         }

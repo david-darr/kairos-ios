@@ -165,7 +165,7 @@ struct AccountScreen: View {
             .arrives(3)
 
             SettingsGroup {
-                NavRow(
+                YouNavRow(
                     title: "Accounts on this device",
                     detail: store.accounts.count == 1 ? "1 signed in on this phone" : "\(store.accounts.count) signed in on this phone",
                     symbol: "person.2",
@@ -284,11 +284,11 @@ struct AccountScreen: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
             RowButtons {
-                PillButton(title: account.pin == nil ? "Set a PIN" : "Change PIN", symbol: "lock", prominent: account.pin == nil) {
+                YouPillButton(title: account.pin == nil ? "Set a PIN" : "Change PIN", symbol: "lock", prominent: account.pin == nil) {
                     sheet = .pin
                 }
                 if account.pin != nil {
-                    PillButton(title: "Remove PIN", danger: true) { confirmRemovePin = true }
+                    YouPillButton(title: "Remove PIN", danger: true) { confirmRemovePin = true }
                 }
             }
         }
@@ -312,7 +312,7 @@ struct AccountScreen: View {
                         .textSelection(.enabled)
                 }
                 Spacer(minLength: 4)
-                PillButton(title: copied ? "Copied" : "Copy", symbol: copied ? "checkmark" : "doc.on.doc") {
+                YouPillButton(title: copied ? "Copied" : "Copy", symbol: copied ? "checkmark" : "doc.on.doc") {
                     UIPasteboard.general.string = setupKey.replacingOccurrences(of: " ", with: "")
                     withAnimation(Motion.snappy) { copied = true }
                     Task {
@@ -331,10 +331,10 @@ struct AccountScreen: View {
                     .padding(.horizontal, 14)
                     .frame(height: 46)
                     .kCard(radius: 16, raised: true)
-                PillButton(title: "Confirm", prominent: true) { confirmCode() }
+                YouPillButton(title: "Confirm", prominent: true) { confirmCode() }
             }
             AccountErrorLine(text: codeError)
-            PillButton(title: "Cancel") {
+            YouPillButton(title: "Cancel") {
                 withAnimation(Motion.snappy) {
                     enrolling = false
                     code = ""
@@ -491,7 +491,7 @@ struct DeviceAccountsScreen: View {
 
             SettingsGroup {
                 if store.accounts.count < 9 {
-                    NavRow(title: "Add another account", detail: "It joins the accounts on this phone.", symbol: "plus", to: .signIn)
+                    YouNavRow(title: "Add another account", detail: "It joins the accounts on this phone.", symbol: "plus", to: .signIn)
                 } else {
                     ActionRow(
                         title: "Add another account",
@@ -569,7 +569,7 @@ struct DeviceAccountsScreen: View {
             if canSwitch || canSignOut {
                 RowButtons {
                     if canSwitch {
-                        PillButton(
+                        YouPillButton(
                             title: account.expired ? (isOpen ? "Sign in again" : "Sign in") : "Switch",
                             symbol: account.pin != nil && !account.expired ? "lock" : nil,
                             prominent: true
@@ -578,7 +578,7 @@ struct DeviceAccountsScreen: View {
                         }
                     }
                     if canSignOut {
-                        PillButton(title: "Sign out", danger: true) { signingOut = account }
+                        YouPillButton(title: "Sign out", danger: true) { signingOut = account }
                     }
                 }
             }

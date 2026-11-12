@@ -246,7 +246,7 @@ struct PermissionsScreen: View {
                             if revoking.contains(grant.id) {
                                 StatusPill(text: "Revoking...", tone: .muted)
                             } else {
-                                PillButton(title: "Revoke", danger: true) { revoke(grant) }
+                                YouPillButton(title: "Revoke", danger: true) { revoke(grant) }
                             }
                         }
                     }
@@ -260,7 +260,7 @@ struct PermissionsScreen: View {
                 } else {
                     ForEach(terminals) { terminal in
                         AccessItemRow(title: terminal.name, mono: terminal.words, detail: "Paired \(terminal.paired) · ends by \(terminal.endsBy)", symbol: "terminal") {
-                            PillButton(title: "Revoke", danger: true) { revokeTerminal(terminal) }
+                            YouPillButton(title: "Revoke", danger: true) { revokeTerminal(terminal) }
                         }
                     }
                 }
@@ -322,7 +322,7 @@ struct AgentToolsScreen: View {
         SettingsPage("Agent tools", subtitle: "The tools every chat and bot may use.") {
             SettingsGroup("Built-in tools", footer: "Switch a tool off to keep it out of every chat.") {
                 ForEach($tools) { $tool in
-                    ToggleRow(title: tool.id, detail: tool.about, isOn: $tool.on)
+                    YouToggleRow(title: tool.id, detail: tool.about, isOn: $tool.on)
                 }
             }
             .arrives(0)
@@ -346,7 +346,7 @@ struct AgentToolsScreen: View {
                     .padding(.vertical, 8)
                     .accessibilityLabel("Extra allowed tools, one per line")
                 RowButtons {
-                    PillButton(title: "Save extra tools", prominent: true) { saveExtra() }
+                    YouPillButton(title: "Save extra tools", prominent: true) { saveExtra() }
                 }
             }
             .arrives(2)
@@ -384,10 +384,10 @@ struct ComputerUseScreen: View {
     var body: some View {
         SettingsPage("Computer use", subtitle: "Contained browsers and desktops that chats and bots can open.") {
             SettingsGroup("Access") {
-                ToggleRow(title: "Computer use", detail: "Allow chats and agents to open contained browsers.", isOn: $enabled)
-                ToggleRow(title: "Allow non-admins", detail: "Let other signed-in people use computers in their own chats.", isOn: $allowNonAdmins)
-                ToggleRow(title: "Agent desktop", detail: "A file manager, editor, PDF viewer and LibreOffice beside the browser, for admins. A larger first download. Applies when a computer next starts.", isOn: $agentDesktop)
-                ToggleRow(title: "Let the computer like, follow and react for you", detail: "Off: it stops before Like, Follow and similar buttons and asks you. Buying, sending and posting always stay with you.", isOn: $reactions)
+                YouToggleRow(title: "Computer use", detail: "Allow chats and agents to open contained browsers.", isOn: $enabled)
+                YouToggleRow(title: "Allow non-admins", detail: "Let other signed-in people use computers in their own chats.", isOn: $allowNonAdmins)
+                YouToggleRow(title: "Agent desktop", detail: "A file manager, editor, PDF viewer and LibreOffice beside the browser, for admins. A larger first download. Applies when a computer next starts.", isOn: $agentDesktop)
+                YouToggleRow(title: "Let the computer like, follow and react for you", detail: "Off: it stops before Like, Follow and similar buttons and asks you. Buying, sending and posting always stay with you.", isOn: $reactions)
             }
             .arrives(0)
 
@@ -424,7 +424,7 @@ struct ComputerUseScreen: View {
                             if isRunning(profile) {
                                 StatusPill(text: "In use", tone: .working)
                             } else {
-                                PillButton(title: "Delete", danger: true) { deleteTarget = profile }
+                                YouPillButton(title: "Delete", danger: true) { deleteTarget = profile }
                             }
                         }
                     }
@@ -440,7 +440,7 @@ struct ComputerUseScreen: View {
                         AccessItemRow(title: computer.title, mono: computer.url,
                                       detail: "\(SampleData.bot(computer.owner).name) · \(computer.desktop ? "Desktop" : "Browser")",
                                       symbol: computer.desktop ? "desktopcomputer" : "globe") {
-                            PillButton(title: "Stop", danger: true) { stop(computer) }
+                            YouPillButton(title: "Stop", danger: true) { stop(computer) }
                         }
                     }
                 }
@@ -586,7 +586,7 @@ struct RemoteAccessScreen: View {
 
         SettingsGroup("Address", footer: "The port is part of the address you type. A new port saves when you leave the field.") {
             AccessItemRow(title: "Where Kairos will be reachable", pill: "Not live yet", pillTone: .muted, mono: previewAddress) {
-                PillButton(title: "Copy") { accessCopy(previewAddress, "Address copied.") }
+                YouPillButton(title: "Copy") { accessCopy(previewAddress, "Address copied.") }
             }
             HStack(spacing: 10) {
                 RowLabel(title: "Port", detail: portStatus.isEmpty ? nil : portStatus)
@@ -599,7 +599,7 @@ struct RemoteAccessScreen: View {
                     .frame(width: 80)
                     .accessibilityLabel("Port")
                 if portText != String(savedPort) {
-                    PillButton(title: "Save", prominent: true) {
+                    YouPillButton(title: "Save", prominent: true) {
                         if portFocused { portFocused = false } else { savePort() }
                     }
                 }
@@ -635,7 +635,7 @@ struct RemoteAccessScreen: View {
                 FieldRow(title: "Username", text: $username, prompt: "Username")
                 FieldRow(title: "Password", text: $password, prompt: "8 or more characters", secure: true)
                 RowButtons {
-                    PillButton(title: loginWorking ? "Creating..." : "Create account", prominent: true) { createLogin() }
+                    YouPillButton(title: loginWorking ? "Creating..." : "Create account", prominent: true) { createLogin() }
                 }
             }
         }
@@ -788,8 +788,8 @@ struct RemoteAccessScreen: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 8) {
-                    PillButton(title: "Copy link", symbol: "link", prominent: true) { accessCopy(liveAddress, "Link copied.") }
-                    PillButton(title: "Turn off", danger: true) { confirmTurnOff = true }
+                    YouPillButton(title: "Copy link", symbol: "link", prominent: true) { accessCopy(liveAddress, "Link copied.") }
+                    YouPillButton(title: "Turn off", danger: true) { confirmTurnOff = true }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -832,7 +832,7 @@ struct RemoteAccessScreen: View {
             ForEach(devices) { device in
                 AccessItemRow(title: device.name, pill: device.current ? "This phone" : nil, pillTone: .working,
                               detail: "Paired \(device.paired) · last seen \(device.lastSeen)", symbol: device.symbol) {
-                    PillButton(title: "Unpair", danger: true) { unpairTarget = device }
+                    YouPillButton(title: "Unpair", danger: true) { unpairTarget = device }
                 }
             }
             AccessInfoRow(title: "Pair another phone",
@@ -876,7 +876,7 @@ struct ForgeSettingsScreen: View {
             .arrives(0)
 
             SettingsGroup("Terminal") {
-                ToggleRow(title: "Allow the terminal over Remote Access", detail: "Let signed-in admins use session terminals from your other devices. Off by default.", symbol: "terminal", isOn: $terminalRemote)
+                YouToggleRow(title: "Allow the terminal over Remote Access", detail: "Let signed-in admins use session terminals from your other devices. Off by default.", symbol: "terminal", isOn: $terminalRemote)
             }
             .arrives(1)
         }

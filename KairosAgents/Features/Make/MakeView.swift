@@ -395,8 +395,8 @@ struct MakeJobCard: View {
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 8) {
-                    PillButton(title: "Open", filled: true, expand: true, action: open)
-                    PillButton(title: "Make another", expand: true, action: again)
+                    MakePillButton(title: "Open", filled: true, expand: true, action: open)
+                    MakePillButton(title: "Make another", expand: true, action: again)
                     ShareLink(item: "\(item.title).\(item.kind.fileType.lowercased())") {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 15, weight: .semibold))
@@ -436,9 +436,9 @@ struct MakeJobCard: View {
                         .contentTransition(.numericText())
                     Spacer()
                     if job.state == .running {
-                        PillButton(title: "Stop", symbol: "stop.fill") { store.stop(job.id) }
+                        MakePillButton(title: "Stop", symbol: "stop.fill") { store.stop(job.id) }
                     } else {
-                        PillButton(title: "Resume", symbol: "play.fill", filled: true) { store.resume(job.id) }
+                        MakePillButton(title: "Resume", symbol: "play.fill", filled: true) { store.resume(job.id) }
                     }
                 }
             }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// A sheet title with room under the grab bar.
-struct SheetTitle: View {
+struct DeskSheetTitle: View {
     let text: String
     var detail: String? = nil
 
@@ -89,7 +89,7 @@ struct ForgeModelSheet: View {
     var body: some View {
         FittedSheet(estimate: 640) {
             VStack(alignment: .leading, spacing: 16) {
-                SheetTitle(text: "Model", detail: locked ? "The agent is fixed once a session starts. You can change the model and effort." : nil)
+                DeskSheetTitle(text: "Model", detail: locked ? "The agent is fixed once a session starts. You can change the model and effort." : nil)
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel(text: "Agent")
                     VStack(spacing: 0) {
@@ -198,7 +198,7 @@ struct ForgeAccessSheet: View {
     var body: some View {
         FittedSheet(estimate: 520) {
             VStack(spacing: 18) {
-                SheetTitle(text: confirming ? "Give full access?" : "Permission mode", detail: confirming ? "The agent will edit files and run commands on your PC without asking. You can switch back at any time." : nil)
+                DeskSheetTitle(text: confirming ? "Give full access?" : "Permission mode", detail: confirming ? "The agent will edit files and run commands on your PC without asking. You can switch back at any time." : nil)
                 if confirming {
                     VStack(alignment: .leading, spacing: 10) {
                         NoteLine(text: "Works only inside this session's folder or worktree.", symbol: "folder")
@@ -263,7 +263,7 @@ struct ForgeEndSheet: View {
     var body: some View {
         FittedSheet(estimate: 560) {
             VStack(spacing: 14) {
-                SheetTitle(text: discarding ? "Discard this work?" : (merging ? "Merge back?" : "End session"),
+                DeskSheetTitle(text: discarding ? "Discard this work?" : (merging ? "Merge back?" : "End session"),
                            detail: discarding ? "The branch and every change in it are deleted. This cannot be undone." :
                             (merging ? "Merges \(session.placeLabel) into main and removes the worktree." : "The conversation is kept either way."))
                 if discarding {
@@ -327,7 +327,7 @@ struct ForgeRunAppSheet: View {
     var body: some View {
         FittedSheet(estimate: 500) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(text: "Run app", detail: "The command runs in this session's folder on your PC.")
+                DeskSheetTitle(text: "Run app", detail: "The command runs in this session's folder on your PC.")
                 TextField("App command", text: $command)
                     .font(CodeFont.mono(15))
                     .foregroundStyle(Palette.ink)
@@ -378,7 +378,7 @@ struct ForgeRenameSheet: View {
     var body: some View {
         FittedSheet(estimate: 300) {
             VStack(spacing: 14) {
-                SheetTitle(text: "Rename session")
+                DeskSheetTitle(text: "Rename session")
                 TextField("Session name", text: $title)
                     .font(KFont.ui(17))
                     .foregroundStyle(Palette.ink)

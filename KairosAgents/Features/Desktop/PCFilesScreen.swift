@@ -127,7 +127,7 @@ struct PCFilesScreen: View {
             MachineSearchField(prompt: "Search this folder", text: $search)
             let items = shown
             if files.items(in: path).isEmpty {
-                EmptyNote(symbol: "folder", title: "Nothing here", text: "This folder is empty.")
+                DeskEmptyNote(symbol: "folder", title: "Nothing here", text: "This folder is empty.")
                     .kCard(radius: 22)
             } else if items.isEmpty {
                 NoteLine(text: "Nothing in this folder matches that.", symbol: "magnifyingglass")
@@ -245,7 +245,7 @@ struct PCFilePreview: View {
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
             .accessibilityLabel("A preview of \(item.name)")
         case .other, .folder:
-            EmptyNote(symbol: "doc", title: "No preview on the phone", text: "Open it on your PC to see it.")
+            DeskEmptyNote(symbol: "doc", title: "No preview on the phone", text: "Open it on your PC to see it.")
                 .kCard(radius: 16)
         }
     }

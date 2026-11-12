@@ -191,7 +191,7 @@ struct StudioAlerts: View {
                             Text("Platform warning.").font(KFont.ui(15, .semibold, relativeTo: .subheadline)).foregroundStyle(Palette.ink)
                             Text(channel.warning ?? "\(channel.handle) is paused.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                                 .fixedSize(horizontal: false, vertical: true)
-                            PillButton(title: "Resolve warning") { studio.sheet = .resolve(channel.id) }
+                            MakePillButton(title: "Resolve warning") { studio.sheet = .resolve(channel.id) }
                         }
                         Spacer(minLength: 0)
                     }
@@ -224,7 +224,7 @@ struct HandsOffStrip: View {
                     .contentTransition(.opacity)
             }
             HStack(spacing: 8) {
-                PillButton(title: studio.handsOff ? "Turn hands-off posting off" : "Turn on hands-off posting", filled: !studio.handsOff, expand: true) {
+                MakePillButton(title: studio.handsOff ? "Turn hands-off posting off" : "Turn on hands-off posting", filled: !studio.handsOff, expand: true) {
                     if studio.handsOff {
                         withAnimation(Motion.snappy) { studio.handsOff = false }
                         toast.say("Hands-off posting is off. Every post waits for your OK.")
@@ -232,7 +232,7 @@ struct HandsOffStrip: View {
                         studio.sheet = .handsOff
                     }
                 }
-                PillButton(title: studio.teamPaused ? "Resume team" : "Pause team", symbol: studio.teamPaused ? "play.fill" : "pause.fill") {
+                MakePillButton(title: studio.teamPaused ? "Resume team" : "Pause team", symbol: studio.teamPaused ? "play.fill" : "pause.fill") {
                     withAnimation(Motion.snappy) { studio.teamPaused.toggle() }
                     toast.say(studio.teamPaused ? "Team paused." : "Team resumed.")
                 }
@@ -297,7 +297,7 @@ struct StudioPickerSheet: View {
         let studio = make.studio
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SheetTitle(title: "Channel or library")
+                MakeSheetTitle(title: "Channel or library")
                 VStack(spacing: 0) {
                     pickRow(title: "All channels", detail: "Every niche and channel", count: studio.waiting(for: nil), selected: studio.scope == .all) {
                         Image(systemName: "square.stack.3d.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.goldText).frame(width: 36, height: 36)
@@ -348,8 +348,8 @@ struct StudioPickerSheet: View {
                 }
 
                 HStack(spacing: 10) {
-                    PillButton(title: "Add channel", symbol: "plus", expand: true) { studio.sheet = .addChannel }
-                    PillButton(title: "Set up", symbol: "checklist", expand: true) { studio.sheet = .setup }
+                    MakePillButton(title: "Add channel", symbol: "plus", expand: true) { studio.sheet = .addChannel }
+                    MakePillButton(title: "Set up", symbol: "checklist", expand: true) { studio.sheet = .setup }
                 }
             }
             .padding(.horizontal, 18)

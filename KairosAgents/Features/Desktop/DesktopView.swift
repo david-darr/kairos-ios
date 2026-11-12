@@ -190,7 +190,7 @@ struct DesktopView: View {
                 .accessibilityLabel("New Forge session")
             }
             if live.isEmpty {
-                EmptyNote(symbol: "hammer", title: "Ready to build", text: "No Forge sessions yet.", action: "New session") {
+                DeskEmptyNote(symbol: "hammer", title: "Ready to build", text: "No Forge sessions yet.", action: "New session") {
                     store.composeRequested = true
                     open(.forgeHome)
                 }

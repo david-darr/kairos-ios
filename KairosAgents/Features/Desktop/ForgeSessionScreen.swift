@@ -35,7 +35,7 @@ struct ForgeSessionScreen: View {
             if let session {
                 content(session)
             } else {
-                EmptyNote(symbol: "questionmark.folder", title: "Session not found", text: "It may have been deleted on your PC.")
+                DeskEmptyNote(symbol: "questionmark.folder", title: "Session not found", text: "It may have been deleted on your PC.")
                     .frame(maxHeight: .infinity)
                     .safeAreaInset(edge: .top, spacing: 0) { ScreenHeader(title: "Session") }
                     .kScreen()
@@ -70,7 +70,7 @@ struct ForgeSessionScreen: View {
                             .padding(12).kCard(radius: 16)
                     }
                     if session.turns.isEmpty {
-                        EmptyNote(symbol: "text.bubble", title: "Nothing yet", text: "Describe the next step for this project.")
+                        DeskEmptyNote(symbol: "text.bubble", title: "Nothing yet", text: "Describe the next step for this project.")
                     }
                     ForEach(session.turns) { turn in
                         turnView(turn, session: session).id(turn.id)
@@ -386,11 +386,11 @@ struct ForgeSessionScreen: View {
                 DiffCount(added: turn.added, removed: turn.removed, size: 13)
             }
             HStack(spacing: 8) {
-                PillButton(title: "Review", symbol: "eye") { go = .changes(sessionID) }
-                PillButton(title: "Undo", symbol: "arrow.uturn.backward", tint: Palette.danger) { undoTurn = turn.id }
+                DeskPillButton(title: "Review", symbol: "eye") { go = .changes(sessionID) }
+                DeskPillButton(title: "Undo", symbol: "arrow.uturn.backward", tint: Palette.danger) { undoTurn = turn.id }
                     .disabled(busy)
                     .opacity(busy ? 0.4 : 1)
-                PillButton(title: "Keep", symbol: "checkmark", filled: true) {
+                DeskPillButton(title: "Keep", symbol: "checkmark", filled: true) {
                     withAnimation(Motion.snappy) { store.setReview(sessionID, turn: turn.id, .kept) }
                 }
             }
@@ -597,7 +597,7 @@ struct ForgeSessionScreen: View {
     private var actionsSheet: some View {
         FittedSheet(estimate: 720) {
             VStack(alignment: .leading, spacing: 14) {
-                SheetTitle(text: session?.title ?? "Session", detail: session.map { "\(project?.name ?? "") · \($0.agent) · \($0.model)" })
+                DeskSheetTitle(text: session?.title ?? "Session", detail: session.map { "\(project?.name ?? "") · \($0.agent) · \($0.model)" })
                 let app = store.apps(for: sessionID).first
                 HStack(spacing: 10) {
                     actionTile(app == nil ? "play.fill" : "safari", app == nil ? "Run app" : "Preview :\(String(app?.port ?? 0))") {

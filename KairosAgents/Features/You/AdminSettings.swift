@@ -197,7 +197,7 @@ private struct AddUserSheet: View {
                 SettingsGroup {
                     FieldRow(title: "Username", text: $name, prompt: "name")
                     FieldRow(title: "Password", text: $password, prompt: "8 or more characters", secure: true)
-                    ToggleRow(title: "Admin", detail: "Can change every setting", isOn: $admin)
+                    YouToggleRow(title: "Admin", detail: "Can change every setting", isOn: $admin)
                 }
                 if let note { Text(note).font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.danger) }
                 GoldButton(title: "Add user") {
@@ -254,7 +254,7 @@ struct LogsScreen: View {
                 PickRow(title: "Area", selection: $area, options: ["Every area", "Chat", "Swarm", "Tasks", "Remote", "Discord", "Skills"]) { $0 }
                 PickRow(title: "Time", selection: $time, options: ["Any time", "Last hour", "Today", "Last week"]) { $0 }
                 PickRow(title: "Chat", selection: $chat, options: ["Any chat or task", "Bike shop launch", "Content team"]) { $0 }
-                ToggleRow(title: "Follow", detail: "New lines appear as they are written", isOn: $follow)
+                YouToggleRow(title: "Follow", detail: "New lines appear as they are written", isOn: $follow)
             }
             SearchField(prompt: "Search the log", text: $query)
             VStack(alignment: .leading, spacing: 0) {
@@ -313,7 +313,7 @@ struct RunsScreen: View {
 
     var body: some View {
         SettingsPage("Runs", subtitle: "Admin. The last 100 runs of tasks and bots.") {
-            ChipPicker(items: ["Every run", "Failed", "Stopped", "Finished"], selection: $filter) { $0 }
+            YouChipPicker(items: ["Every run", "Failed", "Stopped", "Finished"], selection: $filter) { $0 }
             SettingsGroup {
                 if shown.isEmpty { EmptyRow(text: "No \(filter.lowercased()) runs.") }
                 ForEach(shown) { run in
@@ -398,14 +398,14 @@ struct SandboxScreen: View {
                     }
                     HStack(spacing: 6) {
                         if !set.diff.isEmpty {
-                            PillButton(title: showing == set.id ? "Hide diff" : "Show diff") {
+                            YouPillButton(title: showing == set.id ? "Hide diff" : "Show diff") {
                                 withAnimation(Motion.snappy) { showing = showing == set.id ? nil : set.id }
                             }
                         }
                         if !set.tooLarge {
-                            PillButton(title: "Apply", prominent: true) { applying = set }
+                            YouPillButton(title: "Apply", prominent: true) { applying = set }
                         }
-                        PillButton(title: "Discard", danger: true) { discarding = set }
+                        YouPillButton(title: "Discard", danger: true) { discarding = set }
                     }
                 }
                 .padding(16)
@@ -450,7 +450,7 @@ struct CheckpointsScreen: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         RowLabel(title: point.source, detail: "\(point.when) · \(point.files.count) files · \(point.restored) restored")
-                        PillButton(title: open == point.id ? "Close" : "Review") {
+                        YouPillButton(title: open == point.id ? "Close" : "Review") {
                             withAnimation(Motion.snappy) {
                                 open = open == point.id ? nil : point.id
                                 selected = []
@@ -472,7 +472,7 @@ struct CheckpointsScreen: View {
                             .disabled(changedAgain)
                         }
                         if !selected.isEmpty {
-                            PillButton(title: "Restore \(selected.count) \(selected.count == 1 ? "file" : "files")", prominent: true) { confirming = point }
+                            YouPillButton(title: "Restore \(selected.count) \(selected.count == 1 ? "file" : "files")", prominent: true) { confirming = point }
                         }
                     }
                 }
@@ -541,7 +541,7 @@ struct HooksScreen: View {
                     .padding(.horizontal, 16).padding(.vertical, 10)
                     .opacity(sample.paused ? 0.6 : 1)
                 }
-                NavRow(title: "Add a hook", symbol: "plus", to: .editHook("new"))
+                YouNavRow(title: "Add a hook", symbol: "plus", to: .editHook("new"))
             }
             SettingsGroup("Recent runs") {
                 ValueRow(title: "Log finished chats", detail: "A chat finishes · 9:12", value: "OK")
@@ -567,7 +567,7 @@ struct HookDetailScreen: View {
             if let index {
                 let hook = sample.hooks[index]
                 SettingsGroup {
-                    ToggleRow(title: "On", isOn: $sample.hooks[index].on)
+                    YouToggleRow(title: "On", isOn: $sample.hooks[index].on)
                     ValueRow(title: "Event", value: hook.event)
                     ValueRow(title: "Tools", value: hook.tools.isEmpty ? "Every tool" : hook.tools)
                     ValueRow(title: "Agent", value: hook.agent)
@@ -598,7 +598,7 @@ struct HookDetailScreen: View {
                             withAnimation(Motion.snappy) { testResult = hook.blocks ? "Would block" : "OK" }
                         }
                     }
-                    NavRow(title: "Edit", symbol: "pencil", to: .editHook(hook.id))
+                    YouNavRow(title: "Edit", symbol: "pencil", to: .editHook(hook.id))
                     ActionRow(title: "Delete hook", symbol: "trash", tone: .danger) { confirmDelete = true }
                 }
                 SettingsGroup("Recent runs") {
@@ -643,7 +643,7 @@ struct HookEditScreen: View {
                     ScrollView(.horizontal) {
                         HStack(spacing: 8) {
                             ForEach(examples, id: \.0) { example in
-                                PillButton(title: example.0) {
+                                YouPillButton(title: example.0) {
                                     withAnimation(Motion.snappy) { hook = example.1 }
                                 }
                             }
@@ -674,9 +674,9 @@ struct HookEditScreen: View {
                     FieldRow(title: "Message", text: $hook.template, prompt: "{agent}: {card}")
                 default:
                     FieldRow(title: "Command", text: $hook.target, prompt: "A command on your desktop")
-                    StepperRow(title: "Timeout", value: $hook.timeout, range: 1...120, unit: "s")
+                    YouStepperRow(title: "Timeout", value: $hook.timeout, range: 1...120, unit: "s")
                     if hook.event == "Before a tool runs" {
-                        ToggleRow(title: "Block on failure", detail: "A failing command stops the tool", isOn: $hook.blocks)
+                        YouToggleRow(title: "Block on failure", detail: "A failing command stops the tool", isOn: $hook.blocks)
                     }
                 }
             }
@@ -749,7 +749,7 @@ struct SystemScreen: View {
                 StatusRow(title: "Discord", status: "Listening")
             }
             SettingsGroup("Back up everything", footer: "Chats, bots, tasks, triggers, connections, skills and settings. The vault is not included.") {
-                ToggleRow(title: "Include saved passwords and keys", detail: includeSecrets ? "Anyone with the file can read them. Keep it somewhere private." : nil, isOn: $includeSecrets)
+                YouToggleRow(title: "Include saved passwords and keys", detail: includeSecrets ? "Anyone with the file can read them. Keep it somewhere private." : nil, isOn: $includeSecrets)
                 if backupReady {
                     ShareLink(item: backupSummary, preview: SharePreview("kairos-backup.zip")) {
                         RowLabel(title: "Share the backup", detail: "kairos-backup.zip · 184 MB", symbol: "square.and.arrow.up", tint: Palette.goldText, titleColor: Palette.goldText)

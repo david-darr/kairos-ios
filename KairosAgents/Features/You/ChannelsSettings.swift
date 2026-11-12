@@ -618,7 +618,7 @@ private struct ChannelFieldRows: View {
         let text = Binding(get: { form.values[field.key] ?? "" }, set: { form.values[field.key] = $0 })
         switch field.kind {
         case .toggle:
-            ToggleRow(title: title, detail: field.help, isOn: Binding(get: { (form.values[field.key] ?? "") == "true" }, set: { form.values[field.key] = $0 ? "true" : "false" }))
+            YouToggleRow(title: title, detail: field.help, isOn: Binding(get: { (form.values[field.key] ?? "") == "true" }, set: { form.values[field.key] = $0 ? "true" : "false" }))
         default:
             VStack(alignment: .leading, spacing: 0) {
                 FieldRow(
@@ -685,7 +685,7 @@ struct ChannelsScreen: View {
             NoteText(text: "Two-way channels answer only the senders you allow, and those senders can reach your agents by name. Send-only channels carry task results and agent notifications.")
 
             SettingsGroup {
-                NavRow(title: "Reach me", detail: "The order bots use to message and call you.", symbol: "bell", to: .reachMe)
+                YouNavRow(title: "Reach me", detail: "The order bots use to message and call you.", symbol: "bell", to: .reachMe)
             }
             .arrives(2)
         }
@@ -890,7 +890,7 @@ struct ChannelDetailScreen: View {
         } else {
             SettingsPage("Channel", subtitle: "This channel was removed.") {
                 SettingsGroup {
-                    NavRow(title: "All channels", symbol: "list.bullet", to: .channels)
+                    YouNavRow(title: "All channels", symbol: "list.bullet", to: .channels)
                 }
             }
         }
@@ -902,7 +902,7 @@ struct ChannelDetailScreen: View {
         let webhookURL = ChannelCatalog.webhookBase + connector.id + "/webhook"
         return SettingsPage(connector.name, subtitle: platform?.about ?? connector.kind) {
             SettingsGroup("Status") {
-                ToggleRow(
+                YouToggleRow(
                     title: "On",
                     detail: connector.enabled ? "Running now." : "Switched off. Nothing is received or sent.",
                     symbol: "power",
@@ -921,7 +921,7 @@ struct ChannelDetailScreen: View {
                             .font(KFont.ui(13.5, relativeTo: .footnote))
                             .foregroundStyle(Palette.inkFaint)
                             .fixedSize(horizontal: false, vertical: true)
-                        PillButton(title: "Copy", symbol: "square.and.arrow.up") {
+                        YouPillButton(title: "Copy", symbol: "square.and.arrow.up") {
                             UIPasteboard.general.string = webhookURL
                             Haptics.success()
                             YouStore.shared.say("Copied.")
@@ -932,7 +932,7 @@ struct ChannelDetailScreen: View {
                     .padding(.vertical, 12)
                 }
                 RowButtons {
-                    PillButton(title: testing ? "Sending..." : "Send test", symbol: "bell") { sendTest(connector) }
+                    YouPillButton(title: testing ? "Sending..." : "Send test", symbol: "bell") { sendTest(connector) }
                     if let testResult {
                         Text(testResult)
                             .font(KFont.ui(14, relativeTo: .footnote))
@@ -948,7 +948,7 @@ struct ChannelDetailScreen: View {
                     ChannelFieldRows(platform: platform, form: $form, savedSecrets: connector.savedSecrets)
                     if platform.twoWay {
                         ChannelSendersRow(text: $form.senders, help: platform.senderHelp)
-                        ToggleRow(title: "Anyone can message", detail: "Answers strangers too. They never reach your agents.", isOn: $form.anyone)
+                        YouToggleRow(title: "Anyone can message", detail: "Answers strangers too. They never reach your agents.", isOn: $form.anyone)
                         PickRow(title: "Model for chats", detail: "Which model answers messages here.", selection: $form.model, options: ChannelCatalog.models) {
                             ChannelCatalog.modelLabel($0, empty: "No model chosen")
                         }
@@ -1076,7 +1076,7 @@ struct AddChannelScreen: View {
         } else {
             SettingsPage("Add a channel", subtitle: "This platform is not offered.") {
                 SettingsGroup {
-                    NavRow(title: "All channels", symbol: "list.bullet", to: .channels)
+                    YouNavRow(title: "All channels", symbol: "list.bullet", to: .channels)
                 }
             }
         }
@@ -1242,7 +1242,7 @@ struct DiscordBotScreen: View {
         } else {
             SettingsPage("Discord bot", subtitle: "This bot was removed.") {
                 SettingsGroup {
-                    NavRow(title: "All channels", symbol: "list.bullet", to: .channels)
+                    YouNavRow(title: "All channels", symbol: "list.bullet", to: .channels)
                 }
             }
         }
@@ -1281,7 +1281,7 @@ struct DiscordBotScreen: View {
                     ChannelCatalog.modelLabel($0, empty: "No default model")
                 }
                 RowButtons {
-                    PillButton(title: "Save model", prominent: true) {
+                    YouPillButton(title: "Save model", prominent: true) {
                         store.updateBot(bot.id) { $0.model = model }
                         Haptics.success()
                         YouStore.shared.say("Saved. Its connection restarted.")
@@ -1303,7 +1303,7 @@ struct DiscordBotScreen: View {
                     .padding(.vertical, 10)
                 if let voiceError { ChannelErrorText(text: voiceError) }
                 RowButtons {
-                    PillButton(title: "Save voice channel") { saveVoice(bot) }
+                    YouPillButton(title: "Save voice channel") { saveVoice(bot) }
                 }
                 PickRow(
                     title: "When a bot calls you",
@@ -1314,7 +1314,7 @@ struct DiscordBotScreen: View {
                     }),
                     options: Self.callWays
                 ) { callLabel($0) }
-                NavRow(title: "Reach me", detail: "The rest of the order, quiet hours and STOP.", symbol: "bell", to: .reachMe)
+                YouNavRow(title: "Reach me", detail: "The rest of the order, quiet hours and STOP.", symbol: "bell", to: .reachMe)
             }
             .arrives(1)
 
@@ -1362,7 +1362,7 @@ struct DiscordBotScreen: View {
                 PickRow(title: "Behaviour", detail: newMode.detail, selection: $newMode, options: ChannelOverrideMode.allCases) { $0.title }
                 if let overrideError { ChannelErrorText(text: overrideError) }
                 RowButtons {
-                    PillButton(title: "Add override", symbol: "plus") { addOverride(bot) }
+                    YouPillButton(title: "Add override", symbol: "plus") { addOverride(bot) }
                 }
             }
             .arrives(3)
