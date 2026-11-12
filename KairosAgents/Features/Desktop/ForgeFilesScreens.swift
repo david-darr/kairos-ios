@@ -167,7 +167,7 @@ struct ForgeFileScreen: View {
                         ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                             HStack(alignment: .top, spacing: 12) {
                                 Text("\(index + 1)").foregroundStyle(Palette.inkFaint).frame(width: 30, alignment: .trailing)
-                                Text(line.isEmpty ? " " : line).foregroundStyle(Palette.ink)
+                                Text(CodeColour.line(line.isEmpty ? " " : line, path: path))
                             }
                             .font(CodeFont.mono(13))
                             .padding(.vertical, 1.5)
@@ -256,5 +256,76 @@ struct ForgeFileScreen: View {
             Haptics.success()
             toast = "Saved on your PC"
         }
+    }
+}
+
+/// Light syntax colouring for the file viewer: keywords, strings, numbers and comments.
+enum CodeColour {
+    private static let keywords: Set<String> = [
+        "import", "export", "from", "function", "return", "const", "let", "var", "type", "if", "else", "for", "while",
+        "def", "class", "in", "true", "false", "null", "None", "True", "False", "async", "await", "new", "interface",
+        "display", "flex", "grid", "padding", "width", "gap", "@media", "private", "public", "struct", "enum", "func",
+    ]
+
+    static func line(_ text: String, path: String) -> AttributedString {
+        var result = AttributedString()
+        let comment = path.hasSuffix(".py") ? "#" : "//"
+        var body = Substring(text)
+        var tail: Substring = ""
+        if let range = text.range(of: comment), !path.hasSuffix(".md"), !path.hasSuffix(".css") || comment == "//" {
+            body = text[..<range.lowerBound]
+            tail = text[range.lowerBound...]
+        }
+        var word = ""
+        var inString: Character?
+        func flushWord() {
+            guard !word.isEmpty else { return }
+            var piece = AttributedString(word)
+            if keywords.contains(word) {
+                piece.foregroundColor = Palette.working
+            } else if word.first?.isNumber == true {
+                piece.foregroundColor = Palette.goldText
+            } else {
+                piece.foregroundColor = Palette.ink
+            }
+            result += piece
+            word = ""
+        }
+        var stringText = ""
+        for character in body {
+            if let quote = inString {
+                stringText.append(character)
+                if character == quote {
+                    var piece = AttributedString(stringText)
+                    piece.foregroundColor = Palette.success
+                    result += piece
+                    stringText = ""
+                    inString = nil
+                }
+            } else if character == "\"" || character == "'" || character == "`" {
+                flushWord()
+                inString = character
+                stringText = String(character)
+            } else if character.isLetter || character.isNumber || character == "_" || character == "@" {
+                word.append(character)
+            } else {
+                flushWord()
+                var piece = AttributedString(String(character))
+                piece.foregroundColor = Palette.inkDim
+                result += piece
+            }
+        }
+        flushWord()
+        if !stringText.isEmpty {
+            var piece = AttributedString(stringText)
+            piece.foregroundColor = Palette.success
+            result += piece
+        }
+        if !tail.isEmpty {
+            var piece = AttributedString(String(tail))
+            piece.foregroundColor = Palette.inkFaint
+            result += piece
+        }
+        return result
     }
 }

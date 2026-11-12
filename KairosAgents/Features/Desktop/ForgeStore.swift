@@ -17,7 +17,15 @@ final class ForgeStore: ForgeProviding {
     var projects = ForgeSample.projects
     var sessions = ForgeSample.sessions
     var apps = ForgeSample.apps
-    var widgets: Set<ForgeWidget> = Set(ForgeWidget.allCases)
+    /// Which Forge Home widgets show. Saved on this phone.
+    var widgets: Set<ForgeWidget> = ForgeStore.savedWidgets() {
+        didSet { UserDefaults.standard.set(widgets.map(\.rawValue), forKey: "forgeWidgets") }
+    }
+
+    private static func savedWidgets() -> Set<ForgeWidget> {
+        guard let saved = UserDefaults.standard.stringArray(forKey: "forgeWidgets") else { return Set(ForgeWidget.allCases) }
+        return Set(saved.compactMap(ForgeWidget.init(rawValue:)))
+    }
     var repoProjectID = "p-shop"
     /// Set by the gold + on the Desktop tab (shell) or by any "New session" control.
     var composeRequested = false

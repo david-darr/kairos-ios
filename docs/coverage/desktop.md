@@ -18,7 +18,7 @@ Screens are in `KairosAgents/Features/Desktop/`. Debug names (`-kDebugView deskt
 - Forge introduction: "What should your agents work on?" over the task box.
 - Appearance-aware banner: not drawn; the screen uses the app's ground and glow in both looks instead.
 - Customize dashboard: the slider button in the header (one tap, not hidden in a disclosure), a sheet of five switches (`desktop.forge-customize`).
-- Saved widget visibility: kept in `ForgeStore.widgets` for the app session. Saving on the phone between launches is not wired yet.
+- Saved widget visibility: saved on this phone (`ForgeStore.widgets`).
 - Loading, preference error and home error states: not shown on sample data; the real store will show them as `NoteLine`s.
 - Task input: the "Describe the task..." box; the gold arrow starts it.
 - Project picker: the project chip (menu) and the Session context sheet.
@@ -128,7 +128,7 @@ Screens are in `KairosAgents/Features/Desktop/`. Debug names (`-kDebugView deskt
 - Editable session files, Save, Saved and Unsaved states, saving state, draft retention: Edit, then Save; unsaved edits come back when you reopen the file.
 - Binary state "Binary file. Read only.": image files.
 - Disk-conflict dialog (Overwrite or Reload): saving while the agent works.
-- Syntax colouring per language: not yet; files show plain monospaced text.
+- Language-aware colouring: keywords, strings, numbers and comments are coloured in the viewer (`CodeColour`); the editor is plain monospaced text.
 
 ## Terminal (`ForgeTerminalScreen`)
 
