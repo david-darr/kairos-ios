@@ -167,6 +167,7 @@ final class Connection {
         started = true
         set(.connected)
         becameReady()
+        ConnectionSeam.paired()
     }
 
     /// Unpair this phone: tell the desktop, forget the token, go back to sample data.
