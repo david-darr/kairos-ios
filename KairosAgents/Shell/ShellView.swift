@@ -78,6 +78,9 @@ private struct TabRoot: View {
                 case .bot(let id): BotChatView(botID: id)
                 case .chat(let id): ModelChatView(chatID: id)
                 case .newChat: ModelChatView(chatID: nil)
+                case .newChatInProject(let id): ModelChatView(chatID: nil, projectID: id)
+                case .allBots: AllBotsHomeView()
+                case .project(let id): ProjectScreen(projectID: id)
                 case .area(let area): AreaScreens.view(for: area)
                 case .page(let title): AddedTabScreen(title: title)
                 }
@@ -136,7 +139,9 @@ enum DebugScreens {
             chrome.held = true
             chrome.collapsed = true
         case "jump": chrome.openJump()
-        case "bot", "botpanel", "botsettings", "call": router.push(.bot("kip"), on: .home)
+        case "bot", "botpanel", "botsettings", "call", "botmodel": router.push(.bot("kip"), on: .home)
+        case "allbots": router.push(.allBots, on: .home)
+        case "project": router.push(.project("p-shop"), on: .home)
         case "chat": router.push(.chat("c-zip"), on: .home)
         case "chatlive", "modelsheet", "tools", "docviewer": router.push(.chat("c-bike"), on: .home)
         case "make": router.select(.make)

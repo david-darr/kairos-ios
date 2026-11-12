@@ -11,6 +11,11 @@ name: TestFlight
 #   DIST_P12_BASE64   the Apple Distribution certificate and its private key (.p12), base64
 #   DIST_P12_PASSWORD the password of that .p12
 #   PROFILE_BASE64    the App Store provisioning profile for the app, base64
+#   WIDGET_PROFILE_BASE64  the App Store provisioning profile for the widget and Live Activity
+#                     extension (app.kairos-agents.mobile.liveactivity), base64
+#
+# The upload build is the app with its widget extension inside (project-widgets.yml).
+# Each target signs with its own profile.
 
 on:
   workflow_dispatch:
@@ -29,6 +34,8 @@ jobs:
     timeout-minutes: 45
     env:
       BUNDLE_ID: app.kairos-agents.mobile
+      WIDGET_BUNDLE_ID: app.kairos-agents.mobile.liveactivity
+      APP_GROUP: group.app.kairos-agents.mobile
     steps:
       - uses: actions/checkout@v4
 
@@ -48,9 +55,10 @@ jobs:
           DIST_P12_BASE64: ${{ secrets.DIST_P12_BASE64 }}
           DIST_P12_PASSWORD: ${{ secrets.DIST_P12_PASSWORD }}
           PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
+          WIDGET_PROFILE_BASE64: ${{ secrets.WIDGET_PROFILE_BASE64 }}
         run: |
           missing=0
-          for name in ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID DIST_P12_BASE64 DIST_P12_PASSWORD PROFILE_BASE64; do
+          for name in ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID DIST_P12_BASE64 DIST_P12_PASSWORD PROFILE_BASE64 WIDGET_PROFILE_BASE64; do
             if [ -z "${!name}" ]; then echo "::error::Secret $name is not set"; missing=1; fi
           done
           exit $missing
@@ -61,16 +69,17 @@ jobs:
           "$RUNNER_TEMP/fontenv/bin/pip" install --quiet fonttools==4.57.0 brotli==1.1.0
           "$RUNNER_TEMP/fontenv/bin/python" Tools/build_fonts.py
 
-      - name: Generate the Xcode project
+      - name: Generate the Xcode project (the app and its widget extension)
         run: |
           which xcodegen || brew install xcodegen
-          xcodegen generate
+          xcodegen generate --spec project-widgets.yml
 
-      - name: Install the certificate and the profile
+      - name: Install the certificate and both profiles
         env:
           DIST_P12_BASE64: ${{ secrets.DIST_P12_BASE64 }}
           DIST_P12_PASSWORD: ${{ secrets.DIST_P12_PASSWORD }}
           PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
+          WIDGET_PROFILE_BASE64: ${{ secrets.WIDGET_PROFILE_BASE64 }}
         run: |
           set -euo pipefail
           KEYCHAIN_PASSWORD=$(uuidgen)
@@ -85,21 +94,52 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           echo "Signing identities: $(security find-identity -v -p codesigning "$KEYCHAIN" | grep -c 'Apple Distribution' || true)"
 
-          echo "$PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/app.mobileprovision"
-          security cms -D -i "$RUNNER_TEMP/app.mobileprovision" > "$RUNNER_TEMP/profile.plist"
-          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/profile.plist")
-          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/profile.plist")
-          TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")
+          # install_profile <base64> <file name>: decode a profile, put it where Xcode looks, print its name.
+          install_profile() {
+            echo "$1" | base64 --decode > "$RUNNER_TEMP/$2.mobileprovision"
+            security cms -D -i "$RUNNER_TEMP/$2.mobileprovision" > "$RUNNER_TEMP/$2.plist"
+            local uuid
+            uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/$2.plist")
+            for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+              mkdir -p "$dir"
+              cp "$RUNNER_TEMP/$2.mobileprovision" "$dir/$uuid.mobileprovision"
+            done
+            echo "Profile $2: $(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/$2.plist") (expires $(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$RUNNER_TEMP/$2.plist"))" >&2
+          }
+          install_profile "$PROFILE_BASE64" app
+          install_profile "$WIDGET_PROFILE_BASE64" widget
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/app.plist")
+          WIDGET_PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/widget.plist")
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/app.plist")
           echo "::add-mask::$TEAM_ID"
-          for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
-            mkdir -p "$dir"
-            cp "$RUNNER_TEMP/app.mobileprovision" "$dir/$PROFILE_UUID.mobileprovision"
-          done
-          echo "Profile: $PROFILE_NAME (expires $(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$RUNNER_TEMP/profile.plist"))"
+
+          # Each profile must allow what its target asks for (project-widgets.yml, entitlements).
+          # Names the first thing missing, so a profile made before a capability was turned on is easy to spot.
+          needs() {
+            if ! /usr/libexec/PlistBuddy -c "Print :Entitlements:$2" "$RUNNER_TEMP/$1.plist" > "$RUNNER_TEMP/$1-value.txt" 2>/dev/null; then
+              echo "::error::The $1 profile does not allow $2. Turn it on for that App ID in the Apple developer portal, make a new App Store profile and replace its secret."
+              exit 1
+            fi
+          }
+          needs app aps-environment
+          needs app com.apple.developer.usernotifications.time-sensitive
+          needs app com.apple.developer.usernotifications.communication
+          needs app com.apple.security.application-groups
+          grep -q "$APP_GROUP" "$RUNNER_TEMP/app-value.txt" || { echo "::error::The app profile does not include the app group $APP_GROUP."; exit 1; }
+          needs widget com.apple.security.application-groups
+          grep -q "$APP_GROUP" "$RUNNER_TEMP/widget-value.txt" || { echo "::error::The widget profile does not include the app group $APP_GROUP."; exit 1; }
           {
             echo "PROFILE_NAME=$PROFILE_NAME"
+            echo "WIDGET_PROFILE_NAME=$WIDGET_PROFILE_NAME"
             echo "TEAM_ID=$TEAM_ID"
           } >> "$GITHUB_ENV"
+
+      - name: Push for the App Store
+        run: |
+          # The entitlements file in git says development (simulator and debug builds); a store build
+          # must say production, as its profile does.
+          /usr/libexec/PlistBuddy -c 'Set :aps-environment production' KairosWidgets/Support/KairosAgents.entitlements
+          /usr/libexec/PlistBuddy -c 'Print :aps-environment' KairosWidgets/Support/KairosAgents.entitlements
 
       - name: Archive
         run: |
@@ -113,7 +153,8 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            KAIROS_APP_PROFILE="$PROFILE_NAME" \
+            KAIROS_WIDGET_PROFILE="$WIDGET_PROFILE_NAME" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             > archive.log 2>&1; then
             grep -E "error:" -A 6 archive.log | head -300
@@ -136,7 +177,10 @@ jobs:
             <key>teamID</key><string>$TEAM_ID</string>
             <key>signingCertificate</key><string>Apple Distribution</string>
             <key>provisioningProfiles</key>
-            <dict><key>$BUNDLE_ID</key><string>$PROFILE_NAME</string></dict>
+            <dict>
+              <key>$BUNDLE_ID</key><string>$PROFILE_NAME</string>
+              <key>$WIDGET_BUNDLE_ID</key><string>$WIDGET_PROFILE_NAME</string>
+            </dict>
             <key>uploadSymbols</key><true/>
             <key>manageAppVersionAndBuildNumber</key><false/>
           </dict>
@@ -174,5 +218,5 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$KEYCHAIN" 2>/dev/null || true
-          rm -rf "$HOME/.appstoreconnect/private_keys" "$RUNNER_TEMP/app.mobileprovision" "$RUNNER_TEMP/profile.plist"
+          rm -rf "$HOME/.appstoreconnect/private_keys" "$RUNNER_TEMP"/*.mobileprovision "$RUNNER_TEMP"/*.plist "$RUNNER_TEMP"/*-value.txt
           rm -f "$HOME/Library/MobileDevice/Provisioning Profiles"/*.mobileprovision "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision

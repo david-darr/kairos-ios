@@ -36,6 +36,8 @@ private struct BotChatScreen: View {
     @State private var panelTab: BotPanelView.Tab = .inbox
     @State private var showCall = false
     @State private var showTools = false
+    @State private var showModel = false
+    @State private var modelAfterLoad = false
     @State private var viewer: ViewerStart?
     @FocusState private var typing: Bool
 
@@ -75,15 +77,25 @@ private struct BotChatScreen: View {
         .sheet(isPresented: $showTools) {
             ToolsSheet()
         }
+        .sheet(isPresented: $showModel) {
+            BotModelSheet(chat: chat)
+        }
         .sheet(item: $viewer) { start in
             let files = chat.files
             if !files.isEmpty {
                 FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData).kSheet()
             }
         }
-        .task { await chat.load() }
+        .task {
+            await chat.load()
+            if modelAfterLoad {
+                modelAfterLoad = false
+                showModel = true
+            }
+        }
         .onAppear {
             switch router.debugScreen {
+            case "botmodel": router.debugScreen = nil; modelAfterLoad = true
             case "botpanel": router.debugScreen = nil; showPanel = true
             case "botsettings": router.debugScreen = nil; panelTab = .settings; showPanel = true
             case "call": router.debugScreen = nil; showCall = true
@@ -255,8 +267,25 @@ private struct BotChatScreen: View {
                     edit: { chat.editQueued($0) },
                     remove: { chat.removeQueued($0) })
             }
+            if chat.phase == .loaded {
+                HStack {
+                    Button { showModel = true } label: {
+                        Chip(text: modelChip)
+                    }
+                    .buttonStyle(PressStyle(scale: 0.95))
+                    .accessibilityLabel("Model for this conversation: \(modelChip)")
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+            }
             composer
         }
+    }
+
+    /// The conversation's model, then its thinking level when one is set.
+    private var modelChip: String {
+        if let model = chat.model, model.modelID != nil { return model.chip }
+        return chat.modelLine ?? "Model"
     }
 
     private var hasText: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

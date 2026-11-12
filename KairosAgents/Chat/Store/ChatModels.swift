@@ -30,8 +30,18 @@ nonisolated struct Glance: Hashable, Sendable {
 
 nonisolated struct HomeData: Sendable {
     var bots: [Bot]
+    /// The bots the person pinned (on the desktop too). Kip leads Home's row whatever this holds.
     var pinned: [String]
     var conversations: [Conversation]
+    var projects: [ChatProject] = []
+}
+
+/// A chat project (core/projects.py): shared instructions and documents for the chats in it.
+nonisolated struct ChatProject: Identifiable, Hashable, Sendable {
+    var id: String
+    var name: String
+    var instructions: String = ""
+    var documentCount = 0
 }
 
 // MARK: - Files
@@ -390,6 +400,8 @@ nonisolated struct ChatSettings: Hashable, Sendable {
     /// The approval in force, as one of `approvals`.
     var approval = "Ask first"
     var approvals: [String] = ["Ask first", "Full access"]
+    /// A bot conversation only: true while it follows its bot's own model. nil in a model chat.
+    var followsBot: Bool?
 
     /// The chip under the composer: the model, then the level when one is set.
     var chip: String {

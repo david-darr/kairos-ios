@@ -34,18 +34,44 @@ final class SampleBackend: ChatBackend {
     static let botReply = "This is sample data. Connect your desktop and I will answer for real."
 
     static let settings = ChatSettings(
-        modelID: "claude-opus", modelName: "Claude Opus", source: "Claude subscription", versionID: nil, versionName: nil,
-        effort: "High", efforts: ["Low", "Med", "High", "XHigh", "Max"], fast: false,
+        modelID: "ep-claude", modelName: "Claude", source: "Claude subscription", versionID: "claude-opus", versionName: "Claude Opus",
+        effort: "high", efforts: ["low", "medium", "high", "xhigh", "max"], fast: false,
         approval: "Ask first", approvals: ["Ask first", "Edits", "Auto", "Full access"])
 
+    /// The connections, as the desktop's model choices list them.
     static let options = [
-        ModelOption(id: "claude-opus", name: "Claude Opus", source: "Claude subscription"),
-        ModelOption(id: "gpt-sol", name: "GPT-6.1 Sol", source: "Codex"),
-        ModelOption(id: "qwen-local", name: "Qwen local", source: "This PC", takesImages: false),
+        ModelOption(id: "ep-claude", name: "Claude", source: "Claude subscription"),
+        ModelOption(id: "ep-codex", name: "Codex", source: "Codex"),
+        ModelOption(id: "ep-qwen", name: "Qwen local", source: "This PC", takesImages: false),
     ]
+
+    /// Each connection's own models, as the desktop's catalog lists them. A local model has none.
+    static let catalogs: [String: [ModelVersion]] = [
+        "ep-claude": [
+            ModelVersion(id: "claude-opus", name: "Claude Opus", efforts: ["low", "medium", "high", "xhigh", "max"]),
+            ModelVersion(id: "claude-sonnet", name: "Claude Sonnet", efforts: ["low", "medium", "high"]),
+            ModelVersion(id: "claude-haiku", name: "Claude Haiku", efforts: []),
+        ],
+        "ep-codex": [
+            ModelVersion(id: "gpt-6.1-sol", name: "GPT-6.1 Sol", efforts: ["low", "medium", "high", "xhigh"]),
+            ModelVersion(id: "gpt-6.1-sol-mini", name: "GPT-6.1 Sol mini", efforts: ["low", "medium", "high"]),
+        ],
+    ]
+
+    static let projects = [
+        ChatProject(id: "p-shop", name: "Bike shop", instructions: "Keep prices in dollars. The shop opens in March.", documentCount: 3),
+        ChatProject(id: "p-home", name: "Home and garden", instructions: "Small budget. Do it ourselves where we can.", documentCount: 1),
+    ]
+
+    private var projects = SampleBackend.projects
+    private var pinnedBots = ["producer", "scout"]
+    private var botModels: [String: ChatSettings] = [:]
+    private var waitingProjects: [String: String] = [:]
 
     init() {
         seedChats()
+        let seeded = ["c-bike": "p-shop", "c-zip": "p-shop", "c-garden": "p-home"]
+        for index in conversations.indices { conversations[index].projectID = seeded[conversations[index].id] }
     }
 
     // MARK: Seeds
@@ -166,7 +192,35 @@ final class SampleBackend: ChatBackend {
 
     func loadHome() async throws -> HomeData {
         announce()
-        return HomeData(bots: SampleData.allBots, pinned: SampleData.pinned.map(\.id), conversations: conversations)
+        var list = conversations
+        for index in list.indices where list[index].kind == .model {
+            list[index].starred = chats[list[index].id]?.starred ?? false
+        }
+        // Starred chats first, then the list's own newest-first order.
+        list = list.filter(\.starred) + list.filter { !$0.starred }
+        return HomeData(bots: SampleData.allBots, pinned: pinnedBots, conversations: list, projects: projects)
+    }
+
+    func pinBot(_ id: String, pinned: Bool) async throws {
+        pinnedBots.removeAll { $0 == id }
+        if pinned { pinnedBots.append(id) }
+    }
+
+    func setChatProject(_ id: String, projectID: String?) async throws {
+        if let index = conversations.firstIndex(where: { $0.id == id }) {
+            conversations[index].projectID = projectID
+        } else {
+            // A brand new chat joins the list at its first message.
+            waitingProjects[id] = projectID
+        }
+    }
+
+    func createProject(name: String, instructions: String) async throws -> ChatProject {
+        made += 1
+        let project = ChatProject(id: "p-new-\(made)", name: name, instructions: instructions)
+        projects.append(project)
+        projects.sort { $0.name.lowercased() < $1.name.lowercased() }
+        return project
     }
 
     /// The first read of anything tells the store what is running, as the live stream does when it opens.
@@ -209,7 +263,8 @@ final class SampleBackend: ChatBackend {
         chat.entries.append(entry)
         if chat.title == "New chat" {
             chat.title = String(text.prefix(40))
-            conversations.insert(Conversation(id: chatID, kind: .model, title: chat.title, preview: "Working on it", time: "now", working: true), at: 0)
+            conversations.insert(Conversation(id: chatID, kind: .model, title: chat.title, preview: "Working on it", time: "now", working: true,
+                                              projectID: waitingProjects[chatID]), at: 0)
         }
         chats[chatID] = chat
         let turnID = "sample-" + requestID
@@ -371,12 +426,35 @@ final class SampleBackend: ChatBackend {
     func modelOptions() async throws -> [ModelOption] { SampleBackend.options }
 
     func modelVersions(modelID: String) async throws -> [ModelVersion] {
-        [ModelVersion(id: modelID, name: SampleBackend.options.first { $0.id == modelID }?.name ?? "Model", efforts: SampleBackend.settings.efforts)]
+        SampleBackend.catalogs[modelID] ?? []
     }
 
     func saveSettings(chatID: String, settings: ChatSettings) async throws -> ChatSettings {
         chats[chatID]?.settings = settings
         return settings
+    }
+
+    func botModel(threadID: String) async throws -> ChatSettings {
+        if let saved = botModels[threadID] { return saved }
+        var settings = SampleBackend.settings
+        settings.versionID = "claude-sonnet"
+        settings.versionName = "Claude Sonnet"
+        settings.efforts = ["low", "medium", "high"]
+        settings.effort = nil
+        settings.approvals = []
+        settings.followsBot = true
+        return settings
+    }
+
+    func saveBotModel(threadID: String, settings: ChatSettings) async throws -> ChatSettings {
+        guard settings.modelID != nil else {
+            botModels[threadID] = nil
+            return try await botModel(threadID: threadID)
+        }
+        var saved = settings
+        saved.followsBot = false
+        botModels[threadID] = saved
+        return saved
     }
 
     // MARK: Approvals and questions

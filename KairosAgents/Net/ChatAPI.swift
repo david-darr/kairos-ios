@@ -452,6 +452,15 @@ nonisolated struct ChatSummaryDTO: Decodable, Hashable, Sendable {
     var createdAt: Double?
 }
 
+/// GET /api/projects and POST /api/projects (core/projects.py: create_project).
+nonisolated struct ChatProjectDTO: Decodable, Hashable, Sendable {
+    var id: String
+    var name: String?
+    var instructions: String?
+    var documentIds: [String]?
+    var updatedAt: Double?
+}
+
 // MARK: - Routes
 
 /// A text for a JSON body, or JSON null.
@@ -481,6 +490,21 @@ extension APIClient {
 
     func chatRename(_ id: String, title: String) async throws {
         try await call("PATCH", "/api/sessions/\(id)", json: ["title": title])
+    }
+
+    /// GET /api/projects: the person's chat projects, by name.
+    func chatProjects() async throws -> [ChatProjectDTO] {
+        try await get("/api/projects")
+    }
+
+    /// POST /api/projects.
+    func chatProjectCreate(name: String, instructions: String) async throws -> ChatProjectDTO {
+        try await post("/api/projects", json: ["name": name, "instructions": instructions])
+    }
+
+    /// POST /api/sessions/{id}/project: put the chat in a project, or nil to take it out.
+    func chatSetProject(_ id: String, projectId: String?) async throws {
+        try await call("POST", "/api/sessions/\(id)/project", json: ["project_id": jsonOrNull(projectId)])
     }
 
     func chatStar(_ id: String, starred: Bool) async throws {

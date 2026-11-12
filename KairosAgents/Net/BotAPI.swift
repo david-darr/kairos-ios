@@ -163,15 +163,19 @@ nonisolated struct AgentDTO: Decodable, Hashable, Sendable {
 
     /// The body colour for `Bot.colorHex`.
     var bodyColorHex: UInt32 {
-        BotAvatarRules.hex(avatar?.color) ?? BotAvatarRules.hex(color) ?? BotAvatarRules.defaultColor(id)
+        if isFrontDesk { return 0xF2E8D8 }
+        return BotAvatarRules.hex(avatar?.color) ?? BotAvatarRules.hex(color) ?? BotAvatarRules.defaultColor(id)
     }
 
+    /// Kip is always the round ink Kip (`Design/Mascot.swift`), whatever look the desktop stored or seeded for it.
     var mascotShape: MascotShape {
-        MascotShape(rawValue: avatar?.shape ?? "") ?? BotAvatarRules.defaultShape(id)
+        if isFrontDesk { return .round }
+        return MascotShape(rawValue: avatar?.shape ?? "") ?? BotAvatarRules.defaultShape(id)
     }
 
     var mascotAccessory: MascotAccessory {
-        MascotAccessory(rawValue: avatar?.acc ?? "") ?? MascotAccessory.none
+        if isFrontDesk { return .none }
+        return MascotAccessory(rawValue: avatar?.acc ?? "") ?? MascotAccessory.none
     }
 
     /// The roster status as the phone's four states, by the desktop's own order

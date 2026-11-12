@@ -6,6 +6,8 @@ import SwiftUI
 struct ModelChatView: View {
     /// The chat's id on the desktop (or in the sample data). nil means a brand new chat.
     let chatID: String?
+    /// A new chat made from a project's page joins that project at its first message.
+    var projectID: String? = nil
 
     @State private var chat: ModelChatState?
 
@@ -19,7 +21,11 @@ struct ModelChatView: View {
         }
         .onAppear {
             guard chat == nil else { return }
-            chat = ChatStore.shared.modelChat(chatID)
+            if chatID == nil, let projectID {
+                chat = ChatStore.shared.newModelChat(inProject: projectID)
+            } else {
+                chat = ChatStore.shared.modelChat(chatID)
+            }
         }
     }
 }
@@ -34,7 +40,8 @@ private struct ModelChatScreen: View {
     @State private var showModel = false
     @State private var showTools = false
     @State private var viewer: ViewerStart?
-    @State private var model = ModelChoice()
+    @State private var showDetails = false
+    @State private var confirmFull = false
     @FocusState private var typing: Bool
 
     private var store: ChatStore { ChatStore.shared }
@@ -64,7 +71,25 @@ private struct ModelChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { bottom }
         .kScreen(glowAt: UnitPoint(x: 0.8, y: -0.05))
         .sheet(isPresented: $showModel) {
-            ModelSheet(choice: $model)
+            ChatModelSheet(chat: chat) {
+                showModel = false
+                Task {
+                    try? await Task.sleep(for: .seconds(0.35))
+                    showDetails = true
+                }
+            }
+        }
+        .sheet(isPresented: $showDetails) {
+            ChatDetailsSheet(chat: chat)
+        }
+        .confirmationDialog("Give this chat full access?", isPresented: $confirmFull, titleVisibility: .visible) {
+            Button("Give full access", role: .destructive) {
+                Haptics.thud()
+                chat.apply { $0.approval = "Full access" }
+            }
+            Button("Keep asking first", role: .cancel) {}
+        } message: {
+            Text("The model will act on your desktop without asking, also after reading outside content. You can switch back at any time.")
         }
         .sheet(isPresented: $showTools) {
             ToolsSheet()
@@ -316,16 +341,16 @@ private struct ModelChatScreen: View {
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("Add files and tools")
-                Button { showModel = true } label: { Chip(text: "\(model.name) · \(model.level)") }
-                    .accessibilityLabel("Model: \(model.name), thinking \(model.level)")
+                Button { showModel = true } label: { Chip(text: chat.settings.chip) }
+                    .accessibilityLabel("Model: \(chat.settings.chip)")
                 Button {
                     Haptics.select()
-                    model.cycleApproval()
+                    cycleApproval()
                 } label: {
-                    Chip(text: model.approval, filled: false)
+                    Chip(text: chat.settings.approval, filled: false)
                         .contentTransition(.numericText())
                 }
-                .accessibilityLabel("Approval: \(model.approval)")
+                .accessibilityLabel("Approval: \(chat.settings.approval)")
                 Spacer(minLength: 0)
                 Button(action: showsStop ? stop : send) {
                     Image(systemName: showsStop ? "stop.fill" : "arrow.up")
@@ -350,7 +375,7 @@ private struct ModelChatScreen: View {
         .padding(.horizontal, 16)
         .padding(.top, 6)
         .padding(.bottom, 8)
-        .animation(Motion.snappy, value: model.approval)
+        .animation(Motion.snappy, value: chat.settings.approval)
         .animation(Motion.snappy, value: showsStop)
     }
 
@@ -363,6 +388,22 @@ private struct ModelChatScreen: View {
         Haptics.tap()
         draft = ""
         withAnimation(Motion.bouncy) { chat.send(text) }
+    }
+
+    /// The approval chip steps through what the desktop allows; full access asks first.
+    private func cycleApproval() {
+        let all = chat.settings.approvals
+        guard all.count > 1 else {
+            chrome.say("Only an admin of the desktop can give a chat full access.")
+            return
+        }
+        let index = all.firstIndex(of: chat.settings.approval) ?? 0
+        let next = all[(index + 1) % all.count]
+        if next == "Full access" {
+            confirmFull = true
+        } else {
+            chat.apply { $0.approval = next }
+        }
     }
 
     private func stop() {

@@ -23,7 +23,10 @@ final class LiveBackend: ChatBackend {
     private var seen: [String: Double]
     /// Which bot each bot conversation belongs to.
     private var threadBots: [String: String] = [:]
+    /// Whether each bot conversation follows its bot's model (bot_threads.py: follows_bot_model).
+    private var threadFollows: [String: Bool] = [:]
     private var running: Set<String> = []
+    private var projects: [ChatProjectDTO] = []
 
     private static let seenKey = "chatSeenTimes"
 
@@ -54,10 +57,12 @@ final class LiveBackend: ChatBackend {
             async let roster = client.agentRoster()
             async let conversations = client.agentConversations()
             async let rows = client.chatSessions()
+            async let projectRows = try? await client.chatProjects()
             let (agents, botRows, sessions) = try await (roster, conversations, rows)
             self.agents = agents
             self.botConversations = botRows.agents ?? []
             self.sessions = sessions
+            self.projects = await projectRows ?? self.projects
             self.sessionsDirty = false
             await self.fillPreviews(client)
             return self.composeHome()
@@ -84,6 +89,10 @@ final class LiveBackend: ChatBackend {
                 let rows = try await client.chatSessions()
                 if rows != self.sessions {
                     self.sessions = rows
+                    changed = true
+                }
+                if let fresh = try? await client.chatProjects(), fresh != self.projects {
+                    self.projects = fresh
                     changed = true
                 }
                 self.sessionsDirty = false
@@ -137,15 +146,9 @@ final class LiveBackend: ChatBackend {
         let bots = visible.map { LiveBackend.bot($0) }
         let byID = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-        var pinned = botConversations.filter { $0.pinned == true && byID[$0.id] != nil }.map(\.id)
-        if let kip = visible.first(where: { $0.isFrontDesk }), !pinned.contains(kip.id) { pinned.insert(kip.id, at: 0) }
-        if pinned.count < 4 {
-            // Fill the row with the bots talked to most recently.
-            let recent = botConversations.sorted { ($0.at ?? 0) > ($1.at ?? 0) }.map(\.id)
-            for id in recent + visible.map(\.id) where pinned.count < 4 && !pinned.contains(id) && byID[id] != nil {
-                pinned.append(id)
-            }
-        }
+        // Only the person's own pins, in roster order. Home puts Kip and All bots in front of them.
+        let pins = Set(botConversations.filter { $0.pinned == true }.map(\.id))
+        let pinned = visible.filter { pins.contains($0.id) && !$0.isFrontDesk }.map(\.id)
 
         var rows: [(time: Double, conversation: Conversation)] = []
         for row in botConversations {
@@ -174,14 +177,41 @@ final class LiveBackend: ChatBackend {
             let working = running.contains(row.id)
             let title = (row.title ?? "").isEmpty ? "Untitled conversation" : (row.title ?? "")
             rows.append((updated, Conversation(
-                id: row.id, kind: .model, title: (row.starred == true ? "★ " : "") + title,
+                id: row.id, kind: .model, title: title,
                 preview: working ? "Working on it" : (previews[row.id]?.text ?? ""),
                 time: working ? "now" : ChatFormat.listTime(Date(timeIntervalSince1970: updated)),
-                unread: !working && updated > (seen[row.id] ?? updated) + 0.5, working: working)))
+                unread: !working && updated > (seen[row.id] ?? updated) + 0.5, working: working,
+                starred: row.starred == true, projectID: row.projectId)))
         }
         if learned { UserDefaults.standard.set(seen, forKey: LiveBackend.seenKey) }
-        rows.sort { $0.time > $1.time }
-        return HomeData(bots: bots, pinned: pinned, conversations: rows.map(\.conversation))
+        // Starred first, then newest: the desktop's own order (session_manager.list_sessions).
+        rows.sort { a, b in
+            if a.conversation.starred != b.conversation.starred { return a.conversation.starred }
+            return a.time > b.time
+        }
+        let known = projects.map {
+            ChatProject(id: $0.id, name: ($0.name ?? "").isEmpty ? "Project" : ($0.name ?? ""),
+                        instructions: $0.instructions ?? "", documentCount: $0.documentIds?.count ?? 0)
+        }
+        return HomeData(bots: bots, pinned: pinned, conversations: rows.map(\.conversation), projects: known)
+    }
+
+    func pinBot(_ id: String, pinned: Bool) async throws {
+        _ = try await desk { client in try await client.agentOrganize(id, action: pinned ? "pin" : "unpin") }
+        if let index = botConversations.firstIndex(where: { $0.id == id }) { botConversations[index].pinned = pinned }
+    }
+
+    func setChatProject(_ id: String, projectID: String?) async throws {
+        try await desk { client in try await client.chatSetProject(id, projectId: projectID) }
+        if let index = sessions.firstIndex(where: { $0.id == id }) { sessions[index].projectId = projectID }
+        sessionsDirty = true
+    }
+
+    func createProject(name: String, instructions: String) async throws -> ChatProject {
+        let made = try await desk { client in try await client.chatProjectCreate(name: name, instructions: instructions) }
+        projects.append(made)
+        projects.sort { ($0.name ?? "").lowercased() < ($1.name ?? "").lowercased() }
+        return ChatProject(id: made.id, name: made.name ?? name, instructions: made.instructions ?? instructions)
     }
 
     static func bot(_ agent: AgentDTO) -> Bot {
@@ -493,6 +523,55 @@ final class LiveBackend: ChatBackend {
         }
     }
 
+    func botModel(threadID: String) async throws -> ChatSettings {
+        try await desk { client in
+            if self.choices.isEmpty { self.choices = (try? await client.modelChoices()) ?? [] }
+            let state = try await client.botChatState(threadID)
+            return self.botSettings(state.model, threadID: threadID)
+        }
+    }
+
+    private func botSettings(_ model: BotModelDTO?, threadID: String) -> ChatSettings {
+        var settings = ChatSettings()
+        settings.followsBot = threadFollows[threadID] ?? true
+        settings.approvals = []
+        guard let model, let endpointID = model.endpointId else { return settings }
+        let choice = choices.first { $0.id == endpointID }
+        settings.modelID = endpointID
+        settings.modelName = model.name ?? choice?.name ?? "Model"
+        settings.source = choice.map(LiveBackend.sourceWord) ?? ""
+        if let version = model.model, !version.isEmpty {
+            settings.versionID = version
+            let known = catalogs[endpointID]?.first { $0.id == version }
+            settings.versionName = known?.displayName ?? version
+            settings.efforts = (known?.supportedEfforts ?? []).compactMap(\.effort)
+        }
+        settings.effort = model.effort
+        if let effort = settings.effort, !settings.efforts.contains(effort) { settings.efforts.append(effort) }
+        return settings
+    }
+
+    func saveBotModel(threadID: String, settings: ChatSettings) async throws -> ChatSettings {
+        try await desk { client in
+            var endpoint = settings.modelID
+            var version = settings.versionID
+            var effort = settings.effort
+            if endpoint == nil {
+                // Follow the bot again: its own connection, version and level, as static/js/botsPanel.js does.
+                let agent = self.threadBots[threadID].flatMap { id in self.agents.first { $0.id == id } }
+                endpoint = agent?.endpointId ?? self.choices.first { $0.kind == "claude_cli" }?.id
+                version = agent?.modelOverride
+                effort = agent?.modelEffort
+            }
+            _ = try await client.chatSetModel(threadID, endpointId: endpoint, override: version, effort: effort)
+            if let botID = self.threadBots[threadID], let list = try? await client.agentThreads(botID) {
+                for thread in list.threads ?? [] { self.threadFollows[thread.id] = thread.followsBotModel }
+            }
+            let state = try await client.botChatState(threadID)
+            return self.botSettings(state.model, threadID: threadID)
+        }
+    }
+
     func saveSettings(chatID: String, settings: ChatSettings) async throws -> ChatSettings {
         try await desk { client in
             let before = self.savedSettings[chatID] ?? ChatSettings()
@@ -581,6 +660,7 @@ final class LiveBackend: ChatBackend {
             }
             guard let id = chosen else { throw ChatFailure("This bot has no conversation yet.") }
             self.threadBots[id] = botID
+            for thread in threads { self.threadFollows[thread.id] = thread.followsBotModel }
             let name = self.agents.first { $0.id == botID }?.name ?? "The bot"
 
             async let stateRead = client.botChatState(id)

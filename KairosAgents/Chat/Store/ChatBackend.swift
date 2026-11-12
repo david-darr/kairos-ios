@@ -13,6 +13,11 @@ protocol ChatBackend: AnyObject {
     func loadGlance() async throws -> Glance
     /// The slim poll: nil when nothing changed since the last read.
     func pollHome() async throws -> HomeData?
+    /// Pin or unpin a bot. The desktop keeps the same pins for its Bots sidebar.
+    func pinBot(_ id: String, pinned: Bool) async throws
+    /// Put a model chat in a project (nil takes it out).
+    func setChatProject(_ id: String, projectID: String?) async throws
+    func createProject(name: String, instructions: String) async throws -> ChatProject
 
     // Model chats
     func openModelChat(_ id: String) async throws -> ModelChatSnapshot
@@ -36,6 +41,10 @@ protocol ChatBackend: AnyObject {
     func modelVersions(modelID: String) async throws -> [ModelVersion]
     /// Saves the choice and answers the settings as the desktop now holds them.
     func saveSettings(chatID: String, settings: ChatSettings) async throws -> ChatSettings
+    /// The model of one bot conversation, as the desktop holds it.
+    func botModel(threadID: String) async throws -> ChatSettings
+    /// Choose the model of one bot conversation. A nil `modelID` follows the bot's own model again.
+    func saveBotModel(threadID: String, settings: ChatSettings) async throws -> ChatSettings
 
     // Approvals and questions
     func answer(_ request: PendingRequest, choice: PendingRequest.Choice) async throws

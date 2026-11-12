@@ -7,23 +7,6 @@ struct ViewerStart: Identifiable {
     let id: Int
 }
 
-/// What the model sheet edits.
-struct ModelChoice: Equatable {
-    static let levels = ["Low", "Med", "High", "XHigh", "Max"]
-    static let approvals = ["Ask first", "Edits", "Auto", "Full access"]
-
-    var name = "Claude Opus"
-    var source = "Claude subscription"
-    var level = "High"
-    var fast = false
-    var approval = "Ask first"
-
-    mutating func cycleApproval() {
-        let index = Self.approvals.firstIndex(of: approval) ?? 0
-        approval = Self.approvals[(index + 1) % Self.approvals.count]
-    }
-}
-
 struct UserLine: View {
     let text: String
 

@@ -16,6 +16,9 @@ final class ChatStore {
     private(set) var pinnedIDs: [String] = []
     private(set) var conversations: [Conversation] = []
     private(set) var glance = Glance()
+    private(set) var projects: [ChatProject] = []
+    /// Teams the person pinned on Home. The desktop has no pin for a team, so these stay on this phone.
+    private(set) var pinnedTeamIDs: [String]
     private(set) var homeLoaded = false
     /// Why Home could not be read, in plain words. nil when it could.
     private(set) var homeError: String?
@@ -32,9 +35,13 @@ final class ChatStore {
     @ObservationIgnored private var polls = 0
     @ObservationIgnored private var loadingHome = false
 
+    private static let teamPinsKey = "homeTeamPins"
+    private static let sampleTeamPins = ["content"]
+
     private init() {
         connection = Connection.shared
         backend = SampleBackend()
+        pinnedTeamIDs = ChatStore.sampleTeamPins
         attach()
         connection.onChange = { [weak self] in self?.connectionChanged() }
         connection.onPacket = { [weak self] data in (self?.backend as? LiveBackend)?.handle(packet: data) }
@@ -60,6 +67,8 @@ final class ChatStore {
             bots = []
             pinnedIDs = []
             conversations = []
+            projects = []
+            pinnedTeamIDs = wantSample ? ChatStore.sampleTeamPins : (UserDefaults.standard.stringArray(forKey: ChatStore.teamPinsKey) ?? [])
             glance = Glance()
             runs = [:]
             modelChats = [:]
@@ -89,7 +98,93 @@ final class ChatStore {
         return isSample ? SampleData.bot(id) : Bot(id: id, name: "Bot", role: "", colorHex: Palette.botSand, status: .offline)
     }
 
-    var pinnedBots: [Bot] { pinnedIDs.map(bot) }
+    /// Kip, the front desk: always first on Home.
+    var kip: Bot? { bots.first(where: \.isKip) ?? (isSample ? SampleData.kip : nil) }
+
+    /// The bots the person pinned, without Kip (Home always shows Kip first).
+    var pinnedBots: [Bot] { pinnedIDs.filter { id in bots.contains { $0.id == id && !$0.isKip } }.map(bot) }
+
+    /// Every single bot (not teams), Kip first, then the roster order.
+    var singleBots: [Bot] {
+        let all = bots.filter(\.members.isEmpty)
+        return all.filter(\.isKip) + all.filter { !$0.isKip }
+    }
+
+    /// Model chats only, starred first, then newest.
+    var chats: [Conversation] { conversations.filter { $0.kind == .model } }
+
+    /// The newest conversation with each bot, by bot id.
+    var botConversations: [String: Conversation] {
+        var result: [String: Conversation] = [:]
+        for conversation in conversations {
+            if case .bot(let id) = conversation.kind, result[id] == nil { result[id] = conversation }
+        }
+        return result
+    }
+
+    func project(_ id: String) -> ChatProject? { projects.first { $0.id == id } }
+
+    func chats(inProject id: String) -> [Conversation] { chats.filter { $0.projectID == id } }
+
+    func isPinned(bot id: String) -> Bool { pinnedIDs.contains(id) }
+
+    func isPinned(team id: String) -> Bool { pinnedTeamIDs.contains(id) }
+
+    /// Pin or unpin a bot on Home. Saved on the desktop, so its Bots sidebar shows the same pins.
+    func togglePin(bot id: String) async -> String? {
+        let wanted = !pinnedIDs.contains(id)
+        let before = pinnedIDs
+        if wanted { pinnedIDs.append(id) } else { pinnedIDs.removeAll { $0 == id } }
+        do {
+            try await backend.pinBot(id, pinned: wanted)
+            return nil
+        } catch {
+            pinnedIDs = before
+            return error.plainWords
+        }
+    }
+
+    /// Pin or unpin a team on Home. Kept on this phone: the desktop has no pin for a team.
+    func togglePin(team id: String) {
+        if pinnedTeamIDs.contains(id) { pinnedTeamIDs.removeAll { $0 == id } } else { pinnedTeamIDs.append(id) }
+        if !isSample { UserDefaults.standard.set(pinnedTeamIDs, forKey: ChatStore.teamPinsKey) }
+    }
+
+    /// Put a chat in a project, or take it out (nil).
+    func move(chat id: String, toProject projectID: String?) async -> String? {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return nil }
+        let before = conversations[index].projectID
+        conversations[index].projectID = projectID
+        do {
+            try await backend.setChatProject(id, projectID: projectID)
+            refreshHomeSoon()
+            return nil
+        } catch {
+            if let again = conversations.firstIndex(where: { $0.id == id }) { conversations[again].projectID = before }
+            return error.plainWords
+        }
+    }
+
+    func createProject(name: String, instructions: String) async throws -> ChatProject {
+        let made = try await backend.createProject(name: name, instructions: instructions)
+        if !projects.contains(where: { $0.id == made.id }) {
+            projects.append(made)
+            projects.sort { $0.name.lowercased() < $1.name.lowercased() }
+        }
+        return made
+    }
+
+    /// A starred chat moves to the top at once; the desktop's list follows on the next read.
+    fileprivate func starChanged(_ id: String, starred: Bool) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        var moved = conversations.remove(at: index)
+        moved.starred = starred
+        let models = conversations.filter { $0.kind == .model }
+        let others = conversations.filter { $0.kind != .model }
+        let stars = models.filter(\.starred)
+        let rest = models.filter { !$0.starred }
+        conversations = starred ? [moved] + stars + rest + others : stars + [moved] + rest + others
+    }
 
     /// What the live-work pill above the tab bar says, or nil when nothing runs.
     var liveWork: LiveWork? {
@@ -145,6 +240,7 @@ final class ChatStore {
         bots = home.bots
         pinnedIDs = home.pinned
         conversations = home.conversations
+        projects = home.projects
         for conversation in home.conversations {
             if case .bot(let botID) = conversation.kind { threadOwners[conversation.id] = botID }
         }
@@ -167,6 +263,13 @@ final class ChatStore {
         if let id, let known = modelChats[id] { return known }
         let state = ModelChatState(store: self, id: id)
         if let id { modelChats[id] = state }
+        return state
+    }
+
+    /// A brand new model chat that joins this project at its first message.
+    func newModelChat(inProject projectID: String) -> ModelChatState {
+        let state = ModelChatState(store: self, id: nil)
+        state.projectID = projectID
         return state
     }
 
@@ -350,6 +453,8 @@ final class ModelChatState {
     /// Text to put back in the composer (a send that failed, a queued message taken back to edit).
     var restoredDraft: String?
     private(set) var deleted = false
+    /// The project a new chat joins when it is made on the desktop.
+    fileprivate(set) var projectID: String?
 
     @ObservationIgnored private var keptSteps: [StepLine] = []
     @ObservationIgnored private var loadedOnce = false
@@ -473,6 +578,13 @@ final class ModelChatState {
                     store.adopt(self, id: made)
                     if title == "New chat" { title = String(text.prefix(48)) }
                     if settings.modelID != nil, !isSample { settings = (try? await store.source.saveSettings(chatID: made, settings: settings)) ?? settings }
+                    if let projectID {
+                        do {
+                            try await store.source.setChatProject(made, projectID: projectID)
+                        } catch {
+                            notice = "The chat was made, but it could not join the project. " + error.plainWords
+                        }
+                    }
                 }
                 guard let chatID else { return }
                 _ = try await store.source.sendModel(chatID: chatID, text: text, attachments: attachments, requestID: requestID)
@@ -651,12 +763,14 @@ final class ModelChatState {
         starred.toggle()
         let wanted = starred
         guard let id else { return }
+        store.starChanged(id, starred: wanted)
         Task {
             do {
                 try await store.source.starChat(id, starred: wanted)
                 store.touched()
             } catch {
                 starred = !wanted
+                store.starChanged(id, starred: !wanted)
                 notice = error.plainWords
             }
         }
@@ -763,6 +877,8 @@ final class BotChatState {
     private(set) var staged: [StagedAttachment] = []
     private(set) var sending = false
     private(set) var modelLine: String?
+    /// This conversation's model, read when the model drawer first opens. nil until then.
+    private(set) var model: ChatSettings?
     var notice: String?
     var restoredDraft: String?
 
@@ -1037,6 +1153,48 @@ final class BotChatState {
                 try await store.source.respond(request, answers: answers, skip: skip)
                 cardRequests.removeAll { $0.id == request.id }
             } catch {
+                notice = error.plainWords
+            }
+        }
+    }
+
+    // MARK: Model
+
+    func options() async -> [ModelOption] {
+        (try? await store.source.modelOptions()) ?? []
+    }
+
+    func versions(of modelID: String) async -> [ModelVersion] {
+        (try? await store.source.modelVersions(modelID: modelID)) ?? []
+    }
+
+    func loadModel() async {
+        guard let threadID else { return }
+        do {
+            model = try await store.source.botModel(threadID: threadID)
+        } catch {
+            notice = error.plainWords
+        }
+    }
+
+    /// Choose this conversation's model. A nil `modelID` follows the bot's own model again.
+    func applyModel(_ change: (inout ChatSettings) -> Void) {
+        guard let threadID, var next = model else { return }
+        change(&next)
+        guard next != model else { return }
+        if isBusy {
+            notice = "Wait for the reply to finish before changing the model."
+            return
+        }
+        let before = model
+        model = next
+        Task {
+            do {
+                let saved = try await store.source.saveBotModel(threadID: threadID, settings: next)
+                model = saved
+                modelLine = saved.versionName ?? saved.modelName
+            } catch {
+                model = before
                 notice = error.plainWords
             }
         }

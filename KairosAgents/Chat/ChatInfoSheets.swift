@@ -10,7 +10,6 @@ struct ChatModelSheet: View {
 
     @Namespace private var ns
     @State private var options: [ModelOption] = []
-    @State private var versions: [ModelVersion] = []
     @State private var details: ChatDetails?
     @State private var confirmFull = false
     @State private var loaded = false
@@ -18,40 +17,24 @@ struct ChatModelSheet: View {
     private var settings: ChatSettings { chat.settings }
 
     var body: some View {
-        FittedSheet(estimate: 690) {
+        FittedSheet(estimate: 720) {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Model")
-                    .font(KFont.ui(20, .semibold, relativeTo: .title3))
-                    .foregroundStyle(Palette.ink)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 30)
+                ModelSheetTitle()
+                CurrentModelCard(settings: settings, note: nil)
 
-                HStack(spacing: 12) {
-                    Image(systemName: "sparkle")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(Palette.goldText)
-                        .frame(width: 42, height: 42)
-                        .background(Palette.ink.opacity(0.08), in: Circle())
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(settings.versionName ?? settings.modelName).font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
-                        Text(settings.source.isEmpty ? "Pick a model below" : settings.source)
-                            .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                if !settings.efforts.isEmpty {
+                    ThinkingPicker(settings: settings, offersDefault: !chat.isSample, ns: ns) { level in
+                        chat.apply { $0.effort = level }
                     }
-                    Spacer()
                 }
-                .padding(14)
-                .kCard(radius: 22, raised: true)
-                .accessibilityElement(children: .combine)
-
-                if !levels.isEmpty { thinking }
 
                 HStack(spacing: 10) {
                     if let fast = settings.fast {
-                        toggleTile(symbol: "bolt.fill", title: "Fast", value: fast ? "On" : "Off", on: fast) {
+                        ModelToggleTile(symbol: "bolt.fill", title: "Fast", value: fast ? "On" : "Off", on: fast) {
                             chat.apply { $0.fast = !fast }
                         }
                     }
-                    toggleTile(symbol: "checkmark.shield.fill", title: "Approve", value: settings.approval, on: settings.approval == "Full access") {
+                    ModelToggleTile(symbol: "checkmark.shield.fill", title: "Approve", value: settings.approval, on: settings.approval == "Full access") {
                         cycleApproval()
                     }
                 }
@@ -72,17 +55,21 @@ struct ChatModelSheet: View {
                 .buttonStyle(PressStyle(scale: 0.985))
                 .accessibilityLabel("Chat details: \(contextLine)")
 
-                if versions.count > 1 { versionList }
-                modelList
+                ModelPickerList(
+                    settings: settings, options: options, loaded: loaded,
+                    title: chat.isSample ? "Models" : "Your models",
+                    versions: { await chat.versions(of: $0) }
+                ) { option, version in
+                    chat.apply { ModelPickerList.pick(option, version, into: &$0) }
+                }
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 24)
         }
         .task {
             guard !loaded else { return }
-            loaded = true
             options = await chat.options()
-            if let id = settings.modelID { versions = await chat.versions(of: id) }
+            loaded = true
             details = try? await chat.details()
         }
         .confirmationDialog("Give this chat full access?", isPresented: $confirmFull, titleVisibility: .visible) {
@@ -93,46 +80,6 @@ struct ChatModelSheet: View {
             Button("Keep asking first", role: .cancel) {}
         } message: {
             Text("The model will act on your desktop without asking, also after reading outside content. You can switch back at any time.")
-        }
-    }
-
-    /// The levels on offer. A live model also has "Default": send no level at all.
-    private var levels: [String?] {
-        var efforts = settings.efforts
-        if efforts.isEmpty, let version = versions.first(where: { $0.id == settings.versionID }) ?? (versions.count == 1 ? versions.first : nil) {
-            efforts = version.efforts
-        }
-        if efforts.isEmpty { return [] }
-        return chat.isSample ? efforts.map { Optional($0) } : [nil] + efforts.map { Optional($0) }
-    }
-
-    private var thinking: some View {
-        VStack(spacing: 10) {
-            SectionLabel(text: "Thinking")
-            HStack(spacing: 0) {
-                ForEach(levels, id: \.self) { level in
-                    let on = level == settings.effort
-                    Button {
-                        Haptics.select()
-                        withAnimation(Motion.snappy) { chat.apply { $0.effort = level; $0.efforts = levels.compactMap { $0 } } }
-                    } label: {
-                        Text(level.map(ChatSettings.effortWord) ?? "Default")
-                            .font(KFont.ui(14.5, on ? .semibold : .regular, relativeTo: .subheadline))
-                            .foregroundStyle(on ? Palette.onGold : Palette.inkDim)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .background {
-                                if on { Capsule().fill(Palette.gold).matchedGeometryEffect(id: "level", in: ns) }
-                            }
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(PressStyle())
-                    .accessibilityAddTraits(on ? .isSelected : [])
-                }
-            }
-            .padding(4)
-            .kCard(radius: 26)
         }
     }
 
@@ -156,92 +103,182 @@ struct ChatModelSheet: View {
             chat.apply { $0.approval = next }
         }
     }
+}
 
-    private var versionList: some View {
-        VStack(spacing: 10) {
-            SectionLabel(text: "Version")
-            VStack(spacing: 0) {
-                ForEach(Array(versions.enumerated()), id: \.element.id) { index, version in
-                    row(title: version.name, detail: version.efforts.isEmpty ? "" : "\(version.efforts.count) thinking levels",
-                        on: version.id == settings.versionID, last: index == versions.count - 1) {
-                        chat.apply {
-                            $0.versionID = version.id
-                            $0.versionName = version.name
-                            $0.efforts = version.efforts
-                            if let effort = $0.effort, !version.efforts.contains(effort) { $0.effort = nil }
+/// The same drawer for one bot conversation: its model and how hard it thinks, or the bot's own model.
+struct BotModelSheet: View {
+    let chat: BotChatState
+
+    @Namespace private var ns
+    @State private var options: [ModelOption] = []
+    @State private var loaded = false
+    @State private var switching: (option: ModelOption, version: ModelVersion?)?
+
+    var body: some View {
+        FittedSheet(estimate: 640) {
+            VStack(alignment: .leading, spacing: 18) {
+                ModelSheetTitle()
+                if let settings = chat.model {
+                    CurrentModelCard(settings: settings, note: settings.followsBot == true ? "Follows \(chat.bot.name)'s model" : "Chosen for this conversation")
+
+                    if !settings.efforts.isEmpty {
+                        ThinkingPicker(settings: settings, offersDefault: !chat.isSample, ns: ns) { level in
+                            chat.applyModel { $0.effort = level }
                         }
                     }
-                }
-            }
-            .kCard(radius: 20)
-        }
-    }
 
-    private var modelList: some View {
-        VStack(spacing: 10) {
-            SectionLabel(text: chat.isSample ? "Favourites" : "Your models")
-            if options.isEmpty && loaded {
-                Text(chat.isSample ? "No models." : "No model is set up on your desktop yet. Add one in Kairos, under Settings, Models.")
-                    .font(KFont.ui(14.5, relativeTo: .subheadline))
-                    .foregroundStyle(Palette.inkDim)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .kCard(radius: 20)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
-                        row(title: option.name, detail: option.source, on: option.id == settings.modelID, last: index == options.count - 1) {
-                            guard option.id != settings.modelID else { return }
-                            chat.apply {
-                                $0.modelID = option.id
-                                $0.modelName = option.name
-                                $0.source = option.source
-                                $0.versionID = nil
-                                $0.versionName = nil
-                                if !chat.isSample {
-                                    $0.effort = nil
-                                    $0.efforts = []
-                                }
+                    if settings.followsBot == false {
+                        Button {
+                            Haptics.select()
+                            chat.applyModel { $0 = ChatSettings(approvals: [], followsBot: true) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(Palette.ink)
+                                    .frame(width: 34, height: 34)
+                                    .background(Palette.ink.opacity(0.1), in: Circle())
+                                Text("Follow \(chat.bot.name)'s model")
+                                    .font(KFont.ui(15.5, .medium, relativeTo: .subheadline))
+                                    .foregroundStyle(Palette.ink)
+                                Spacer(minLength: 0)
                             }
-                            Task { versions = await chat.versions(of: option.id) }
+                            .padding(12)
+                            .kCard(radius: 20)
+                        }
+                        .buttonStyle(PressStyle(scale: 0.985))
+                    }
+
+                    ModelPickerList(
+                        settings: settings, options: options, loaded: loaded, title: "Models",
+                        versions: { await chat.versions(of: $0) }
+                    ) { option, version in
+                        if let current = options.first(where: { $0.id == settings.modelID }), current.source != option.source, !chat.isSample {
+                            switching = (option, version)
+                        } else {
+                            chat.applyModel { ModelPickerList.pick(option, version, into: &$0) }
                         }
                     }
+                } else {
+                    ProgressView()
+                        .tint(Palette.inkDim)
+                        .frame(maxWidth: .infinity, minHeight: 120)
                 }
-                .kCard(radius: 20)
             }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 24)
+        }
+        .task {
+            guard !loaded else { return }
+            async let read: Void = chat.loadModel()
+            options = await chat.options()
+            await read
+            loaded = true
+        }
+        .confirmationDialog("Switch model families?", isPresented: switchingShown, titleVisibility: .visible) {
+            Button("Switch model") {
+                guard let pick = switching else { return }
+                switching = nil
+                chat.applyModel { ModelPickerList.pick(pick.option, pick.version, into: &$0) }
+            }
+            Button("Cancel", role: .cancel) { switching = nil }
+        } message: {
+            Text("This conversation will continue with a different model family using its saved transcript.")
         }
     }
 
-    private func row(title: String, detail: String, on: Bool, last: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            Haptics.select()
-            withAnimation(Motion.snappy) { action() }
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(KFont.ui(16)).foregroundStyle(Palette.ink)
-                    if !detail.isEmpty {
-                        Text(detail).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+    private var switchingShown: Binding<Bool> {
+        Binding(get: { switching != nil }, set: { if !$0 { switching = nil } })
+    }
+}
+
+private struct ModelSheetTitle: View {
+    var body: some View {
+        Text("Model")
+            .font(KFont.ui(20, .semibold, relativeTo: .title3))
+            .foregroundStyle(Palette.ink)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 30)
+    }
+}
+
+private struct CurrentModelCard: View {
+    let settings: ChatSettings
+    let note: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkle")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Palette.goldText)
+                .frame(width: 42, height: 42)
+                .background(Palette.ink.opacity(0.08), in: Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(settings.versionName ?? settings.modelName).font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
+                Text(line).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .kCard(radius: 22, raised: true)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var line: String {
+        let source = settings.source.isEmpty ? "Pick a model below" : settings.source
+        guard let note else { return source }
+        return settings.source.isEmpty ? note : "\(source) · \(note)"
+    }
+}
+
+/// How hard the model thinks. A live model also has "Default": send no level at all.
+private struct ThinkingPicker: View {
+    let settings: ChatSettings
+    let offersDefault: Bool
+    let ns: Namespace.ID
+    let choose: (String?) -> Void
+
+    private var levels: [String?] { (offersDefault ? [nil] : []) + settings.efforts.map { Optional($0) } }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            SectionLabel(text: "Thinking")
+            HStack(spacing: 0) {
+                ForEach(levels, id: \.self) { level in
+                    let on = level == settings.effort
+                    Button {
+                        Haptics.select()
+                        withAnimation(Motion.snappy) { choose(level) }
+                    } label: {
+                        Text(level.map(ChatSettings.effortWord) ?? "Default")
+                            .font(KFont.ui(14.5, on ? .semibold : .regular, relativeTo: .subheadline))
+                            .foregroundStyle(on ? Palette.onGold : Palette.inkDim)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background {
+                                if on { Capsule().fill(Palette.gold).matchedGeometryEffect(id: "level", in: ns) }
+                            }
+                            .contentShape(Capsule())
                     }
-                }
-                Spacer()
-                if on {
-                    Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.goldText)
-                        .transition(.scale.combined(with: .opacity))
+                    .buttonStyle(PressStyle())
+                    .accessibilityAddTraits(on ? .isSelected : [])
                 }
             }
-            .padding(.horizontal, 16)
-            .frame(minHeight: 56)
-            .contentShape(Rectangle())
-            .overlay(alignment: .bottom) {
-                if !last { Palette.line.frame(height: 1).padding(.leading, 16) }
-            }
+            .padding(4)
+            .kCard(radius: 26)
         }
-        .buttonStyle(PressStyle(scale: 0.99))
-        .accessibilityAddTraits(on ? .isSelected : [])
     }
+}
 
-    private func toggleTile(symbol: String, title: String, value: String, on: Bool, action: @escaping () -> Void) -> some View {
+private struct ModelToggleTile: View {
+    let symbol: String
+    let title: String
+    let value: String
+    let on: Bool
+    let action: () -> Void
+
+    var body: some View {
         Button {
             Haptics.select()
             withAnimation(Motion.snappy) { action() }
@@ -267,6 +304,164 @@ struct ChatModelSheet: View {
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel("\(title): \(value)")
+    }
+}
+
+/// Every connection (Claude, Codex, a local model...), each opening to its own models.
+/// A connection without a list of models is picked as it is.
+struct ModelPickerList: View {
+    let settings: ChatSettings
+    let options: [ModelOption]
+    let loaded: Bool
+    let title: String
+    let versions: (String) async -> [ModelVersion]
+    let choose: (ModelOption, ModelVersion?) -> Void
+
+    @State private var open: Set<String> = []
+    @State private var catalog: [String: [ModelVersion]] = [:]
+    @State private var loading: Set<String> = []
+    @State private var started = false
+
+    /// Put a picked connection and model into the settings; a level the new model lacks is dropped.
+    static func pick(_ option: ModelOption, _ version: ModelVersion?, into settings: inout ChatSettings) {
+        settings.modelID = option.id
+        settings.modelName = option.name
+        settings.source = option.source
+        settings.versionID = version?.id
+        settings.versionName = version?.name
+        settings.efforts = version?.efforts ?? []
+        if let effort = settings.effort, !settings.efforts.contains(effort) { settings.effort = nil }
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            SectionLabel(text: title)
+            if options.isEmpty && loaded {
+                Text("No model is set up on your desktop yet. Add one in Kairos, under Settings, Models.")
+                    .font(KFont.ui(14.5, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.inkDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .kCard(radius: 20)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
+                        connection(option, last: index == options.count - 1)
+                    }
+                }
+                .kCard(radius: 20)
+            }
+        }
+        .onChange(of: options) { openCurrent() }
+        .onAppear { openCurrent() }
+    }
+
+    /// The connection in use starts open, so its models show at once.
+    private func openCurrent() {
+        guard !started, let id = settings.modelID, options.contains(where: { $0.id == id }) else { return }
+        started = true
+        open.insert(id)
+        Task { await read(id) }
+    }
+
+    private func read(_ id: String) async {
+        guard catalog[id] == nil, !loading.contains(id) else { return }
+        loading.insert(id)
+        let list = await versions(id)
+        loading.remove(id)
+        catalog[id] = list
+    }
+
+    @ViewBuilder
+    private func connection(_ option: ModelOption, last: Bool) -> some View {
+        let isOpen = open.contains(option.id)
+        let models = catalog[option.id]
+        let inUse = option.id == settings.modelID
+        Button {
+            Haptics.select()
+            if let models, models.isEmpty {
+                // Nothing to open: the connection is the model.
+                withAnimation(Motion.snappy) { choose(option, nil) }
+                return
+            }
+            withAnimation(Motion.snappy) {
+                if isOpen { open.remove(option.id) } else { open.insert(option.id) }
+            }
+            Task { await read(option.id) }
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(option.name).font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
+                    Text(subtitle(option, models: models, inUse: inUse))
+                        .font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if loading.contains(option.id) {
+                    ProgressView().tint(Palette.inkDim).controlSize(.small)
+                } else if let models, models.isEmpty {
+                    if inUse {
+                        Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.goldText)
+                    }
+                } else {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(inUse ? Palette.goldText : Palette.inkFaint)
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 56)
+            .contentShape(Rectangle())
+            .overlay(alignment: .bottom) {
+                if !last || isOpen { Palette.line.frame(height: 1).padding(.leading, 16) }
+            }
+        }
+        .buttonStyle(PressStyle(scale: 0.99))
+        .accessibilityLabel("\(option.name), \(option.source)")
+        .accessibilityHint(isOpen ? "Hides its models" : "Shows its models")
+
+        if isOpen, let models, !models.isEmpty {
+            ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
+                let on = inUse && model.id == settings.versionID
+                Button {
+                    Haptics.select()
+                    withAnimation(Motion.snappy) { choose(option, model) }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(model.name).font(KFont.ui(15.5)).foregroundStyle(Palette.ink)
+                            if !model.efforts.isEmpty {
+                                Text("\(model.efforts.count) thinking levels")
+                                    .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
+                            }
+                        }
+                        Spacer()
+                        if on {
+                            Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.goldText)
+                                .transition(.scale.combined(with: .opacity))
+                        }
+                    }
+                    .padding(.leading, 32)
+                    .padding(.trailing, 16)
+                    .frame(minHeight: 50)
+                    .background(Palette.ink.opacity(0.03))
+                    .contentShape(Rectangle())
+                    .overlay(alignment: .bottom) {
+                        if !(last && index == models.count - 1) { Palette.line.frame(height: 1).padding(.leading, 32) }
+                    }
+                }
+                .buttonStyle(PressStyle(scale: 0.99))
+                .accessibilityAddTraits(on ? .isSelected : [])
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private func subtitle(_ option: ModelOption, models: [ModelVersion]?, inUse: Bool) -> String {
+        if inUse, let name = settings.versionName { return "\(option.source) · \(name)" }
+        if let models, !models.isEmpty { return "\(option.source) · \(models.count) models" }
+        return option.source
     }
 }
 

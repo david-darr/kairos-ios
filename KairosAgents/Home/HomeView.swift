@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Home feels like Messages: a slim glance row, pinned bots as big round faces,
-/// then one list of every conversation. A bot waiting on you is an unread conversation.
+/// Home feels like Messages: a slim glance row; Kip, All bots and the pinned bots and teams as big
+/// round faces; the chat projects; then every model chat, starred first. Bot conversations live in All bots.
 /// Everything here comes from `ChatStore`: sample data until a desktop is paired, the desktop after.
 struct HomeView: View {
     @Environment(AppRouter.self) private var router
@@ -15,8 +15,7 @@ struct HomeView: View {
     @State private var renaming: Conversation?
     @State private var renameText = ""
     @State private var deleting: Conversation?
-
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+    @State private var openTeam: BotTeam?
 
     var body: some View {
         ScrollView {
@@ -28,39 +27,29 @@ struct HomeView: View {
                     glanceRow.arrives(0)
                 }
 
-                if !store.pinnedBots.isEmpty {
-                    LazyVGrid(columns: columns, spacing: 8) {
-                        ForEach(Array(store.pinnedBots.enumerated()), id: \.element.id) { index, bot in
-                            Button {
-                                Haptics.tap()
-                                router.push(.bot(bot.id), on: .home)
-                            } label: {
-                                VStack(spacing: 7) {
-                                    BotFace(bot: bot, size: 82, showStatus: true, blinks: true)
-                                    Text(bot.name)
-                                        .font(KFont.ui(13.5, relativeTo: .footnote))
-                                        .foregroundStyle(Palette.ink)
-                                        .lineLimit(1)
-                                }
-                                .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(PressStyle(scale: 0.92))
-                            .accessibilityLabel("\(bot.name), \(statusWord(bot.status))")
-                            .arrives(index + 1)
-                        }
+                PinnedFacesGrid(faces: HomeFaces.pinned(store: store, bots: BotsStore.shared, withAllBots: true)) { face in
+                    switch face {
+                    case .bot(let bot): router.push(.bot(bot.id), on: .home)
+                    case .allBots: router.push(.allBots, on: .home)
+                    case .team(let team): openTeam = team
                     }
-                    .padding(.top, 2)
+                }
+                .padding(.top, 2)
+
+                if store.homeLoaded {
+                    ProjectsRow(projects: store.projects) { router.push(.project($0.id), on: .home) }
+                        .arrives(3)
                 }
 
-                if store.conversations.isEmpty {
+                if store.chats.isEmpty {
                     emptyState
                 } else {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(store.conversations.enumerated()), id: \.element.id) { index, conversation in
+                        ForEach(Array(store.chats.enumerated()), id: \.element.id) { index, conversation in
                             Button {
                                 router.open(conversation)
                             } label: {
-                                ConversationRow(conversation: conversation, bot: botFor(conversation))
+                                ConversationRow(conversation: conversation, tag: conversation.projectID.flatMap { store.project($0)?.name })
                             }
                             .buttonStyle(PressStyle(scale: 0.985))
                             .contextMenu { menu(for: conversation) }
@@ -87,6 +76,8 @@ struct HomeView: View {
             .padding(.horizontal, 16)
             .padding(.top, 4)
             .animation(Motion.snappy, value: store.conversations)
+            .animation(Motion.snappy, value: store.pinnedIDs)
+            .animation(Motion.snappy, value: store.pinnedTeamIDs)
             .animation(Motion.snappy, value: bannerText)
         }
         .scrollIndicators(.hidden)
@@ -114,6 +105,10 @@ struct HomeView: View {
         .sheet(isPresented: $showConnection) {
             NavigationStack { ConnectionScreen() }
                 .kSheet()
+        }
+        .fullScreenCover(item: $openTeam) { team in
+            NavigationStack { TeamScreen(teamID: team.id).botsDestinations() }
+                .tint(Palette.gold)
         }
         .alert("Rename chat", isPresented: renamingShown) {
             TextField("Title", text: $renameText)
@@ -144,6 +139,7 @@ struct HomeView: View {
             connection.start()
             if !store.homeLoaded { await store.refreshHome() }
             chrome.liveWork = store.liveWork
+            await HomeFaces.loadTeams()
             // The slim poll: only while Home is on screen.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(20))
@@ -156,7 +152,10 @@ struct HomeView: View {
             // Paired or unpaired: what was open belongs to the other data.
             router.paths[.home] = []
             chrome.liveWork = store.liveWork
-            Task { await store.refreshHome() }
+            Task {
+                await store.refreshHome()
+                await HomeFaces.loadTeams()
+            }
         }
         .onChange(of: scenePhase) {
             guard scenePhase == .active else { return }
@@ -176,11 +175,6 @@ struct HomeView: View {
     private var initial: String {
         let name = connection.desktop?.username ?? ""
         return store.isSample || name.isEmpty ? "Y" : String(name.prefix(1)).uppercased()
-    }
-
-    private func botFor(_ conversation: Conversation) -> Bot? {
-        if case .bot(let id) = conversation.kind { return store.bot(id) }
-        return nil
     }
 
     // MARK: Connection
@@ -236,7 +230,7 @@ struct HomeView: View {
                 Text("Your next conversation starts here.")
                     .font(KFont.ui(16))
                     .foregroundStyle(Palette.inkDim)
-                Text("Tap + to start a chat, or tap a bot above.")
+                Text("Tap + to start a chat, or tap Kip above.")
                     .font(KFont.ui(14, relativeTo: .footnote))
                     .foregroundStyle(Palette.inkFaint)
             }
@@ -250,16 +244,17 @@ struct HomeView: View {
         if case .model = conversation.kind {
             Button("Open", systemImage: "bubble.left") { router.open(conversation) }
             Button("Rename", systemImage: "pencil") {
-                renameText = conversation.title.replacingOccurrences(of: "★ ", with: "")
+                renameText = conversation.title
                 renaming = conversation
             }
-            Button(conversation.title.hasPrefix("★ ") ? "Remove star" : "Star", systemImage: "star") {
+            Button(conversation.starred ? "Remove star" : "Star", systemImage: conversation.starred ? "star.slash" : "star") {
                 let chat = store.modelChat(conversation.id)
                 Task {
                     await chat.load()
                     chat.toggleStar()
                 }
             }
+            ProjectMenu(conversation: conversation)
             Button("Delete", systemImage: "trash", role: .destructive) { deleting = conversation }
         } else {
             Button("Open", systemImage: "bubble.left") { router.open(conversation) }
@@ -318,15 +313,6 @@ struct HomeView: View {
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
     }
-
-    private func statusWord(_ status: BotStatus) -> String {
-        switch status {
-        case .online: "ready"
-        case .working: "working"
-        case .needsYou: "waiting for you"
-        case .offline: "asleep"
-        }
-    }
 }
 
 private extension View {
@@ -373,12 +359,20 @@ struct ConversationRow: View {
     let conversation: Conversation
     /// The bot's face for a bot conversation. nil draws the model mark.
     var bot: Bot? = nil
+    /// A small label before the preview: the chat's project.
+    var tag: String? = nil
 
     var body: some View {
         HStack(spacing: 12) {
             avatar
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline) {
+                    if conversation.starred {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Palette.goldText)
+                            .accessibilityLabel("Starred")
+                    }
                     Text(conversation.title)
                         .font(KFont.ui(16.5, conversation.unread ? .semibold : .medium))
                         .foregroundStyle(Palette.ink)
@@ -390,6 +384,16 @@ struct ConversationRow: View {
                 }
                 HStack(spacing: 6) {
                     if conversation.working { PulsingDot(color: Palette.working, size: 6) .padding(.horizontal, 2) }
+                    if let tag {
+                        Text(tag)
+                            .font(KFont.ui(12, .medium, relativeTo: .caption))
+                            .foregroundStyle(Palette.inkDim)
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(Palette.ink.opacity(0.07), in: Capsule())
+                            .fixedSize()
+                    }
                     Text(conversation.preview.isEmpty ? " " : conversation.preview)
                         .font(KFont.ui(14.5, relativeTo: .subheadline))
                         .foregroundStyle(conversation.unread ? Palette.ink.opacity(0.9) : Palette.inkFaint)

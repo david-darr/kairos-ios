@@ -71,6 +71,10 @@ if [ -z "${AREA:-}" ] || [ "${AREA:-}" = "base" ] || [ "${AREA:-}" = "all" ]; th
   shot 19-you -onboarded YES -kScreen you
   shot 20-search -onboarded YES -kScreen search
   shot 27-bots -onboarded YES -kScreen bots
+  shot 28-all-bots -onboarded YES -kScreen allbots
+  shot 29-project -onboarded YES -kScreen project
+  shot 30-bot-model -onboarded YES -kScreen botmodel
+  shot 31-all-bots-light -onboarded YES -kScreen allbots -kAppearance light
   shot 21-home-light -onboarded YES -kScreen home -kAppearance light
   shot 22-bot-light -onboarded YES -kScreen bot -kAppearance light
   shot 23-chat-live-light -onboarded YES -kScreen chatlive -kAppearance light

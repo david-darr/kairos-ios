@@ -31,6 +31,10 @@ nonisolated struct Conversation: Identifiable, Hashable, Sendable {
     var time: String
     var unread = false
     var working = false
+    /// A starred model chat sorts to the top of Home.
+    var starred = false
+    /// The chat project this model chat belongs to, or nil.
+    var projectID: String? = nil
 }
 
 nonisolated struct ChatMessage: Identifiable, Hashable, Sendable {
@@ -166,6 +170,12 @@ nonisolated enum Route: Hashable, Sendable {
     case bot(String)
     case chat(String)
     case newChat
+    /// A new model chat that joins this project at its first message.
+    case newChatInProject(String)
+    /// Every bot and team, laid out like Home.
+    case allBots
+    /// One chat project and its chats.
+    case project(String)
     case area(JumpArea)
     case page(String)
 }
