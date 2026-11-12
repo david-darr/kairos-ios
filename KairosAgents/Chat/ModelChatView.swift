@@ -81,8 +81,11 @@ struct ModelChatView: View {
                 if isLive {
                     HStack(spacing: 6) {
                         PulsingDot(color: Palette.working, size: 6)
-                        Text("2 running").font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.working)
+                        Text("2 running").font(KFont.ui(12.5, .medium, relativeTo: .caption)).foregroundStyle(Palette.ink)
                     }
+                    .padding(.horizontal, 10)
+                    .frame(height: 24)
+                    .kGlass(Capsule())
                 }
             }
             Spacer(minLength: 8)
