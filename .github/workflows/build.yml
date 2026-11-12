@@ -1,0 +1,85 @@
+name: Build
+
+# Builds the app for the simulator and saves a picture of every screen.
+# No signing and no secrets here. Signed builds get their own workflow later,
+# and that one must never run for pull requests from forks.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Fonts
+        run: |
+          python3 -m venv "$RUNNER_TEMP/fontenv"
+          "$RUNNER_TEMP/fontenv/bin/pip" install --quiet fonttools==4.57.0 brotli==1.1.0
+          "$RUNNER_TEMP/fontenv/bin/python" Tools/build_fonts.py
+
+      - name: Generate the Xcode project
+        run: |
+          which xcodegen || brew install xcodegen
+          xcodegen generate
+
+      - name: Build
+        run: |
+          set -o pipefail
+          if ! xcodebuild \
+            -project KairosAgents.xcodeproj \
+            -scheme KairosAgents \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build > build.log 2>&1; then
+            echo "::group::Errors"
+            grep -E "error:" build.log | sort -u | head -150
+            echo "::endgroup::"
+            echo "::group::Errors with context"
+            grep -E "error:" -A 6 build.log | head -600
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "Warnings: $(grep -c 'warning:' build.log || true)"
+          grep -E "warning:" build.log | sort -u | head -60 || true
+
+      - name: Screenshots
+        run: |
+          chmod +x Tools/screenshots.sh
+          Tools/screenshots.sh
+
+      - name: Save the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: shots
+          if-no-files-found: ignore
+
+      - name: Save the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore

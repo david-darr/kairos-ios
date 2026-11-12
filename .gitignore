@@ -60,3 +60,11 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Kairos: generated at build time
+KairosAgents.xcodeproj/
+KairosAgents/Info.plist
+KairosAgents/Resources/Fonts/
+build/
+build.log
+shots/
