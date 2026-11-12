@@ -102,15 +102,19 @@ Work on your branch (`area/<name>`) in your own worktree. Commit small and often
 git push origin HEAD
 ```
 
-Every push to an `area/` branch starts the **Compile** workflow (about four minutes). Wait for it and read the errors:
+Every push to an `area/` branch starts the **Compile** workflow (about four minutes). GitHub allows 5,000 API requests an hour for everyone working on this repo together, so do not poll: never use `gh run watch`. Wait once, then ask once.
 
 ```bash
-gh run watch $(gh run list --workflow Compile --branch "$(git branch --show-current)" --limit 1 --json databaseId --jq '.[0].databaseId') --exit-status
+sleep 270; gh run list --workflow Compile --branch "$(git branch --show-current)" --limit 1 --json databaseId,status,conclusion
 ```
 
+If it is still running, sleep at least two more minutes before asking again. Read a log only when a run failed, once:
+
 ```bash
-gh run view <id> --log | grep -E "COMPILE|error:" | sed -E 's/^[^\t]*\t[^\t]*\t[0-9T:.Z-]+ //' | sort -u | head -80
+gh run view <id> --log | grep -E "COMPILE|error:" | sed -E 's/^[^	]*	[^	]*	[0-9T:.Z-]+ //' | sort -u | head -80
 ```
+
+`gh api rate_limit --jq .resources.core.remaining` costs nothing; if it is under 300, wait. Batch several screens into one push.
 
 When it compiles, take pictures of your screens only (about eight minutes) and look at them:
 
