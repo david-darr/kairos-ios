@@ -110,6 +110,11 @@ nonisolated struct FlexibleDate: Decodable, Hashable, Sendable {
         if let date = plain.date(from: text) { return date }
         // A time with no zone is UTC by the contract.
         if let date = plain.date(from: text + "Z") { return date }
+        // A plain date ("2026-11-12", an all-day event) is that day here, at local midnight.
+        let parts = text.split(separator: "-").compactMap { Int($0) }
+        if text.count == 10, parts.count == 3 {
+            return Calendar.current.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        }
         return nil
     }
 }
