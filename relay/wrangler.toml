@@ -1,0 +1,22 @@
+# Template. Copy this file to wrangler.local.toml (git-ignored) or edit in
+# place on your own machine, and fill in the placeholders. Do not commit real
+# values. See README.md for the full deploy steps.
+
+name = "kairos-push-relay"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# The iPhone app's bundle identifier, for example com.yourname.kairos.
+# Not secret. The relay builds the APNs topics from it.
+BUNDLE_ID = "REPLACE_WITH_BUNDLE_ID"
+
+[[kv_namespaces]]
+binding = "INSTALLS"
+# Output of: npx wrangler kv namespace create INSTALLS
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Secrets are NOT set here. Set them with wrangler (see README.md):
+#   APNS_KEY_P8    contents of the .p8 push key file
+#   APNS_KEY_ID    the key's 10 character id
+#   APNS_TEAM_ID   the developer team id
