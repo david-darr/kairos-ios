@@ -53,6 +53,14 @@ messages, and can be turned off. Lock Screen previews fall back to "Kairos" when
   `CallAudioBridge` (`/api/agent-calls` audio), call `WidgetSync.publish(_:)` with real numbers and
   `LiveActivities.shared.begin/update/finish` from the live event stream.
 
+## What is verified
+
+- Compile (project-widgets.yml, app plus extension) is green; a one-off `#warning` in `KairosWidgets/` proved the
+  extension target itself compiles. The app-only build (project.yml) compiles and runs in the Build workflow.
+- Every gallery picture in `Tools/screens/native.txt` was looked at in Night, and the widgets and settings in Light.
+- The app-only build has no microphone string or Live Activity key, so `CallCenter` and `LiveActivities` check
+  Info.plist before asking (asking for the microphone without the string ends the app; it did in the first run).
+
 ## Cannot be proven without a signed build on a real phone
 
 - The real Lock Screen, Dynamic Island and Home Screen rendering (the gallery draws the same views, but iOS frames,
