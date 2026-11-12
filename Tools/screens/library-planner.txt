@@ -1,0 +1,42 @@
+calendar-week -kDebugView library.calendar-week
+calendar-week-light -kDebugView library.calendar-week -kAppearance light
+calendar-day -kDebugView library.calendar-day
+calendar-day-light -kDebugView library.calendar-day -kAppearance light
+calendar-early -kDebugView library.calendar-early
+calendar-early-light -kDebugView library.calendar-early -kAppearance light
+calendar-month -kDebugView library.calendar-month
+calendar-month-light -kDebugView library.calendar-month -kAppearance light
+calendar-agenda -kDebugView library.calendar-agenda
+calendar-agenda-light -kDebugView library.calendar-agenda -kAppearance light
+calendar-event -kDebugView library.calendar-event
+calendar-event-light -kDebugView library.calendar-event -kAppearance light
+calendar-edit -kDebugView library.calendar-edit
+calendar-edit-light -kDebugView library.calendar-edit -kAppearance light
+calendar-detail -kDebugView library.calendar-detail
+calendar-detail-light -kDebugView library.calendar-detail -kAppearance light
+calendar-delete -kDebugView library.calendar-delete
+calendar-delete-light -kDebugView library.calendar-delete -kAppearance light
+calendar-sources -kDebugView library.calendar-sources
+calendar-sources-light -kDebugView library.calendar-sources -kAppearance light
+calendar-archive -kDebugView library.calendar-archive
+calendar-archive-light -kDebugView library.calendar-archive -kAppearance light
+mail-triage -kDebugView library.mail-triage
+mail-triage-light -kDebugView library.mail-triage -kAppearance light
+mail-message -kDebugView library.mail-message
+mail-message-light -kDebugView library.mail-message -kAppearance light
+mail-draft -kDebugView library.mail-draft
+mail-draft-light -kDebugView library.mail-draft -kAppearance light
+mail-sent -kDebugView library.mail-sent
+mail-sent-light -kDebugView library.mail-sent -kAppearance light
+mail-accounts -kDebugView library.mail-accounts
+mail-accounts-light -kDebugView library.mail-accounts -kAppearance light
+mail-connect -kDebugView library.mail-connect
+mail-connect-light -kDebugView library.mail-connect -kAppearance light
+mail-empty -kDebugView library.mail-empty
+mail-empty-light -kDebugView library.mail-empty -kAppearance light
+mail-first -kDebugView library.mail-first
+mail-first-light -kDebugView library.mail-first -kAppearance light
+mail-error -kDebugView library.mail-error
+mail-error-light -kDebugView library.mail-error -kAppearance light
+mail-search -kDebugView library.mail-search
+mail-search-light -kDebugView library.mail-search -kAppearance light
