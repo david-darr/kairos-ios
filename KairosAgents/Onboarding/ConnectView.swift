@@ -49,7 +49,7 @@ struct PairingForm: View {
                     Text("Connect your desktop")
                         .font(KFont.display(38))
                         .foregroundStyle(Palette.ink)
-                    Text("On your desktop, open Kairos, then Settings, then Remote access, then Pair the iPhone app. It shows an address and a 6 digit code.")
+                    Text("The code is on your desktop: open Kairos, go to Settings, Remote access, and choose \"Pair the iPhone app\". It shows an address and a 6 digit code.")
                         .font(KFont.ui(16))
                         .foregroundStyle(Palette.inkDim)
                         .lineSpacing(3)

@@ -32,7 +32,6 @@ struct ModelSheet: View {
                         Text(choice.source).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                     }
                     Spacer()
-                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.inkFaint)
                 }
                 .padding(14)
                 .kCard(radius: 22, raised: true)
@@ -97,7 +96,6 @@ struct ModelSheet: View {
                 VStack(spacing: 10) {
                     HStack {
                         SectionLabel(text: "Favourites")
-                        Text("All models").font(KFont.ui(14, .medium, relativeTo: .footnote)).foregroundStyle(Palette.goldText)
                     }
                     VStack(spacing: 0) {
                         ForEach(Array(favourites.enumerated()), id: \.offset) { index, model in
@@ -166,50 +164,53 @@ struct ModelSheet: View {
     }
 }
 
-/// Everything a chat can do, from the + button.
+/// Everything a chat can do, from the + button: add photos and files, or start a kind of work.
 struct ToolsSheet: View {
+    nonisolated enum Action: Hashable, Sendable {
+        case photos
+        case files
+        /// Put these words in the composer, ready to finish.
+        case starter(String)
+        case compact
+        case summary
+    }
+
+    /// What the chat does with the choice. The sheet closes itself first.
+    var onAction: (Action) -> Void = { _ in }
+    /// Compact and Chat summary only make sense for a chat that has messages.
+    var chatActions = false
+
     @Environment(\.dismiss) private var dismiss
 
-    private let tools: [(symbol: String, title: String, detail: String)] = [
-        ("doc", "Files", "From your phone, Library or the vault"),
-        ("globe", "Browse the web", "Watch it work in a live card"),
-        ("desktopcomputer", "Use my computer", "Click and type on your desktop"),
-        ("paintpalette", "Design", "A page, a post or a screen, on a canvas"),
-        ("doc.text", "Document", "A doc, deck or sheet you can export"),
-        ("clock", "Run in the background", "Keep going after you leave"),
-        ("bolt", "Use a skill", "Saved ways of doing a job"),
-        ("line.3.horizontal", "More", "Workspace, integrations, open mic, compact"),
-    ]
-
-    private let photoTints: [(UInt32, UInt32)] = [(0x6B5442, 0x3C2E24), (0x4E6070, 0x2C3640), (0x6E5A3A, 0x3A2E1E), (0x5A4A5E, 0x2E2633)]
+    private var tools: [(symbol: String, title: String, detail: String, action: Action)] {
+        var rows: [(symbol: String, title: String, detail: String, action: Action)] = [
+            ("globe", "Browse the web", "Watch it work in a live card", .starter("Browse the web and ")),
+            ("desktopcomputer", "Use my computer", "Click and type on your desktop", .starter("Use my computer to ")),
+            ("paintpalette", "Design", "A page, a post or a screen, on a canvas", .starter("Design ")),
+            ("doc.text", "Document", "A doc, deck or sheet you can export", .starter("Write a document about ")),
+            ("clock", "Run in the background", "Keep going after you leave", .starter("In the background, ")),
+            ("bolt", "Use a skill", "Saved ways of doing a job", .starter("Use a skill to ")),
+        ]
+        if chatActions {
+            rows.append(("text.alignleft", "Chat summary", "What this chat has covered so far", .summary))
+            rows.append(("arrow.down.right.and.arrow.up.left", "Compact this chat", "Summarise older turns. Nothing is deleted", .compact))
+        }
+        return rows
+    }
 
     var body: some View {
-        FittedSheet(estimate: 690) {
+        FittedSheet(estimate: 660) {
             VStack(alignment: .leading, spacing: 16) {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        VStack(spacing: 5) {
-                            Image(systemName: "camera").font(.system(size: 20, weight: .medium))
-                            Text("Camera").font(KFont.ui(12.5, relativeTo: .caption))
-                        }
-                        .foregroundStyle(Palette.ink)
-                        .frame(width: 84, height: 84)
-                        .kCard(radius: 18, raised: true)
-                        ForEach(Array(photoTints.enumerated()), id: \.offset) { _, tint in
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(LinearGradient(colors: [Color(hex: tint.0), Color(hex: tint.1)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .frame(width: 84, height: 84)
-                                .accessibilityLabel("Recent photo")
-                        }
-                    }
-                    .padding(.horizontal, 18)
+                HStack(spacing: 10) {
+                    bigTile("photo.on.rectangle", "Photos", "From your library", .photos)
+                    bigTile("folder", "Files", "From this iPhone", .files)
                 }
-                .scrollIndicators(.hidden)
+                .padding(.horizontal, 18)
                 .padding(.top, 34)
 
                 VStack(spacing: 0) {
                     ForEach(Array(tools.enumerated()), id: \.offset) { index, tool in
-                        Button { dismiss() } label: {
+                        Button { choose(tool.action) } label: {
                             HStack(spacing: 14) {
                                 Image(systemName: tool.symbol)
                                     .font(.system(size: 17, weight: .medium))
@@ -236,6 +237,27 @@ struct ToolsSheet: View {
             }
             .padding(.bottom, 20)
         }
+    }
+
+    private func bigTile(_ symbol: String, _ title: String, _ detail: String, _ action: Action) -> some View {
+        Button { choose(action) } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 20, weight: .medium)).foregroundStyle(Palette.goldText)
+                Text(title).font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
+                Text(detail).font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .kCard(radius: 20, raised: true)
+        }
+        .buttonStyle(PressStyle(scale: 0.97))
+        .accessibilityLabel("\(title), \(detail)")
+    }
+
+    private func choose(_ action: Action) {
+        Haptics.tap()
+        dismiss()
+        onAction(action)
     }
 }
 
