@@ -63,6 +63,9 @@ struct LibraryCalendarSection: View {
                 .environment(chrome)
         }
         .onAppear(perform: applyDebugState)
+        .onChange(of: chrome.addTick) {
+            if router.tab == .library { sheet = .new(store.selected) }
+        }
     }
 
     // Pieces

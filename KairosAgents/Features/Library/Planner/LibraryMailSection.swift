@@ -37,6 +37,9 @@ struct LibraryMailSection: View {
                 .environment(chrome)
         }
         .onAppear(perform: applyDebugState)
+        .onChange(of: chrome.addTick) {
+            if router.tab == .library { refresh() }
+        }
     }
 
     // MARK: Summary

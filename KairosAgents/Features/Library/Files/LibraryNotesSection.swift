@@ -5,6 +5,7 @@ import SwiftUI
 /// because this view is made again each time the person switches sections.
 struct LibraryNotesSection: View {
     @Environment(ChromeState.self) private var chrome
+    @Environment(AppRouter.self) private var router
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let store: NotesStore
@@ -74,6 +75,9 @@ struct LibraryNotesSection: View {
             Text("This can't be undone.")
         }
         .onAppear(perform: applyStart)
+        .onChange(of: chrome.addTick) {
+            if router.tab == .library { captureFocused = true }
+        }
     }
 
     // MARK: - Parts

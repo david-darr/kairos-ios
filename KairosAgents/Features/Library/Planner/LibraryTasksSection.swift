@@ -32,6 +32,9 @@ struct LibraryTasksSection: View {
                 .environment(chrome)
         }
         .onAppear(perform: applyDebug)
+        .onChange(of: chrome.addTick) {
+            if router.tab == .library { sheet = .addCard }
+        }
     }
 
     // MARK: Parts

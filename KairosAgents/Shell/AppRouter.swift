@@ -144,6 +144,9 @@ final class AppRouter {
 final class ChromeState {
     var collapsed = false
     var jumpOpen = false
+    /// Goes up each time the gold circle is tapped on Library or Desktop. The screen showing there
+    /// watches it and opens its own "new" action (a new event, a new card, a new Forge session).
+    var addTick = 0
     var liveWork: LiveWork? = SampleData.liveWork
     var toast: String?
     /// Debug screenshots hold the bar still.

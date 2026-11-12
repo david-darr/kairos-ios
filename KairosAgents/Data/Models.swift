@@ -175,20 +175,20 @@ nonisolated enum LibrarySection: String, CaseIterable, Hashable, Sendable {
 
     var addLabel: String {
         switch self {
-        case .files: "Upload a file"
+        case .files: "New document"
         case .notes: "New note"
         case .calendar: "New event"
-        case .mail: "New email"
-        case .tasks: "New task"
+        case .mail: "Check mail"
+        case .tasks: "New card"
         }
     }
 
     var addSymbol: String {
         switch self {
-        case .files: "arrow.up.doc"
+        case .files: "doc.badge.plus"
         case .notes: "square.and.pencil"
         case .calendar: "calendar.badge.plus"
-        case .mail: "envelope.badge"
+        case .mail: "arrow.clockwise"
         case .tasks: "plus"
         }
     }

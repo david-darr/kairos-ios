@@ -24,6 +24,9 @@ struct LibraryFilesSection: View {
             documentsCard.arrives(3)
         }
         .padding(.top, 6)
+        .onChange(of: chrome.addTick) {
+            if router.tab == .library { cover = .document(nil) }
+        }
         .fullScreenCover(item: $cover) { cover in
             Group {
                 switch cover {

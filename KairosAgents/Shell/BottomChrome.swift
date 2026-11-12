@@ -132,8 +132,7 @@ struct BottomChrome: View {
             switch router.tab {
             case .home: router.push(.newChat, on: .home)
             case .make: chrome.say("Describe it in the box above")
-            case .library: chrome.say("\(router.librarySection.addLabel): not built yet")
-            case .desktop: chrome.say("New Forge session: not built yet")
+            case .library, .desktop: chrome.addTick += 1
             }
         } label: {
             Image(systemName: router.actionSymbol)

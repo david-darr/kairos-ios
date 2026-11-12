@@ -48,6 +48,9 @@ struct DesktopView: View {
                 .environment(chrome)
                 .navigationTransition(.zoom(sourceID: zoomID(item.route), in: zoom))
         }
+        .onChange(of: chrome.addTick) {
+            if router.tab == .desktop { open(.forgeHome) }
+        }
         .onAppear {
             if asleep {
                 store.pc.asleep = true
