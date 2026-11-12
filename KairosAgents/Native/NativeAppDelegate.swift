@@ -95,10 +95,12 @@ private struct NativeLinksModifier: ViewModifier {
         @Bindable var calls = calls
         @Bindable var links = links
         content
-            .overlay(alignment: .top) {
+            .safeAreaInset(edge: .top, spacing: 0) {
+                // The pill takes its own row so it never covers a screen's header.
                 if calls.minimized, let session = calls.session {
                     CallPill(session: session) { calls.showingCall = true }
                         .padding(.top, 4)
+                        .padding(.bottom, 6)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }

@@ -250,13 +250,13 @@ struct WidgetDrawing: View {
         if family.isAccessory {
             KairosWidgetView(kind: kind, snapshot: snapshot, family: family, hidingTitles: false)
                 .foregroundStyle(.white)
+                .frame(width: size.width, height: size.height, alignment: family == .accessoryInline ? .leading : .center)
                 .background {
                     // AccessoryWidgetBackground only draws on the Lock Screen; stand in for it here.
                     if family == .accessoryCircular, kind == .needsYou || kind == .quickActions {
                         Circle().fill(Color.white.opacity(0.16))
                     }
                 }
-                .frame(width: size.width, height: size.height, alignment: family == .accessoryInline ? .leading : .center)
                 .environment(\.colorScheme, .dark)
         } else {
             KairosWidgetView(kind: kind, snapshot: snapshot, family: family, hidingTitles: false)
