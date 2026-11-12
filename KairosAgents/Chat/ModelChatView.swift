@@ -4,10 +4,9 @@ import SwiftUI
 /// conversation, and a composer with the model chip and the approval chip.
 /// Everything comes from `ChatStore`: the sample desktop until one is paired, the person's desktop after.
 struct ModelChatView: View {
-    /// nil means a brand new chat.
-    let conversation: Conversation?
+    /// The chat's id on the desktop (or in the sample data). nil means a brand new chat.
+    let chatID: String?
 
-    @Environment(AppRouter.self) private var router
     @State private var chat: ModelChatState?
 
     var body: some View {
@@ -20,18 +19,8 @@ struct ModelChatView: View {
         }
         .onAppear {
             guard chat == nil else { return }
-            chat = ChatStore.shared.modelChat(chatID())
+            chat = ChatStore.shared.modelChat(chatID)
         }
-    }
-
-    /// The shell builds this screen from the sample list, which does not know a desktop's ids.
-    /// Home's path still holds the real one: the newest chat pushed is this screen.
-    private func chatID() -> String? {
-        guard let conversation else { return nil }
-        for route in (router.paths[.home] ?? []).reversed() {
-            if case .chat(let id) = route { return id }
-        }
-        return conversation.id
     }
 }
 

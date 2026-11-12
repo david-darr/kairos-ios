@@ -4,9 +4,9 @@ import SwiftUI
 /// bubbles, and small status chips while it works. Tap the face for its Inbox and Settings.
 /// Everything comes from `ChatStore`: the sample desktop until one is paired, the person's desktop after.
 struct BotChatView: View {
-    let bot: Bot
+    /// The bot's id on the desktop (or in the sample data).
+    let botID: String
 
-    @Environment(AppRouter.self) private var router
     @State private var chat: BotChatState?
 
     var body: some View {
@@ -19,17 +19,8 @@ struct BotChatView: View {
         }
         .onAppear {
             guard chat == nil else { return }
-            chat = ChatStore.shared.botChat(botID())
+            chat = ChatStore.shared.botChat(botID)
         }
-    }
-
-    /// The shell builds this screen from the sample bots, which do not know a desktop's ids.
-    /// Home's path still holds the real one: the newest bot pushed is this screen.
-    private func botID() -> String {
-        for route in (router.paths[.home] ?? []).reversed() {
-            if case .bot(let id) = route { return id }
-        }
-        return bot.id
     }
 }
 

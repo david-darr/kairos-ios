@@ -74,9 +74,9 @@ private struct TabRoot: View {
             }
             .navigationDestination(for: Route.self) { route in
                 switch route {
-                case .bot(let id): BotChatView(bot: SampleData.bot(id))
-                case .chat(let id): ModelChatView(conversation: SampleData.conversation(id))
-                case .newChat: ModelChatView(conversation: nil)
+                case .bot(let id): BotChatView(botID: id)
+                case .chat(let id): ModelChatView(chatID: id)
+                case .newChat: ModelChatView(chatID: nil)
                 case .area(let area): AreaScreens.view(for: area)
                 case .page(let title): AddedTabScreen(title: title)
                 }
