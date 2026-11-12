@@ -24,7 +24,7 @@ struct OnboardingFlow: View {
                 ConnectView(back: { withAnimation(Motion.sheet) { connecting = false; permission = PermissionMoment.all.count - 1 } })
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else if let permission {
-                PermissionPage(moment: PermissionMoment.all[permission], index: permission) {
+                WelcomePermissionStep(index: permission) {
                     advance(from: permission)
                 } back: {
                     withAnimation(Motion.sheet) { self.permission = permission == 0 ? nil : permission - 1 }

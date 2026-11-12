@@ -37,7 +37,7 @@ enum YouScreens {
         case .modelGuide: ModelGuideScreen()
         case .voice: VoiceScreen()
         case .botVoice: BotVoiceScreen()
-        case .notifications: NotificationsScreen()
+        case .notifications: NotificationsRowDestination()
         case .reachMe: ReachMeScreen()
         case .channels: ChannelsScreen()
         case .channel(let id): ChannelDetailScreen(channelID: id)
@@ -160,6 +160,13 @@ final class YouStore {
         accounts.append(account)
         currentID = account.id
         say("Signed in to \(name)")
+    }
+
+    /// Teams paused from Search ("pause the content team").
+    var pausedTeams: Set<String> = []
+
+    func toggleTeamPause(_ id: String) {
+        if pausedTeams.contains(id) { pausedTeams.remove(id) } else { pausedTeams.insert(id) }
     }
 
     /// A screen to open when the You sheet next appears (Search uses this).

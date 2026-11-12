@@ -13,7 +13,6 @@ account-signin -kDebugView you.account-signin
 models -kDebugView you.models
 models-add -kDebugView you.models-add
 voice -kDebugView you.voice
-notify -kDebugView you.notify
 reachme -kDebugView you.reachme
 channels -kDebugView you.channels
 channel-discord -kDebugView you.channel-discord
@@ -31,7 +30,6 @@ home-light -kDebugView you.home -kAppearance light
 account-light -kDebugView you.account -kAppearance light
 models-light -kDebugView you.models -kAppearance light
 voice-light -kDebugView you.voice -kAppearance light
-notify-light -kDebugView you.notify -kAppearance light
 reachme-light -kDebugView you.reachme -kAppearance light
 channels-light -kDebugView you.channels -kAppearance light
 phone-light -kDebugView you.phone -kAppearance light
@@ -44,3 +42,24 @@ look-animated -kDebugView you.look-animated
 layout -kDebugView you.layout
 look-light -kDebugView you.look -kAppearance light
 layout-light -kDebugView you.layout -kAppearance light
+search -kScreen search
+search-light -kScreen search -kAppearance light
+bots-prefs -kDebugView you.bots-prefs
+bots-skills -kDebugView you.bots-skills
+bots-apps -kDebugView you.bots-apps
+bots-usage -kDebugView you.bots-usage
+admin-users -kDebugView you.admin-users
+admin-logs -kDebugView you.admin-logs
+admin-sandbox -kDebugView you.admin-sandbox
+admin-hooks -kDebugView you.admin-hooks
+admin-hook-new -kDebugView you.admin-hook-new
+store -kDebugView you.store
+store-tool -kDebugView you.store-tool
+store-tab-review -kDebugView you.store-tab-review
+store-add-tab -kDebugView you.store-add-tab
+store-added-crm -kDebugView you.store-added-crm
+store-added-board -kDebugView you.store-added-board
+store-light -kDebugView you.store -kAppearance light
+store-added-crm-light -kDebugView you.store-added-crm -kAppearance light
+bots-prefs-light -kDebugView you.bots-prefs -kAppearance light
+admin-logs-light -kDebugView you.admin-logs -kAppearance light

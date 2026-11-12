@@ -171,6 +171,32 @@ struct PermissionPage: View {
     }
 }
 
+/// One permission step of the welcome. The notifications step is a slot for the native layer.
+struct WelcomePermissionStep: View {
+    let index: Int
+    let next: () -> Void
+    let back: () -> Void
+
+    var body: some View {
+        if index == 0 {
+            WelcomeNotificationSlot(next: next, back: back)
+        } else {
+            PermissionPage(moment: PermissionMoment.all[index], index: index, next: next, back: back)
+        }
+    }
+}
+
+/// Lead: at merge, fill this slot with the native layer's `NotificationAskCard()` (keeping Back and
+/// the step dots if they fit). Until then it uses the plain permission page.
+struct WelcomeNotificationSlot: View {
+    let next: () -> Void
+    let back: () -> Void
+
+    var body: some View {
+        PermissionPage(moment: PermissionMoment.all[0], index: 0, next: next, back: back)
+    }
+}
+
 // MARK: - Asking iOS
 
 nonisolated enum PermissionState: Sendable { case unknown, notAsked, granted, denied, unavailable }
