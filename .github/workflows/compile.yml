@@ -1,0 +1,59 @@
+name: Compile
+
+# A quick check that a work branch compiles (about four minutes, no screenshots).
+# Runs on every push to an area/ branch, or by hand on any branch. No secrets.
+
+on:
+  push:
+    branches: ['area/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fonts
+        run: |
+          python3 -m venv "$RUNNER_TEMP/fontenv"
+          "$RUNNER_TEMP/fontenv/bin/pip" install --quiet fonttools==4.57.0 brotli==1.1.0
+          "$RUNNER_TEMP/fontenv/bin/python" Tools/build_fonts.py
+
+      - name: Generate the Xcode project
+        run: |
+          which xcodegen || brew install xcodegen
+          SPEC=project.yml
+          if [ -f project-widgets.yml ]; then SPEC=project-widgets.yml; fi
+          echo "Using $SPEC"
+          xcodegen generate --spec "$SPEC"
+
+      - name: Compile
+        run: |
+          set -o pipefail
+          if ! xcodebuild \
+            -project KairosAgents.xcodeproj \
+            -scheme KairosAgents \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build > build.log 2>&1; then
+            echo "COMPILE FAILED"
+            grep -E "error:" build.log | sed -E 's#/Users/runner/work/kairos-ios/kairos-ios/##' | sort -u | head -120
+            echo "---- with context ----"
+            grep -E "error:" -A 5 build.log | sed -E 's#/Users/runner/work/kairos-ios/kairos-ios/##' | head -400
+            exit 1
+          fi
+          echo "COMPILE OK"
+          grep -E "warning:" build.log | sed -E 's#/Users/runner/work/kairos-ios/kairos-ios/##' | grep -v "appintentsmetadataprocessor" | sort -u | head -40 || true

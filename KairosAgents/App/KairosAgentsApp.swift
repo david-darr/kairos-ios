@@ -44,6 +44,8 @@ final class AppModel {
     private(set) var appearance: AppLook
     /// Debug builds can open straight onto one screen ("-kScreen home"), for the build's screenshots.
     let debugScreen: String?
+    /// Debug builds can also open one named view on its own ("-kDebugView library.vault").
+    let debugView: String?
 
     init() {
         let defaults = UserDefaults.standard
@@ -51,9 +53,11 @@ final class AppModel {
         var look = AppLook(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .night
         #if DEBUG
         debugScreen = defaults.string(forKey: "kScreen")
+        debugView = defaults.string(forKey: "kDebugView")
         if let forced = defaults.string(forKey: "kAppearance"), let value = AppLook(rawValue: forced) { look = value }
         #else
         debugScreen = nil
+        debugView = nil
         #endif
         appearance = look
     }
@@ -80,7 +84,9 @@ struct RootView: View {
     var body: some View {
         ZStack {
             Ground()
-            if app.onboarded {
+            if let name = app.debugView {
+                DebugHost(name: name)
+            } else if app.onboarded {
                 ShellView()
                     .transition(.opacity.combined(with: .scale(scale: 1.04)))
             } else {

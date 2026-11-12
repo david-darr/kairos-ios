@@ -76,8 +76,8 @@ private struct TabRoot: View {
                 case .bot(let id): BotChatView(bot: SampleData.bot(id))
                 case .chat(let id): ModelChatView(conversation: SampleData.conversation(id))
                 case .newChat: ModelChatView(conversation: nil)
-                case .area(let area): AreaView(title: area.title, symbol: area.symbol, about: area.about)
-                case .page(let title): AreaView(title: title, symbol: "square.dashed", about: "")
+                case .area(let area): AreaScreens.view(for: area)
+                case .page(let title): AddedTabScreen(title: title)
                 }
             }
         }

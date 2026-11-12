@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      area:
+        description: "Only photograph this area's screens (a file name in Tools/screens, without .txt). Empty for everything."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -82,6 +87,8 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' build-release/Build/Products/Release-iphoneos/KairosAgents.app/Info.plist
 
       - name: Screenshots
+        env:
+          AREA: ${{ inputs.area }}
         run: |
           chmod +x Tools/screenshots.sh
           Tools/screenshots.sh
