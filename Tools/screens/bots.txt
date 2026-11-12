@@ -78,3 +78,24 @@ departments-light -kDebugView bots.departments -kAppearance light
 room -kDebugView bots.room
 room-light -kDebugView bots.room -kAppearance light
 room-settings -kDebugView bots.room-settings
+maker -kDebugView bots.maker
+maker-light -kDebugView bots.maker -kAppearance light
+create-simple -kDebugView bots.create-simple
+create-simple-light -kDebugView bots.create-simple -kAppearance light
+create-advanced -kDebugView bots.create-advanced
+create-advanced-light -kDebugView bots.create-advanced -kAppearance light
+ready-made -kDebugView bots.ready-made
+ready-made-light -kDebugView bots.ready-made -kAppearance light
+archived -kDebugView bots.archived
+archived-light -kDebugView bots.archived -kAppearance light
+packages -kDebugView bots.packages
+packages-light -kDebugView bots.packages -kAppearance light
+package-preview -kDebugView bots.package-preview
+package-preview-light -kDebugView bots.package-preview -kAppearance light
+package-share -kDebugView bots.package-share
+package-share-light -kDebugView bots.package-share -kAppearance light
+all-bots -kDebugView bots.all-bots
+all-bots-light -kDebugView bots.all-bots -kAppearance light
+all-bots-reorder -kDebugView bots.all-bots-reorder
+all-bots-reorder-light -kDebugView bots.all-bots-reorder -kAppearance light
+room-settings-light -kDebugView bots.room-settings -kAppearance light
