@@ -36,7 +36,8 @@ extension View {
 
     /// Every screen: the ground behind it and no system bar on top.
     func kScreen(glowAt: UnitPoint = UnitPoint(x: 0.88, y: -0.05)) -> some View {
-        background { Ground(glowAt: glowAt) }
+        environment(\.groundGlow, glowAt)
+            .background { Ground(glowAt: glowAt) }
             .toolbar(.hidden, for: .navigationBar)
     }
 
@@ -252,17 +253,43 @@ struct TabHeader<Trailing: View>: View {
     }
 }
 
-/// What sits behind a floating header: a light fade of the ground, so the title stays readable. No blur.
+extension EnvironmentValues {
+    /// Where the screen's ground glow sits, so a header can continue it.
+    @Entry var groundGlow: UnitPoint = UnitPoint(x: 0.88, y: -0.05)
+}
+
+/// What sits behind a floating header. It repeats the screen's own ground, glow included, so the
+/// header looks like open ground while what scrolls under it fades away instead of running through
+/// the title. No blur.
 struct HeaderFade: View {
+    @Environment(\.groundGlow) private var glowAt
+
     var body: some View {
-        LinearGradient(
-            stops: [
-                .init(color: Palette.ground.opacity(0.86), location: 0),
-                .init(color: Palette.ground.opacity(0.6), location: 0.6),
-                .init(color: Palette.ground.opacity(0), location: 1),
-            ],
-            startPoint: .top, endPoint: .bottom
-        )
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .global)
+            let screen = UIScreen.main.bounds.size
+            ZStack {
+                Palette.ground
+                RadialGradient(
+                    colors: [Palette.glow, Palette.glow.opacity(0)],
+                    center: UnitPoint(
+                        x: (glowAt.x * screen.width - frame.minX) / max(frame.width, 1),
+                        y: (glowAt.y * screen.height - frame.minY) / max(frame.height, 1)),
+                    startRadius: 0,
+                    endRadius: 520
+                )
+            }
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.74),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+            }
+        }
         .ignoresSafeArea(edges: .top)
         .allowsHitTesting(false)
     }

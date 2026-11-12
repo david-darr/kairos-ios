@@ -176,6 +176,7 @@ struct ForgeFileScreen: View {
                     .padding(16)
                     .textSelection(.enabled)
                 }
+                .defaultScrollAnchor(.topLeading)
                 .scrollIndicators(.hidden)
             }
         }

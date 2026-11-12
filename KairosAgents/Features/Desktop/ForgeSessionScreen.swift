@@ -175,6 +175,7 @@ struct ForgeSessionScreen: View {
                 .padding(.bottom, 6)
             }
         }
+        .background { HeaderFade() }
     }
 
     // MARK: Turns
