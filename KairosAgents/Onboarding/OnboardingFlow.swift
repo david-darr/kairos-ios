@@ -1,10 +1,14 @@
 import SwiftUI
 
-/// The welcome: a short carousel, then connecting to your desktop.
+/// The welcome: a short carousel, the permission moments (each on its own page, with a clear Not now),
+/// then connecting to your desktop. Finishing it starts the short tour the first time.
 struct OnboardingFlow: View {
+    /// Debug pictures can open on a permission page (0, 1 or 2).
+    var startPermission: Int? = nil
     @Environment(AppModel.self) private var app
     @State private var page = 0
     @State private var connecting = false
+    @State private var permission: Int?
 
     private let pages: [(title: String, body: String)] = [
         ("Meet Kairos", "Your own AI team, running on your desktop and reachable from your pocket."),
@@ -17,18 +21,33 @@ struct OnboardingFlow: View {
     var body: some View {
         ZStack {
             if connecting {
-                ConnectView(back: { withAnimation(Motion.sheet) { connecting = false } })
+                ConnectView(back: { withAnimation(Motion.sheet) { connecting = false; permission = PermissionMoment.all.count - 1 } })
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else if let permission {
+                PermissionPage(moment: PermissionMoment.all[permission], index: permission) {
+                    advance(from: permission)
+                } back: {
+                    withAnimation(Motion.sheet) { self.permission = permission == 0 ? nil : permission - 1 }
+                }
+                .id(permission)
+                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
             } else {
                 carousel.transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
         .onAppear {
+            if let startPermission { permission = startPermission }
             switch app.debugScreen {
             case "onboarding2": page = 1
             case "connect": connecting = true
             default: break
             }
+        }
+        .onDisappear {
+            // The first time the welcome ends, walk through the real controls once.
+            guard app.onboarded, app.debugScreen == nil, app.debugView == nil,
+                  !UserDefaults.standard.bool(forKey: "tourSeen") else { return }
+            TourPresenter.start(after: 0.9)
         }
     }
 
@@ -41,7 +60,7 @@ struct OnboardingFlow: View {
                         .frame(width: index == page ? 26 : 12, height: 4)
                 }
                 Spacer()
-                Button("Skip") { withAnimation(Motion.sheet) { connecting = true } }
+                Button("Skip") { withAnimation(Motion.sheet) { permission = 0 } }
                     .font(KFont.ui(15.5, .medium, relativeTo: .subheadline))
                     .foregroundStyle(Palette.inkDim)
                     .frame(minWidth: 44, minHeight: 44)
@@ -82,7 +101,7 @@ struct OnboardingFlow: View {
                 GoldButton(title: page == pages.count - 1 ? "Connect your desktop" : "Continue") {
                     Haptics.tap()
                     if page == pages.count - 1 {
-                        withAnimation(Motion.sheet) { connecting = true }
+                        withAnimation(Motion.sheet) { permission = 0 }
                     } else {
                         withAnimation(Motion.sheet) { page += 1 }
                     }
@@ -93,6 +112,17 @@ struct OnboardingFlow: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 8)
+        }
+    }
+
+    private func advance(from index: Int) {
+        withAnimation(Motion.sheet) {
+            if index + 1 < PermissionMoment.all.count {
+                permission = index + 1
+            } else {
+                permission = nil
+                connecting = true
+            }
         }
     }
 }
