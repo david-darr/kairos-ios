@@ -1,11 +1,6 @@
 import SwiftUI
 
 // Temporary: pages still being built.
-struct RoutinesScreen: View { let botID: String; var body: some View { BotsPage("Routines") { EmptyNote(text: "Coming next.") } } }
-struct RoutineEditorScreen: View { let botID: String; let routineID: UUID?; var body: some View { BotsPage("Routine") { EmptyNote(text: "Coming next.") } } }
-struct TriggerEditorScreen: View { let botID: String; let triggerID: UUID?; let webhook: Bool; var body: some View { BotsPage("Trigger") { EmptyNote(text: "Coming next.") } } }
-struct AutomationCalendarScreen: View { let botID: String?; var body: some View { BotsPage("Calendar") { EmptyNote(text: "Coming next.") } } }
-struct AutomationsScreen: View { var body: some View { BotsPage("Automations") { EmptyNote(text: "Coming next.") } } }
 struct TeamScreen: View { let teamID: String; var body: some View { BotsPage("Team") { EmptyNote(text: "Coming next.") } } }
 struct TeamReportScreen: View { let teamID: String; var body: some View { BotsPage("Team report") { EmptyNote(text: "Coming next.") } } }
 struct TeamMapScreen: View { var body: some View { BotsPage("Team map") { EmptyNote(text: "Coming next.") } } }
