@@ -45,6 +45,7 @@ struct ChatModelSheet: View {
                             Text("Details").font(KFont.ui(15.5, relativeTo: .subheadline)).foregroundStyle(Palette.ink)
                             Spacer()
                             Text(contextLine).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                                .lineLimit(1).minimumScaleFactor(0.8)
                             Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.inkFaint)
                         }
                         ContextBar(details: details)
@@ -472,20 +473,33 @@ struct ContextBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Palette.ink.opacity(0.1))
                 if let details, let window = details.windowTokens, window > 0 {
-                    HStack(spacing: 2) {
-                        if details.parts.isEmpty, let used = details.usedTokens {
-                            Capsule().fill(Palette.working).frame(width: max(3, geometry.size.width * CGFloat(used) / CGFloat(window)))
-                        }
-                        ForEach(Array(details.parts.enumerated()), id: \.element.id) { index, part in
-                            Capsule()
-                                .fill(ContextBar.tints[index % ContextBar.tints.count])
-                                .frame(width: max(3, geometry.size.width * CGFloat(part.tokens) / CGFloat(window)))
+                    let over = (details.usedTokens ?? 0) > window
+                    let sum = details.parts.reduce(0) { $0 + $1.tokens }
+                    let total = max(details.usedTokens ?? 0, sum)
+                    // Scale every part so the whole never runs past the bar.
+                    let scale = CGFloat(min(1, Double(window) / Double(max(total, 1))))
+                    let count = details.parts.isEmpty ? 1 : details.parts.count
+                    let room = max(0, geometry.size.width - 2 * CGFloat(count - 1))
+                    if over {
+                        Capsule().fill(Palette.danger).frame(width: geometry.size.width)
+                    } else {
+                        HStack(spacing: 2) {
+                            if details.parts.isEmpty, let used = details.usedTokens {
+                                Capsule().fill(Palette.working)
+                                    .frame(width: max(0, room * CGFloat(used) / CGFloat(window) * scale))
+                            }
+                            ForEach(Array(details.parts.enumerated()), id: \.element.id) { index, part in
+                                Capsule()
+                                    .fill(ContextBar.tints[index % ContextBar.tints.count])
+                                    .frame(width: max(0, room * CGFloat(part.tokens) / CGFloat(window) * scale))
+                            }
                         }
                     }
                 }
             }
         }
         .frame(height: 8)
+        .clipShape(Capsule())
         .accessibilityHidden(true)
     }
 }
@@ -586,14 +600,17 @@ struct ChatDetailsSheet: View {
             if let used = details.usedTokens {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(ChatDetails.tokens(used)).font(KFont.ui(26, .semibold, relativeTo: .title2)).foregroundStyle(Palette.ink)
+                        .lineLimit(1).minimumScaleFactor(0.8)
                     if let window = details.windowTokens {
                         Text("of \(ChatDetails.tokens(window))").font(KFont.ui(15, relativeTo: .subheadline)).foregroundStyle(Palette.inkDim)
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                     if let percent = details.percent {
                         Text("\(Int(percent.rounded()))%")
                             .font(KFont.ui(15, .medium, relativeTo: .subheadline))
                             .foregroundStyle(percent >= 90 ? Palette.danger : (percent >= 70 ? Palette.goldText : Palette.inkDim))
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
                 }
                 ContextBar(details: details)
@@ -603,7 +620,8 @@ struct ChatDetailsSheet: View {
                             HStack(spacing: 8) {
                                 Circle().fill(ContextBar.tints[index % ContextBar.tints.count]).frame(width: 8, height: 8)
                                 Text(part.label).font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.ink)
-                                Spacer()
+                                    .lineLimit(1).minimumScaleFactor(0.8)
+                                Spacer(minLength: 8)
                                 Text((part.estimated ? "~" : "") + ChatDetails.tokens(part.tokens))
                                     .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).monospacedDigit()
                             }

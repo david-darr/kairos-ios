@@ -19,6 +19,35 @@ enum HomeFace: Identifiable, Hashable {
     }
 }
 
+/// Lays out up to `columns` cells in one row, each a full-row cell wide, the row centered.
+/// (The available width is read from the proposal, so no GeometryReader is needed.)
+private struct FaceRowLayout: Layout {
+    let spacing: CGFloat
+    let columns: Int
+
+    private func cellWidth(_ width: CGFloat) -> CGFloat {
+        max(0, (width - spacing * CGFloat(columns - 1)) / CGFloat(columns))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 320
+        let cell = cellWidth(width)
+        let height = subviews.map { $0.sizeThatFits(ProposedViewSize(width: cell, height: nil)).height }.max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let cell = cellWidth(bounds.width)
+        let used = cell * CGFloat(subviews.count) + spacing * CGFloat(max(0, subviews.count - 1))
+        var x = bounds.minX + (bounds.width - used) / 2
+        for subview in subviews {
+            subview.place(at: CGPoint(x: x, y: bounds.minY), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: cell, height: bounds.height))
+            x += cell + spacing
+        }
+    }
+}
+
 /// The pinned row: big round faces, four across. A long hold pins or unpins.
 struct PinnedFacesGrid: View {
     let faces: [HomeFace]
@@ -26,30 +55,38 @@ struct PinnedFacesGrid: View {
     let open: (HomeFace) -> Void
     var firstArrival = 1
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
-
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 14) {
-            ForEach(Array(faces.enumerated()), id: \.element.id) { index, face in
-                Button {
-                    Haptics.tap()
-                    open(face)
-                } label: {
-                    VStack(spacing: 7) {
-                        picture(face)
-                        Text(name(face))
-                            .font(KFont.ui(13.5, relativeTo: .footnote))
-                            .foregroundStyle(Palette.ink)
-                            .lineLimit(1)
+        let rows = stride(from: 0, to: faces.count, by: 4).map { Array(faces[$0..<min($0 + 4, faces.count)]) }
+        VStack(spacing: 14) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                FaceRowLayout(spacing: 8, columns: 4) {
+                    ForEach(Array(row.enumerated()), id: \.element.id) { column, face in
+                        cell(face, index: rowIndex * 4 + column)
                     }
-                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(PressStyle(scale: 0.92))
-                .contextMenu { menu(face) }
-                .accessibilityLabel(label(face))
-                .arrives(index + firstArrival)
+                .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    private func cell(_ face: HomeFace, index: Int) -> some View {
+        Button {
+            Haptics.tap()
+            open(face)
+        } label: {
+            VStack(spacing: 7) {
+                picture(face)
+                Text(name(face))
+                    .font(KFont.ui(13.5, relativeTo: .footnote))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(PressStyle(scale: 0.92))
+        .contextMenu { menu(face) }
+        .accessibilityLabel(label(face))
+        .arrives(index + firstArrival)
     }
 
     @ViewBuilder
