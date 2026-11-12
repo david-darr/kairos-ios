@@ -4,18 +4,43 @@ import SwiftUI
 /// Launch with `-kDebugView bots.<name>` (see docs/DEV-GUIDE.md).
 enum BotsDebug {
     static func view(_ name: String) -> AnyView? {
+        let store = BotsStore.shared
         switch name {
-        case "inbox": return AnyView(BotPanelRoot(botID: "kip", startTab: .inbox, presented: true).botsDestinations())
-        case "inbox-scout": return AnyView(BotPanelRoot(botID: "scout", startTab: .inbox, presented: true).botsDestinations())
-        case "settings": return AnyView(BotPanelRoot(botID: "scout", startTab: .settings, presented: true).botsDestinations())
+        case "inbox": return page(BotPanelRoot(botID: "kip", startTab: .inbox, presented: true))
+        case "inbox-scout": return page(BotPanelRoot(botID: "scout", startTab: .inbox, presented: true))
+        case "settings": return page(BotPanelRoot(botID: "scout", startTab: .settings, presented: true))
+        case "notifications": return page(BotNotificationsScreen(botID: "kip"))
+        case "activity": return page(BotActivityScreen(botID: "kip"))
+        case "report": return page(BotReportScreen(botID: "kip"))
+        case "raise-full": return page(ApprovalSettings(botID: "scout").sheet(isPresented: .constant(true)) {
+            RaiseLevelSheet(botName: "Scout", from: .ask, to: .full) {}
+        })
+        case "routines": return page(RoutinesScreen(botID: "scout"))
+        case "routines-kip": return page(RoutinesScreen(botID: "kip"))
+        case "routine-new": return page(RoutineEditorScreen(botID: "kip", routineID: nil))
+        case "routine-interval": return page(RoutineEditorScreen(botID: "scout", routineID: store.routines.first { $0.mode == .interval }?.id))
+        case "trigger-webhook": return page(TriggerEditorScreen(botID: "ledger", triggerID: nil, webhook: true))
+        case "trigger-app": return page(TriggerEditorScreen(botID: "kip", triggerID: store.triggers.first { $0.kind == .appEvent }?.id, webhook: false))
+        case "calendar": return page(AutomationCalendarScreen(botID: nil))
+        case "automations": return page(AutomationsScreen())
+        case "team": return page(TeamScreen(teamID: "content"))
+        case "team-settings": return page(TeamScreen(teamID: "content", openSheet: .settings))
+        case "team-memory": return page(TeamScreen(teamID: "content", openSheet: .memory))
+        case "team-report": return page(TeamReportScreen(teamID: "content"))
+        case "team-map": return page(TeamMapScreen())
+        case "departments": return page(DepartmentsScreen())
         default:
             if name.hasPrefix("set-") {
                 let raw = String(name.dropFirst(4))
-                if let page = BotSettingsPage(rawValue: raw) {
-                    return AnyView(BotSettingsScreen(botID: raw == "look" ? "scout" : "kip", page: page).botsDestinations())
+                if let settingsPage = BotSettingsPage(rawValue: raw) {
+                    return page(BotSettingsScreen(botID: raw == "look" ? "scout" : "kip", page: settingsPage))
                 }
             }
             return nil
         }
+    }
+
+    private static func page<V: View>(_ view: V) -> AnyView {
+        AnyView(view.botsDestinations())
     }
 }
