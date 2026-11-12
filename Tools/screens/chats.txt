@@ -1,0 +1,11 @@
+# Home and chats: one line per picture (name, then launch arguments).
+decoders -kDebugView chat.decoders
+connect -kDebugView chat.connect
+connect-busy -kDebugView chat.connect-filled
+connect-error -kDebugView chat.connect-error
+connect-light -kDebugView chat.connect-error -kAppearance light
+connection -kDebugView chat.connection
+connection-light -kDebugView chat.connection -kAppearance light
+connection-offline -kDebugView chat.connection-offline
+connection-signedout -kDebugView chat.connection-signedout
+connection-none -kDebugView chat.connection-none
