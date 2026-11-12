@@ -4,7 +4,6 @@ import WidgetKit
 
 /// The widget extension: one Live Activity for every kind of live work, and nine widgets.
 /// Built only from project-widgets.yml; the designs live in KairosAgents/Native/Shared so the app's gallery draws the same views.
-#warning("Proof: the KairosWidgets extension target is compiled")
 @main
 struct KairosWidgetsBundle: WidgetBundle {
     var body: some Widget {

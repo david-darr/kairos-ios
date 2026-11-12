@@ -292,9 +292,19 @@ private struct ActivityTexts: View {
     var hidingTitles: Bool
     var titleSize: CGFloat = 17
 
+    private var topLine: String {
+        switch state.phase {
+        case .waiting: "Waiting for you"
+        case .done: "\(attributes.botName) finished"
+        case .failed: hidingTitles ? attributes.kind.label : attributes.title
+        case .stopped: "\(attributes.botName) stopped"
+        case .running: state.step
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(state.phase == .waiting ? "Waiting for you" : state.step)
+            Text(topLine)
                 .font(KFont.ui(13, relativeTo: .caption))
                 .foregroundStyle(state.phase == .waiting ? IslandInk.gold : IslandInk.dim)
                 .lineLimit(1)
@@ -303,7 +313,7 @@ private struct ActivityTexts: View {
                 .foregroundStyle(IslandInk.cream)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
-            if !state.detail.isEmpty, !hidingTitles || attributes.kind == .reply {
+            if !state.detail.isEmpty, state.phase != .failed, !hidingTitles || attributes.kind == .reply {
                 Text(state.detail)
                     .font(KFont.ui(13, relativeTo: .caption))
                     .foregroundStyle(IslandInk.faint)

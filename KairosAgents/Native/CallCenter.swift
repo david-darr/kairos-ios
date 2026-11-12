@@ -178,7 +178,10 @@ final class CallCenter {
         session = Session(uuid: uuid, bot: bot)
         muted = false
         if present { showingCall = true }
-        Task { _ = await AVAudioApplication.requestRecordPermission() }
+        // Asking without the usage string in Info.plist ends the app, so the app-only build skips it.
+        if Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil {
+            Task { _ = await AVAudioApplication.requestRecordPermission() }
+        }
         if Self.usesCallKit {
             let handle = CXHandle(type: .generic, value: "kairos-bot-" + bot.id)
             let action = CXStartCallAction(call: uuid, handle: handle)

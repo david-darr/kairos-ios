@@ -13,10 +13,15 @@ final class LiveActivities {
     @ObservationIgnored private var tokenTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var callActivityID: String?
 
-    var enabled: Bool { NativeSettings.liveActivitiesOn && ActivityAuthorizationInfo().areActivitiesEnabled }
+    /// Off when the person turned them off, when iOS has them off, or in a build without the Info.plist key.
+    var enabled: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "NSSupportsLiveActivities") as? Bool == true
+            && NativeSettings.liveActivitiesOn && ActivityAuthorizationInfo().areActivitiesEnabled
+    }
 
     /// Pick up activities that outlived the app, and listen for the push-to-start token.
     func start() {
+        guard Bundle.main.object(forInfoDictionaryKey: "NSSupportsLiveActivities") as? Bool == true else { return }
         for activity in Activity<KairosActivityAttributes>.activities {
             running[activity.attributes.id] = activity.content.state
             watchToken(activity)

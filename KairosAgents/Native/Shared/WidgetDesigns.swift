@@ -335,6 +335,22 @@ struct RunningWidgetView: View {
                 if snapshot.running.isEmpty {
                     Text("Nothing is running.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
                 }
+                if family == .systemLarge, !snapshot.needsYou.isEmpty {
+                    Palette.line.frame(height: 1).padding(.vertical, 4)
+                    WidgetHeader(symbol: "hand.raised.fill", title: "Waiting on you")
+                    ForEach(snapshot.needsYou.prefix(3)) { item in
+                        WidgetLink(link: item.link, label: "Open \(item.botName)") {
+                            HStack(spacing: 10) {
+                                WidgetFace(color: item.botColor, shape: item.botShape, size: 30, pose: .needs)
+                                Text(item.botName).font(KFont.ui(14.5, .medium)).foregroundStyle(Palette.ink)
+                                Text(item.kind == "Approval" ? "wants your approval" : "asked you a question")
+                                    .font(KFont.ui(13)).foregroundStyle(Palette.inkFaint)
+                                Spacer(minLength: 0)
+                            }
+                            .lineLimit(1)
+                        }
+                    }
+                }
                 Spacer(minLength: 0)
                 if family == .systemLarge {
                     HStack(spacing: 4) {
@@ -557,7 +573,7 @@ struct SpendWidgetView: View {
         switch family {
         case .accessoryCircular:
             Gauge(value: min(1, share)) { Image(systemName: "creditcard") } currentValueLabel: {
-                Text(WidgetFormat.money(spend.spent, spend.currency)).minimumScaleFactor(0.5)
+                Text(spend.currency + "\(Int(spend.spent.rounded()))").minimumScaleFactor(0.6)
             }
             .gaugeStyle(.accessoryCircularCapacity)
         case .accessoryRectangular:
