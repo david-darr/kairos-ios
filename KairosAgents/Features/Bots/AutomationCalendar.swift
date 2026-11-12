@@ -112,6 +112,7 @@ struct CalendarDayView: View {
 
     private var grid: some View {
         let list = entries(for: day)
+        let places = placements(list)
         let hours = Array(firstHour...lastHour)
         return ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
@@ -137,7 +138,7 @@ struct CalendarDayView: View {
             resetMarker
             if Calendar.current.isDateInToday(day) { nowLine }
             ForEach(Array(list.enumerated()), id: \.element.id) { index, entry in
-                block(entry, lane: lane(of: entry, in: list), lanes: lanes(at: entry, in: list))
+                block(entry, lane: places[entry.id]?.lane ?? 0, lanes: places[entry.id]?.lanes ?? 1)
             }
             if list.isEmpty {
                 Text("Nothing is scheduled on this day. Tap an hour to add a routine.")
@@ -249,12 +250,30 @@ struct CalendarDayView: View {
         return out.sorted { ($0.hour, $0.minute) < ($1.hour, $1.minute) }
     }
 
-    private func lanes(at entry: CalendarEntry, in list: [CalendarEntry]) -> Int {
-        max(1, list.filter { $0.hour == entry.hour }.count)
-    }
-
-    private func lane(of entry: CalendarEntry, in list: [CalendarEntry]) -> Int {
-        list.filter { $0.hour == entry.hour }.firstIndex { $0.id == entry.id } ?? 0
+    /// Where each block sits. A block is at least 44 points tall, so two routines half an hour apart
+    /// would cover each other: blocks that touch share the width side by side instead.
+    /// `list` is in time order.
+    private func placements(_ list: [CalendarEntry]) -> [String: (lane: Int, lanes: Int)] {
+        var result: [String: (lane: Int, lanes: Int)] = [:]
+        var columns: [CGFloat] = []
+        var members: [(id: String, lane: Int)] = []
+        var groupEnd = -CGFloat.infinity
+        for entry in list {
+            let top = (CGFloat(entry.hour - firstHour) + CGFloat(entry.minute) / 60) * hourHeight
+            let length = entry.routine.showAsCall ? CGFloat(entry.routine.blockMinutes) / 60 * hourHeight : 44
+            let bottom = top + max(44, length)
+            if top >= groupEnd {
+                for member in members { result[member.id] = (member.lane, columns.count) }
+                columns = []
+                members = []
+            }
+            let lane = columns.firstIndex { $0 <= top } ?? columns.count
+            if lane == columns.count { columns.append(bottom) } else { columns[lane] = bottom }
+            members.append((entry.id, lane))
+            groupEnd = max(groupEnd, bottom)
+        }
+        for member in members { result[member.id] = (member.lane, columns.count) }
+        return result
     }
 
     private func hourLabel(_ hour: Int) -> String {
