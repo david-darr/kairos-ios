@@ -18,7 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.ref }}
+  # One run per branch and area, so several areas can be photographed at once.
+  group: build-${{ github.ref }}-${{ github.event_name == 'push' && 'base' || inputs.area }}
   cancel-in-progress: true
 
 jobs:
