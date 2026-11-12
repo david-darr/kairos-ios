@@ -1,0 +1,46 @@
+# You area pictures. Night first; -light lines are the light look.
+home -kDebugView you.home
+home-pin -kDebugView you.home-pin
+home-search -kDebugView you.home-search
+help -kDebugView you.help
+welcome-notify -kDebugView you.welcome-notify
+welcome-mic -kDebugView you.welcome-mic
+tour-bar -kDebugView you.tour-bar
+tour-face -kDebugView you.tour-face
+account -kDebugView you.account
+account-devices -kDebugView you.account-devices
+account-signin -kDebugView you.account-signin
+models -kDebugView you.models
+models-add -kDebugView you.models-add
+voice -kDebugView you.voice
+notify -kDebugView you.notify
+reachme -kDebugView you.reachme
+channels -kDebugView you.channels
+channel-discord -kDebugView you.channel-discord
+vault -kDebugView you.vault
+phone -kDebugView you.phone
+access-permissions -kDebugView you.access-permissions
+access-computer-use -kDebugView you.access-computer-use
+access-remote -kDebugView you.access-remote
+access-remote-live -kDebugView you.access-remote-live
+integrations -kDebugView you.integrations
+integrations-catalog -kDebugView you.integrations-catalog
+integrations-google -kDebugView you.integrations-google
+integrations-images -kDebugView you.integrations-images
+home-light -kDebugView you.home -kAppearance light
+account-light -kDebugView you.account -kAppearance light
+models-light -kDebugView you.models -kAppearance light
+voice-light -kDebugView you.voice -kAppearance light
+notify-light -kDebugView you.notify -kAppearance light
+reachme-light -kDebugView you.reachme -kAppearance light
+channels-light -kDebugView you.channels -kAppearance light
+phone-light -kDebugView you.phone -kAppearance light
+access-remote-light -kDebugView you.access-remote -kAppearance light
+integrations-light -kDebugView you.integrations -kAppearance light
+welcome-notify-light -kDebugView you.welcome-notify -kAppearance light
+tour-bar-light -kDebugView you.tour-bar -kAppearance light
+look -kDebugView you.look
+look-animated -kDebugView you.look-animated
+layout -kDebugView you.layout
+look-light -kDebugView you.look -kAppearance light
+layout-light -kDebugView you.layout -kAppearance light
