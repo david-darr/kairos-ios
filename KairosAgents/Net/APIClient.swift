@@ -114,6 +114,8 @@ final class APIClient {
         var text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !text.contains(" ") else { return nil }
         if !text.lowercased().hasPrefix("http://") && !text.lowercased().hasPrefix("https://") {
+            // Another kind of address (ftp://...) is not a Kairos desktop.
+            guard !text.contains("://") else { return nil }
             text = "https://" + text
         }
         while text.hasSuffix("/") { text.removeLast() }

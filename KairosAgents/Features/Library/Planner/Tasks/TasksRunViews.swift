@@ -319,6 +319,8 @@ struct TasksActivityCard: View {
                     Text(range.rawValue)
                         .font(KFont.ui(13.5, on ? .semibold : .regular, relativeTo: .footnote))
                         .foregroundStyle(on ? Palette.ink : Palette.inkDim)
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 11)
                         .frame(minHeight: 36)
                         .background {
