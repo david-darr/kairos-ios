@@ -1030,7 +1030,7 @@ struct DepartmentsScreen: View {
         HStack(spacing: 12) {
             NavigationLink(value: BotsRoute.team(team.id)) {
                 HStack(spacing: 12) {
-                    FaceStack(ids: team.members, size: 34).frame(width: 60, alignment: .leading)
+                    FaceStack(ids: team.members, size: 34).fixedSize().frame(minWidth: 60, alignment: .leading)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(team.name).font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
                         Text("\(team.members.count) bots\(team.paused ? " · paused" : "")").font(KFont.ui(12.5)).foregroundStyle(team.paused ? Palette.goldText : Palette.inkFaint)

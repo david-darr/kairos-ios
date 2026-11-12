@@ -1826,7 +1826,8 @@ struct DesignCanvasView: View {
         ZStack {
             layer
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The minimums matter: without them the frame grows to the boards' full size and pushes the whole screen wide.
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .contentShape(Rectangle())
         .clipped()
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size in

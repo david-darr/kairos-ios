@@ -662,9 +662,20 @@ struct CharacterSheetArt: View {
     let version: CharacterVersion
     let family: String
 
+    /// The three poses are drawn 130 points wide; a smaller frame scales them down instead of spilling out.
     var body: some View {
+        GeometryReader { proxy in
+            art
+                .scaleEffect(min(1, proxy.size.width / 150))
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .background(Palette.paper)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityLabel("Character sheet")
+    }
+
+    private var art: some View {
         ZStack {
-            Palette.paper
             HStack(spacing: 14) {
                 ForEach(0..<3, id: \.self) { pose in
                     ZStack {
@@ -681,8 +692,7 @@ struct CharacterSheetArt: View {
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityLabel("Character sheet")
+        .fixedSize()
     }
 
     private var shape: AnyShape {

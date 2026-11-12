@@ -329,7 +329,8 @@ struct GoldSegmented<Item: Hashable>: View {
                         .font(KFont.ui(14.5, on ? .semibold : .regular, relativeTo: .subheadline))
                         .foregroundStyle(on ? Palette.onGold : (disabled(item) ? Palette.inkFaint.opacity(0.6) : Palette.inkDim))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .minimumScaleFactor(0.75)
+                        .padding(.horizontal, 8)
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .background {
                             if on { Capsule().fill(Palette.gold).matchedGeometryEffect(id: "pill", in: ns) }
