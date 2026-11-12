@@ -30,7 +30,7 @@ struct SearchView: View {
         for area in JumpArea.allCases {
             all.append(Hit(id: "j-\(area.rawValue)", title: area.title, detail: area.about, symbol: area.symbol, bot: nil) { router.open(area) })
         }
-        if router.debugScreen == "bots" { return all.filter { $0.bot != nil } }
+        if router.debugScreen == "bots" { return all.filter { $0.bot != nil }.reversed() }
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !needle.isEmpty else { return all }
         return all.filter { $0.title.lowercased().contains(needle) || $0.detail.lowercased().contains(needle) }
