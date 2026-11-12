@@ -721,10 +721,12 @@ struct PackSampleArt: View {
 }
 
 struct ContactSheetArt: View {
+    static let tones: [UInt32] = [0xB9D2E3, 0xE8C39E, 0xD99A92, 0xB5C7A5, 0xCDBFD9]
+
     var body: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 3), spacing: 3) {
             ForEach(0..<9, id: \.self) { index in
-                Rectangle().fill(Color(hex: [0xB9D2E3, 0xE8C39E, 0xD99A92, 0xB5C7A5, 0xCDBFD9][index % 5]))
+                Rectangle().fill(Color(hex: ContactSheetArt.tones[index % 5]))
                     .aspectRatio(1, contentMode: .fit)
             }
         }

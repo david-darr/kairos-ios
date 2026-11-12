@@ -239,8 +239,8 @@ struct ApprovalsView: View {
             ForEach(posts) { post in ApprovalPostCard(post: post) }
             ForEach(plans) { plan in PlanCard(plan: plan) }
             if showLibrary {
-                ForEach(studio.sheetsWaiting, id: \.1.id) { pair in SheetApprovalCard(character: pair.0, version: pair.1) }
-                ForEach(studio.packsWaiting, id: \.1.id) { pair in PackApprovalCard(pack: pair.0, version: pair.1) }
+                ForEach(Array(studio.sheetsWaiting.enumerated()), id: \.offset) { _, pair in SheetApprovalCard(character: pair.0, version: pair.1) }
+                ForEach(Array(studio.packsWaiting.enumerated()), id: \.offset) { _, pair in PackApprovalCard(pack: pair.0, version: pair.1) }
             }
         }
     }
