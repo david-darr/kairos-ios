@@ -224,6 +224,10 @@ nonisolated struct BotQuestion: Hashable, Sendable {
     var prompt: String
     var options: [QuestionOption]
     var multi = false
+    /// The desktop's id for this question; answers are sent keyed by it. Empty on sample data.
+    var key = ""
+    /// Whether a typed answer is accepted besides the options.
+    var allowsOther = true
 }
 
 nonisolated struct NeedsCard: Identifiable, Hashable, Sendable {
@@ -237,6 +241,17 @@ nonisolated struct NeedsCard: Identifiable, Hashable, Sendable {
     var kind: Kind
     var age: String
     var settled: Settled? = nil
+    /// Set when the card came from the paired desktop; nil on sample data.
+    var live: LiveCardRef? = nil
+}
+
+/// What answering a desktop card needs (bot_cards.py: open_card).
+nonisolated struct LiveCardRef: Hashable, Sendable {
+    var id: String
+    var revision: Int?
+    /// An allow choice's id by its scope: "once", "session", "forever" or "team".
+    var allowScopes: [String: String] = [:]
+    var denyChoice: String?
 }
 
 nonisolated struct WorkItem: Identifiable, Hashable, Sendable {

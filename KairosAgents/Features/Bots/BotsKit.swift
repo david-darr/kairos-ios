@@ -8,20 +8,27 @@ import SwiftUI
 struct BotsPage<Content: View, Trailing: View>: View {
     let title: String
     var subtitle: String? = nil
+    /// true on a screen that reads the paired desktop. Every other Bots page says, while paired,
+    /// that it still shows sample data.
+    var live = false
     @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
     @Environment(\.dismiss) private var dismiss
 
-    init(_ title: String, subtitle: String? = nil, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
+    init(_ title: String, subtitle: String? = nil, live: Bool = false, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
         self.title = title
         self.subtitle = subtitle
+        self.live = live
         self.trailing = trailing()
         self.content = content()
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) { content }
+            VStack(alignment: .leading, spacing: 18) {
+                if !live { BotsSampleNote() }
+                content
+            }
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
                 .padding(.bottom, 40)
@@ -60,8 +67,8 @@ struct BotsPage<Content: View, Trailing: View>: View {
 }
 
 extension BotsPage where Trailing == EmptyView {
-    init(_ title: String, subtitle: String? = nil, @ViewBuilder content: () -> Content) {
-        self.init(title, subtitle: subtitle, trailing: { EmptyView() }, content: content)
+    init(_ title: String, subtitle: String? = nil, live: Bool = false, @ViewBuilder content: () -> Content) {
+        self.init(title, subtitle: subtitle, live: live, trailing: { EmptyView() }, content: content)
     }
 }
 

@@ -17,7 +17,11 @@ struct BotInboxSection: View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 10) {
                 labelRow("Needs you", count: pending.count)
-                if cards.isEmpty {
+                if store.liveMode, cards.isEmpty, (store.cardsLoad[botID] ?? .loading) != .loaded {
+                    BotsLoadNote(state: store.cardsLoad[botID] ?? .loading, waiting: "Reading what needs you from your desktop.") {
+                        Task { await store.loadCards(botID) }
+                    }
+                } else if cards.isEmpty {
                     EmptyNote(text: "Nothing is waiting on you.", symbol: "checkmark.circle").kCard(radius: 20)
                 } else {
                     ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
@@ -27,6 +31,10 @@ struct BotInboxSection: View {
                 }
             }
 
+            if store.liveMode {
+                HintLine(text: "Working and Done are not connected to your desktop yet.", symbol: "info.circle")
+                    .padding(.horizontal, 4)
+            } else {
             VStack(alignment: .leading, spacing: 10) {
                 labelRow("Working", count: working.count)
                 if working.isEmpty {
@@ -64,10 +72,11 @@ struct BotInboxSection: View {
                     .kCard(radius: 20)
                 }
             }
+            }
 
             VStack(spacing: 0) {
                 NavigationLink(value: BotsRoute.notifications(botID)) {
-                    NavRow(title: "Notifications", symbol: "bell", badge: unread)
+                    NavRow(title: "Notifications", symbol: "bell", badge: store.liveMode ? 0 : unread)
                 }
                 RowLine(inset: 54)
                 NavigationLink(value: BotsRoute.activity(botID)) {
@@ -204,14 +213,19 @@ private struct ApprovalBody: View {
                     PillButton(title: "Allow", look: .filled, wide: true) { settle(.allowedOnce) }
                 }
                 HStack(spacing: 8) {
-                    PillButton(title: "Reply", symbol: "arrowshape.turn.up.left", wide: true) {
-                        withAnimation(Motion.snappy) { replying = true }
-                        focused = true
+                    if card.live == nil {
+                        PillButton(title: "Reply", symbol: "arrowshape.turn.up.left", wide: true) {
+                            withAnimation(Motion.snappy) { replying = true }
+                            focused = true
+                        }
                     }
+                    if card.live == nil || store.offers(card, .allowedChat) || store.offers(card, .allowedTeam) {
                     Menu {
                         Button("Allow once") { settle(.allowedOnce) }
-                        Button("Allow for this chat") { settle(.allowedChat) }
-                        if store.team(of: card.botID) != nil {
+                        if store.offers(card, .allowedChat) {
+                            Button("Allow for this chat") { settle(.allowedChat) }
+                        }
+                        if teamAllow {
                             Button("Allow for the team") { settle(.allowedTeam) }
                         }
                     } label: {
@@ -223,8 +237,9 @@ private struct ApprovalBody: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .background(Palette.ink.opacity(0.1), in: Capsule())
                     }
+                    }
                 }
-                if store.team(of: card.botID) != nil {
+                if teamAllow {
                     PillButton(title: "Allow for the team", symbol: "person.3", wide: true) { settle(.allowedTeam) }
                 }
             }
@@ -253,9 +268,18 @@ private struct ApprovalBody: View {
         }
     }
 
+    /// A desktop card offers team allow only when its choices do; a sample card when the bot has a team.
+    private var teamAllow: Bool {
+        card.live == nil ? store.team(of: card.botID) != nil : store.offers(card, .allowedTeam)
+    }
+
     private func settle(_ result: Settled) {
         Haptics.success()
-        store.settle(card.id, result)
+        if card.live != nil {
+            store.respondLive(card, result)
+        } else {
+            store.settle(card.id, result)
+        }
     }
 }
 
@@ -332,6 +356,7 @@ private struct QuestionBody: View {
             ForEach(question.options.indices, id: \.self) { option in
                 choice(question, option)
             }
+            if question.allowsOther || question.options.isEmpty {
             TextField("Something else", text: Binding(
                 get: { custom[current] ?? "" },
                 set: { custom[current] = $0 }
@@ -341,6 +366,7 @@ private struct QuestionBody: View {
             .padding(.horizontal, 14)
             .frame(minHeight: 52)
             .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
         }
     }
 
@@ -392,7 +418,11 @@ private struct QuestionBody: View {
             } else {
                 PillButton(title: "Skip", wide: true) {
                     Haptics.tap()
-                    store.settle(card.id, .skipped)
+                    if card.live != nil {
+                        store.respondLive(card, .skipped)
+                    } else {
+                        store.settle(card.id, .skipped)
+                    }
                 }
             }
             if current < questions.count - 1 {
@@ -401,7 +431,11 @@ private struct QuestionBody: View {
                 PillButton(title: questions.count > 1 ? "Send answers" : "Send answer", look: .filled, wide: true) {
                     if questions.indices.allSatisfy(isAnswered) {
                         Haptics.success()
-                        store.settle(card.id, .answered)
+                        if card.live != nil {
+                            store.respondLive(card, .answered, answers: liveAnswers)
+                        } else {
+                            store.settle(card.id, .answered)
+                        }
                     } else {
                         Haptics.thud()
                         withAnimation(Motion.snappy) {
@@ -412,6 +446,22 @@ private struct QuestionBody: View {
                 }
             }
         }
+    }
+
+    /// The answers for the desktop, keyed by question id: a text, or a list of texts when it allows several.
+    private var liveAnswers: [String: Any] {
+        var out: [String: Any] = [:]
+        for index in questions.indices {
+            let question = questions[index]
+            let chosen = (picks[index] ?? []).sorted().map { question.options[$0].title }
+            let typed = (custom[index] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if question.multi {
+                out[question.key] = chosen + (typed.isEmpty ? [] : [typed])
+            } else {
+                out[question.key] = typed.isEmpty ? (chosen.first ?? "") : typed
+            }
+        }
+        return out
     }
 
     private func isAnswered(_ index: Int) -> Bool {
