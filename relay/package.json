@@ -1,0 +1,11 @@
+{
+  "name": "kairos-push-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Push relay for the Kairos iPhone app (Cloudflare Worker, no dependencies).",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
