@@ -29,6 +29,8 @@ enum BotsDebug {
         case "team-report": return page(TeamReportScreen(teamID: "content"))
         case "team-map": return page(TeamMapScreen())
         case "departments": return page(DepartmentsScreen())
+        case "room": return page(RoomScreen(roomID: "launch"))
+        case "room-settings": return page(RoomScreen(roomID: "launch", openSheet: .settings))
         default:
             if name.hasPrefix("set-") {
                 let raw = String(name.dropFirst(4))

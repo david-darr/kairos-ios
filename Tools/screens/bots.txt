@@ -75,3 +75,6 @@ team-map -kDebugView bots.team-map
 team-map-light -kDebugView bots.team-map -kAppearance light
 departments -kDebugView bots.departments
 departments-light -kDebugView bots.departments -kAppearance light
+room -kDebugView bots.room
+room-light -kDebugView bots.room -kAppearance light
+room-settings -kDebugView bots.room-settings
