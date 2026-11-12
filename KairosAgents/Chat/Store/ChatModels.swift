@@ -8,6 +8,8 @@ import Foundation
 nonisolated struct GlanceUsage: Identifiable, Hashable, Sendable {
     var provider: String
     var percent: Int
+    /// When the provider's limit starts over, when the desktop says.
+    var resetsAt: Date? = nil
     var id: String { provider }
 }
 
@@ -16,6 +18,10 @@ nonisolated struct Glance: Hashable, Sendable {
     var usage: [GlanceUsage] = []
     /// "Fri · Report due", or nil when nothing is coming up.
     var nextEvent: String?
+    /// The same event as the desktop sent it, for widgets.
+    var nextEventTitle: String?
+    var nextEventStart: Date?
+    var nextEventAllDay = false
     var needsYou = 0
     var running = 0
 

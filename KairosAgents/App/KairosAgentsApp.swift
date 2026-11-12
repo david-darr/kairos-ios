@@ -50,6 +50,7 @@ final class AppModel {
     let debugView: String?
 
     init() {
+        NativeGlue.join()
         let defaults = UserDefaults.standard
         onboarded = defaults.bool(forKey: "onboarded")
         var look = AppLook(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .night

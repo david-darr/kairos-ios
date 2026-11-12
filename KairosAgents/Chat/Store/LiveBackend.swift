@@ -99,10 +99,13 @@ final class LiveBackend: ChatBackend {
             var glance = Glance()
             glance.usage = (home.usage ?? []).compactMap { item -> GlanceUsage? in
                 guard let provider = item.provider, !provider.isEmpty else { return nil }
-                return GlanceUsage(provider: provider, percent: Int((item.percent ?? 0).rounded()))
+                return GlanceUsage(provider: provider, percent: Int((item.percent ?? 0).rounded()), resetsAt: item.resetsAt?.date)
             }
             if let event = home.nextEvent, let title = event.title, !title.isEmpty {
                 glance.nextEvent = ChatFormat.nextEvent(title: title, start: event.startsAt?.date, allDay: event.allDay ?? false)
+                glance.nextEventTitle = title
+                glance.nextEventStart = event.startsAt?.date
+                glance.nextEventAllDay = event.allDay ?? false
             }
             glance.needsYou = home.needsYou ?? 0
             glance.running = home.running ?? 0

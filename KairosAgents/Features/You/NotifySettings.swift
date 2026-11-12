@@ -3,15 +3,12 @@ import SwiftUI
 // Reach me: where and when bots message and call you. Runs on sample data; the desktop
 // connection replaces ReachMeStore later.
 //
-// Notifications on this phone are the native layer's NotificationSettingsScreen (on main).
-// NotificationsRowDestination is the slot for it: at merge, the lead points it there.
+// Notifications on this phone are the native layer's NotificationSettingsScreen.
 
-/// Lead: at merge, make this body `NotificationSettingsScreen()`.
+/// The Notifications row in You opens the native layer's screen.
 struct NotificationsRowDestination: View {
     var body: some View {
-        SettingsPage("Notifications", subtitle: "Which alerts this phone shows and how private they are.") {
-            NoteText(text: "Notification settings arrive with the native layer in the next build.")
-        }
+        NotificationSettingsScreen()
     }
 }
 
