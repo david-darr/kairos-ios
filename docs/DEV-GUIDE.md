@@ -64,6 +64,8 @@ Touch targets are at least 44 points. Every icon-only control has an `accessibil
 | Native | `Native/`, `KairosWidgets/` (new), `project-widgets.yml` (new) |
 | Relay | `relay/` (new) |
 
+Cross-area links that already exist as plain pages, so you can link to them today: `ConnectionScreen()` (Home and chats), `BotMakerScreen()` and `BotPanelView(bot:tab:)` (Bots), `ToolStoreScreen()`, `AddTabScreen()`, `AddedTabScreen(title:)` (You), `ComputerScreen()`, `BrowseScreen()` (Desktop), `CallView(bot:)` (Native), `DocumentViewer(documents:index:)`, `ModelSheet(choice:)`, `ToolsSheet()` (Home and chats). `Native/PushBridge.swift` is the seam between the native layer and the desktop connection: Native calls it, the connection fills it in.
+
 Each area keeps its own sample data and models in its own folder (for example `Features/Make/MakeSample.swift`). Read `Data/SampleData.swift` and `Data/Models.swift` freely; do not edit them.
 
 Put the data behind a small protocol or store type in your area (for example `protocol NotesProviding`) with a sample implementation, so the real desktop data can replace it later without rewriting the screens.
