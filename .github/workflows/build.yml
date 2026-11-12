@@ -24,7 +24,7 @@ concurrency:
 jobs:
   simulator:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +88,9 @@ jobs:
 
       - name: Screenshots
         env:
-          AREA: ${{ inputs.area }}
+          # A push photographs only the base set (the area lists together take too long for every push).
+          # Run by hand with an area name for one area, or with area 'all' for everything.
+          AREA: ${{ github.event_name == 'push' && 'base' || inputs.area }}
         run: |
           chmod +x Tools/screenshots.sh
           Tools/screenshots.sh

@@ -47,7 +47,7 @@ shot() {
 
 # AREA=<name> shoots only Tools/screens/<name>.txt (quick, for one area's work).
 # Without it: the base set below, then every area's list.
-if [ -z "${AREA:-}" ]; then
+if [ -z "${AREA:-}" ] || [ "${AREA:-}" = "base" ] || [ "${AREA:-}" = "all" ]; then
   WAIT=14 shot 01-onboarding -onboarded NO
   shot 02-onboarding-bots -onboarded NO -kScreen onboarding2
   shot 03-connect -onboarded NO -kScreen connect
@@ -80,7 +80,8 @@ fi
 for list in Tools/screens/*.txt; do
   [ -f "$list" ] || continue
   area=$(basename "$list" .txt)
-  if [ -n "${AREA:-}" ] && [ "$AREA" != "$area" ]; then continue; fi
+  if [ "${AREA:-}" = "base" ]; then continue; fi
+  if [ -n "${AREA:-}" ] && [ "$AREA" != "all" ] && [ "$AREA" != "$area" ]; then continue; fi
   while read -r name args; do
     case "$name" in ""|\#*) continue ;; esac
     # shellcheck disable=SC2086
