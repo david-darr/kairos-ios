@@ -118,9 +118,16 @@ struct ConnectionsSettings: View {
             Image(systemName: app.symbol).font(.system(size: 17)).foregroundStyle(Palette.goldText)
                 .frame(width: 40, height: 40).background(Palette.ink.opacity(0.07), in: Circle())
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(app.name).font(KFont.ui(16.5, .medium)).foregroundStyle(Palette.ink).lineLimit(1)
-                    StateTag(text: app.state.rawValue, color: stateColor(app.state)).lineLimit(1).fixedSize()
+                // The state sits beside the name when both fit, and under it when they do not.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        Text(app.name).font(KFont.ui(16.5, .medium)).foregroundStyle(Palette.ink).lineLimit(1)
+                        StateTag(text: app.state.rawValue, color: stateColor(app.state)).lineLimit(1).fixedSize()
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(app.name).font(KFont.ui(16.5, .medium)).foregroundStyle(Palette.ink).lineLimit(1)
+                        StateTag(text: app.state.rawValue, color: stateColor(app.state)).lineLimit(1).fixedSize()
+                    }
                 }
                 Text(app.usedBy.isEmpty ? "No bots use it yet" : "Used by \(app.usedBy.joined(separator: ", "))")
                     .font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).lineLimit(1)
