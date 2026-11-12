@@ -1,0 +1,46 @@
+root -kDebugView make.root
+root-light -kDebugView make.root -kAppearance light
+making -kDebugView make.making
+result -kDebugView make.result
+result-light -kDebugView make.result -kAppearance light
+documents -kDebugView make.documents
+confirm -kDebugView make.confirm
+confirm-light -kDebugView make.confirm -kAppearance light
+studio -kDebugView make.studio
+studio-light -kDebugView make.studio -kAppearance light
+editor -kDebugView make.editor
+editor-light -kDebugView make.editor -kAppearance light
+editor-inspector -kDebugView make.editor-inspector
+editor-render -kDebugView make.editor-render
+editor-ask -kDebugView make.editor-ask
+designs -kDebugView make.designs
+designs-light -kDebugView make.designs -kAppearance light
+design -kDebugView make.design
+design-canvas -kDebugView make.design-canvas
+design-versions -kDebugView make.design-versions
+design-compare -kDebugView make.design-compare
+design-comment -kDebugView make.design-comment
+design-comment-light -kDebugView make.design-comment -kAppearance light
+design-focus -kDebugView make.design-focus
+studio-channel -kDebugView make.studio-channel
+studio-channel-light -kDebugView make.studio-channel -kAppearance light
+studio-approvals -kDebugView make.studio-approvals
+studio-approvals-light -kDebugView make.studio-approvals -kAppearance light
+studio-pipeline -kDebugView make.studio-pipeline
+studio-calendar -kDebugView make.studio-calendar
+studio-publishing -kDebugView make.studio-publishing
+studio-analytics -kDebugView make.studio-analytics
+studio-report -kDebugView make.studio-report
+studio-settings -kDebugView make.studio-settings
+studio-formats -kDebugView make.studio-formats
+studio-styles -kDebugView make.studio-styles
+studio-characters -kDebugView make.studio-characters
+studio-connections -kDebugView make.studio-connections
+studio-templates -kDebugView make.studio-templates
+studio-picker -kDebugView make.studio-picker
+studio-setup -kDebugView make.studio-setup
+studio-confirm -kDebugView make.studio-confirm
+studio-confirm-light -kDebugView make.studio-confirm -kAppearance light
+studio-handsoff -kDebugView make.studio-handsoff
+studio-post -kDebugView make.studio-post
+studio-checklist -kDebugView make.studio-checklist
