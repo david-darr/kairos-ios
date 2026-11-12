@@ -2,42 +2,77 @@ import SwiftUI
 
 /// Talking to a bot feels like texting a person: its face and name top centre, Call top right,
 /// bubbles, and small status chips while it works. Tap the face for its Inbox and Settings.
+/// Everything comes from `ChatStore`: the sample desktop until one is paired, the person's desktop after.
 struct BotChatView: View {
     let bot: Bot
 
     @Environment(AppRouter.self) private var router
+    @State private var chat: BotChatState?
+
+    var body: some View {
+        Group {
+            if let chat {
+                BotChatScreen(chat: chat)
+            } else {
+                Color.clear.kScreen()
+            }
+        }
+        .onAppear {
+            guard chat == nil else { return }
+            chat = ChatStore.shared.botChat(botID())
+        }
+    }
+
+    /// The shell builds this screen from the sample bots, which do not know a desktop's ids.
+    /// Home's path still holds the real one: the newest bot pushed is this screen.
+    private func botID() -> String {
+        for route in (router.paths[.home] ?? []).reversed() {
+            if case .bot(let id) = route { return id }
+        }
+        return bot.id
+    }
+}
+
+private struct BotChatScreen: View {
+    let chat: BotChatState
+
+    @Environment(AppRouter.self) private var router
+    @Environment(ChromeState.self) private var chrome
     @Environment(\.dismiss) private var dismiss
     @Namespace private var faceSpace
-    @State private var messages: [ChatMessage] = []
     @State private var draft = ""
     @State private var showPanel = false
     @State private var panelTab: BotPanelView.Tab = .inbox
     @State private var showCall = false
     @State private var showTools = false
+    @State private var viewer: ViewerStart?
     @FocusState private var typing: Bool
 
+    private var bot: Bot { chat.bot }
+    private var store: ChatStore { ChatStore.shared }
+
     var body: some View {
+        let transcript = chat.transcript
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 10) {
-                    ForEach(messages) { message in
-                        MessageBubble(message: message)
-                            .id(message.id)
-                            .transition(.asymmetric(insertion: .scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity), removal: .opacity))
-                    }
+                    content(transcript)
+                    Color.clear.frame(height: 1).id("end")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: messages.count) {
-                guard let last = messages.last else { return }
-                withAnimation(Motion.snappy) { proxy.scrollTo(last.id, anchor: .bottom) }
+            .onChange(of: transcript.count) {
+                withAnimation(Motion.snappy) { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            .onChange(of: transcript.last?.text.count) {
+                proxy.scrollTo("end", anchor: .bottom)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { header }
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .safeAreaInset(edge: .bottom, spacing: 0) { bottom }
         .kScreen(glowAt: UnitPoint(x: 0.5, y: -0.05))
         .fullScreenCover(isPresented: $showPanel) {
             BotPanelView(bot: bot, tab: panelTab)
@@ -49,8 +84,14 @@ struct BotChatView: View {
         .sheet(isPresented: $showTools) {
             ToolsSheet()
         }
+        .sheet(item: $viewer) { start in
+            let files = chat.files
+            if !files.isEmpty {
+                FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData).kSheet()
+            }
+        }
+        .task { await chat.load() }
         .onAppear {
-            if messages.isEmpty { messages = SampleData.thread(for: bot) }
             switch router.debugScreen {
             case "botpanel": router.debugScreen = nil; showPanel = true
             case "botsettings": router.debugScreen = nil; panelTab = .settings; showPanel = true
@@ -58,7 +99,126 @@ struct BotChatView: View {
             default: break
             }
         }
+        .onChange(of: chat.notice) {
+            guard let notice = chat.notice else { return }
+            chrome.say(notice)
+            chat.notice = nil
+        }
+        .onChange(of: chat.restoredDraft) {
+            guard let text = chat.restoredDraft else { return }
+            draft = text
+            chat.restoredDraft = nil
+        }
+        .onChange(of: store.generation) { dismiss() }
     }
+
+    // MARK: Transcript
+
+    @ViewBuilder
+    private func content(_ transcript: [BotEntry]) -> some View {
+        switch chat.phase {
+        case .loading where transcript.isEmpty:
+            ProgressView()
+                .tint(Palette.inkDim)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 120)
+        case .failed(let reason) where transcript.isEmpty:
+            VStack(spacing: 12) {
+                Text(reason)
+                    .font(KFont.ui(15.5, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.inkDim)
+                    .multilineTextAlignment(.center)
+                Button("Try again") { Task { await chat.load() } }
+                    .font(KFont.ui(15, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.goldText)
+                    .frame(minHeight: 44)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 120)
+            .padding(.horizontal, 20)
+        default:
+            if chat.hasOlder {
+                Button {
+                    Task { await chat.loadOlder() }
+                } label: {
+                    Text(chat.loadingOlder ? "Loading" : "Show earlier messages")
+                        .font(KFont.ui(13.5, .medium, relativeTo: .footnote))
+                        .foregroundStyle(Palette.goldText)
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(PressStyle())
+                .disabled(chat.loadingOlder)
+            }
+            ForEach(transcript) { entry in
+                row(entry)
+                    .id(entry.id)
+                    .transition(.asymmetric(insertion: .scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity), removal: .opacity))
+            }
+            ForEach(chat.requests) { request in
+                RequestCard(
+                    request: request,
+                    onChoice: { chat.answer(request, choice: $0) },
+                    onRespond: { chat.respond(request, answers: $0, skip: $1) })
+                    .id(request.id)
+            }
+            if let status = chat.statusLine {
+                MessageBubble(message: ChatMessage(kind: .status(status)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ entry: BotEntry) -> some View {
+        switch entry.kind {
+        case .mine:
+            VStack(alignment: .trailing, spacing: 6) {
+                if !entry.text.isEmpty { MessageBubble(message: ChatMessage(kind: .mine(entry.text))) }
+                if !entry.files.isEmpty { SentFiles(files: entry.files) { open($0) } }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        case .theirs:
+            VStack(alignment: .leading, spacing: 6) {
+                if !entry.text.isEmpty { MessageBubble(message: ChatMessage(kind: .theirs(entry.text))) }
+                if !entry.files.isEmpty { SentFiles(files: entry.files) { open($0) } }
+                if entry.failed {
+                    Text("This reply did not finish.")
+                        .font(KFont.ui(12.5, relativeTo: .caption))
+                        .foregroundStyle(Palette.inkFaint)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .receipt:
+            MessageBubble(message: ChatMessage(kind: .receipt(entry.text)))
+        case .status:
+            MessageBubble(message: ChatMessage(kind: .status(entry.text)))
+        case .note:
+            Text(entry.text)
+                .font(KFont.ui(13, relativeTo: .footnote))
+                .foregroundStyle(Palette.inkFaint)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+        case .card(let title):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(KFont.ui(15, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.ink)
+                if !entry.text.isEmpty {
+                    MarkdownText(text: entry.text, size: 15)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: 320, alignment: .leading)
+            .kCard(radius: 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func open(_ file: ChatFile) {
+        let index = chat.files.firstIndex(where: { $0.id == file.id }) ?? 0
+        viewer = ViewerStart(id: index)
+    }
+
+    // MARK: Header
 
     private var header: some View {
         HStack(alignment: .top) {
@@ -93,6 +253,24 @@ struct BotChatView: View {
         .background { HeaderFade() }
     }
 
+    // MARK: Composer
+
+    private var bottom: some View {
+        VStack(spacing: 8) {
+            if !chat.queue.isEmpty {
+                QueueStrip(
+                    items: chat.queue, paused: chat.queuePaused,
+                    sendNow: { chat.steer($0) }, sendNowTitle: "Send now",
+                    edit: { chat.editQueued($0) },
+                    remove: { chat.removeQueued($0) })
+            }
+            composer
+        }
+    }
+
+    private var hasText: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var showsStop: Bool { !hasText && chat.isBusy }
+
     private var composer: some View {
         GlassEffectContainer(spacing: 10) {
             HStack(alignment: .bottom, spacing: 10) {
@@ -105,19 +283,26 @@ struct BotChatView: View {
                         .focused($typing)
                         .padding(.vertical, 12)
                     Button {
-                        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { typing = true } else { send() }
+                        if showsStop {
+                            Haptics.thud()
+                            chat.interrupt()
+                        } else if hasText {
+                            send()
+                        } else {
+                            typing = true
+                        }
                     } label: {
-                        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        Image(systemName: hasText ? "arrow.up" : "mic")
+                        let filled = hasText || showsStop
+                        Image(systemName: showsStop ? "stop.fill" : (hasText ? "arrow.up" : "mic"))
                             .font(.system(size: 15, weight: .bold))
                             .contentTransition(.symbolEffect(.replace))
-                            .foregroundStyle(hasText ? Palette.onGold : Palette.inkDim)
+                            .foregroundStyle(filled ? Palette.onGold : Palette.inkDim)
                             .frame(width: 32, height: 32)
-                            .background(hasText ? AnyShapeStyle(Palette.gold) : AnyShapeStyle(Color.clear), in: Circle())
+                            .background(filled ? AnyShapeStyle(Palette.gold) : AnyShapeStyle(Color.clear), in: Circle())
                             .frame(width: 36, height: 46)
                     }
                     .buttonStyle(PressStyle(scale: 0.88))
-                    .accessibilityLabel(draft.isEmpty ? "Dictate" : "Send")
+                    .accessibilityLabel(showsStop ? "Stop the reply" : (hasText ? (chat.isBusy ? "Add to the queue" : "Send") : "Dictate"))
                 }
                 .padding(.leading, 16)
                 .padding(.trailing, 6)
@@ -128,6 +313,7 @@ struct BotChatView: View {
         .padding(.top, 6)
         .padding(.bottom, 8)
         .animation(Motion.snappy, value: draft.isEmpty)
+        .animation(Motion.snappy, value: showsStop)
     }
 
     private func send() {
@@ -135,16 +321,7 @@ struct BotChatView: View {
         guard !text.isEmpty else { return }
         Haptics.tap()
         draft = ""
-        withAnimation(Motion.bouncy) { messages.append(ChatMessage(kind: .mine(text))) }
-        Task {
-            try? await Task.sleep(for: .seconds(0.7))
-            withAnimation(Motion.snappy) { messages.append(ChatMessage(kind: .status("\(bot.name) is thinking"))) }
-            try? await Task.sleep(for: .seconds(1.4))
-            withAnimation(Motion.bouncy) {
-                messages.removeAll { if case .status = $0.kind { return true } else { return false } }
-                messages.append(ChatMessage(kind: .theirs("This is sample data. Connect your desktop and I will answer for real.")))
-            }
-        }
+        withAnimation(Motion.bouncy) { chat.send(text) }
     }
 }
 
