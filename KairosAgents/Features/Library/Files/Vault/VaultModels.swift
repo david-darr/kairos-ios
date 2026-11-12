@@ -347,6 +347,24 @@ final class VaultStore: VaultProviding {
         return true
     }
 
+    /// The folder index note and the line that would list this note in it, when the index does not list it yet.
+    func indexSuggestion(for id: String) -> (index: VaultNote, line: String)? {
+        guard let note = notes[id], let index = indexNote(of: note.folder), index.id != id else { return nil }
+        guard !VaultMarkdown.linkTargets(index.content).contains(note.title) else { return nil }
+        return (index, "- [[\(note.title)]]")
+    }
+
+    /// Adds the line to the folder index, above the first list item. Returns false when the index changed since it was read.
+    @discardableResult
+    func addToIndex(_ id: String, expecting edited: Date) -> Bool {
+        guard let suggestion = indexSuggestion(for: id), suggestion.index.edited == edited else { return false }
+        var lines = suggestion.index.body.components(separatedBy: "\n")
+        let at = lines.firstIndex { $0.hasPrefix("- ") } ?? lines.count
+        lines.insert(suggestion.line, at: at)
+        save(suggestion.index.id, body: lines.joined(separator: "\n"))
+        return true
+    }
+
     /// Day numbers in a month that have a daily note, mapped to the note.
     func dailyNotes(inMonthOf date: Date) -> [Int: String] {
         let calendar = Calendar.current

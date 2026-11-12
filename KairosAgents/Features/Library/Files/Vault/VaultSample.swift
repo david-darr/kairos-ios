@@ -312,6 +312,7 @@ nonisolated enum VaultSample {
             (20, "Quiet day."),
             (33, "Started the [[Bike shop]] project."),
         ]
+        var indexLines: [String] = []
         for (offset, text) in days {
             guard let date = calendar.date(byAdding: .day, value: -offset, to: .now) else { continue }
             let title = VaultDates.dailyTitle(date)
@@ -321,7 +322,14 @@ nonisolated enum VaultSample {
                 edited: date.addingTimeInterval(18 * 3600),
                 editedBy: "you"
             ))
+            indexLines.append("- [[\(title)]]")
         }
+        all.append(VaultNote(
+            id: "Daily notes/Daily notes",
+            body: "---\ntype: index\nstatus: active\nproject: Vault\n---\n# Daily notes\n\nOne note a day, newest first.\n\n" + indexLines.joined(separator: "\n") + "\n",
+            edited: Date.now.addingTimeInterval(-86_400),
+            editedBy: "you"
+        ))
         return all
     }
 

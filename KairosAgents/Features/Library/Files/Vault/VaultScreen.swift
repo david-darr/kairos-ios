@@ -3,7 +3,7 @@ import UIKit
 
 /// States the debug pictures open in.
 enum VaultDebug: Hashable {
-    case none, search, links, history, write, preview, peek, focus, menu, conflict
+    case none, search, links, history, write, preview, peek, focus, menu, conflict, todayPrompt
 }
 
 /// The Vault's own navigation, shared by every screen inside the cover.
@@ -100,6 +100,7 @@ struct VaultHomeView: View {
     @State private var searching = false
     @State private var month = Date.now
     @State private var confirmReload = false
+    @State private var indexPrompt: VaultIndexPrompt?
 
     var body: some View {
         ScrollView {
@@ -148,6 +149,9 @@ struct VaultHomeView: View {
         .onAppear {
             if nav.debug == .search {
                 query = "price"
+            } else if nav.debug == .todayPrompt {
+                nav.debug = .none
+                openToday()
             }
         }
     }
@@ -188,9 +192,58 @@ struct VaultHomeView: View {
                     .foregroundStyle(Palette.inkFaint)
             }
             GoldButton(title: exists ? "Open today's note" : "Create today's note") { openToday() }
+            if let prompt = indexPrompt, let suggestion = store.indexSuggestion(for: prompt.id) {
+                indexPanel(suggestion: suggestion, expecting: prompt.edited)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .padding(16)
         .kCard(radius: 24, raised: true)
+        .animation(Motion.snappy, value: indexPrompt?.id)
+    }
+
+    /// "Add today to the Daily notes index?" with the one line it would add.
+    private func indexPanel(suggestion: (index: VaultNote, line: String), expecting edited: Date) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Add today to the \(suggestion.index.title) index?")
+                .font(KFont.ui(15.5, .semibold, relativeTo: .subheadline))
+                .foregroundStyle(Palette.ink)
+            Text("+ " + suggestion.line)
+                .font(.system(size: 14, design: .monospaced))
+                .foregroundStyle(Palette.success)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Palette.success.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            HStack(spacing: 10) {
+                Button {
+                    Haptics.tap()
+                    indexPrompt = nil
+                } label: {
+                    Text("Not now")
+                        .font(KFont.ui(15, .medium, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.inkDim)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(Palette.ink.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(PressStyle())
+                Button {
+                    Haptics.success()
+                    let added = store.addToIndex(store.todayID, expecting: edited)
+                    toaster.say(added ? "Added to the index" : "The index changed since; nothing was added. Open it to add the line by hand.")
+                    indexPrompt = nil
+                } label: {
+                    Text("Add line")
+                        .font(KFont.ui(15, .semibold, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.goldText)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(Palette.gold.opacity(0.16), in: Capsule())
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .padding(12)
+        .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var pinnedCard: some View {
@@ -474,9 +527,19 @@ struct VaultHomeView: View {
         if store.note(store.todayID) == nil {
             store.createToday()
             toaster.say("Today's note created")
+            if let suggestion = store.indexSuggestion(for: store.todayID) {
+                withAnimation(Motion.snappy) { indexPrompt = VaultIndexPrompt(id: store.todayID, edited: suggestion.index.edited) }
+                return
+            }
         }
         nav.open(store.todayID)
     }
+}
+
+/// The folder-index question shown after today's note is created.
+struct VaultIndexPrompt: Equatable {
+    let id: String
+    let edited: Date
 }
 
 // MARK: - Rows and the folder tree

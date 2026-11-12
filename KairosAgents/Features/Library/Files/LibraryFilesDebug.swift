@@ -22,6 +22,7 @@ enum LibraryFilesDebug {
 
         // The Vault
         case "vault-home": return AnyView(FilesDebugCover { VaultScreen() })
+        case "vault-today": return AnyView(FilesDebugCover { VaultScreen(debug: .todayPrompt) })
         case "vault-search": return AnyView(FilesDebugCover { VaultScreen(debug: .search) })
         case "vault-folder": return AnyView(FilesDebugCover { VaultScreen(route: .folder("Daily notes")) })
         case "vault-list": return AnyView(FilesDebugCover { VaultScreen(route: .list(.missingProperties)) })

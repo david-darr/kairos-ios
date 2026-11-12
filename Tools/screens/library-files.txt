@@ -20,6 +20,8 @@ files-editor -kDebugView library.files-editor
 files-editor-light -kDebugView library.files-editor -kAppearance light
 vault-home -kDebugView library.vault-home
 vault-home-light -kDebugView library.vault-home -kAppearance light
+vault-today -kDebugView library.vault-today
+vault-today-light -kDebugView library.vault-today -kAppearance light
 vault-search -kDebugView library.vault-search
 vault-search-light -kDebugView library.vault-search -kAppearance light
 vault-folder -kDebugView library.vault-folder
