@@ -4,6 +4,8 @@ import UIKit
 @main
 struct KairosAgentsApp: App {
     @State private var app = AppModel()
+    /// Calls and notifications have to be listening from launch, before any screen is up.
+    @UIApplicationDelegateAdaptor(NativeAppDelegate.self) private var native
 
     var body: some Scene {
         WindowGroup {

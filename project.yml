@@ -37,6 +37,29 @@ targets:
           - CormorantGaramond-MediumItalic.ttf
           - CormorantGaramond-SemiBoldItalic.ttf
         ITSAppUsesNonExemptEncryption: false
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
+        UIBackgroundModes:
+          - audio
+          - voip
+          - remote-notification
+        NSMicrophoneUsageDescription: Kairos uses the microphone when you talk to a bot on a call or by voice.
+        NSCameraUsageDescription: Kairos uses the camera when you take a photo to send to a chat.
+        NSUserActivityTypes:
+          - INSendMessageIntent
+          - INStartCallIntent
+        CFBundleURLTypes:
+          - CFBundleURLName: app.kairos-agents.mobile
+            CFBundleURLSchemes:
+              - kairos-agents
+    entitlements:
+      path: KairosWidgets/Support/KairosAgents.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups:
+          - group.app.kairos-agents.mobile
+        com.apple.developer.usernotifications.time-sensitive: true
+        com.apple.developer.usernotifications.communication: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.kairos-agents.mobile

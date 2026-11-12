@@ -51,6 +51,7 @@ struct ShellView: View {
             .environment(chrome)
             .environment(app)
         }
+        .nativeLinks()
         .environment(router)
         .environment(chrome)
         .onAppear { DebugScreens.open(app.debugScreen, router: router, chrome: chrome) }

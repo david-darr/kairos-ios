@@ -103,6 +103,8 @@ A Live Activity's own push token, so the desktop can update it while the app is 
 
 `204`. The desktop sends pushes through the Kairos relay (`relay/` in this repo); it never holds the Apple key.
 
+What each push must carry for the phone to act on it (notification kinds and their fields, the ring payload, Live Activity content) is written in `docs/coverage/native.md` under the push payload contract. The relay's own routes and signing are in `relay/README.md`.
+
 ## Rings
 
 ### `GET /api/rings/{ring_id}`
