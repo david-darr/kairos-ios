@@ -40,7 +40,7 @@ struct BotFace: View {
                 Circle()
                     .fill(Palette.goldHi)
                     .frame(width: size * 0.19, height: size * 0.19)
-                    .overlay(Circle().strokeBorder(Palette.night.opacity(0.85), lineWidth: size * 0.028))
+                    .overlay(Circle().strokeBorder(Palette.kipEye.opacity(0.9), lineWidth: size * 0.028))
                     .offset(x: size * 0.31, y: -size * 0.31)
             }
         }
@@ -62,7 +62,7 @@ struct BotFace: View {
         HStack(spacing: size * 0.115) {
             ForEach(0..<2, id: \.self) { _ in
                 Capsule()
-                    .fill(Palette.night)
+                    .fill(bot.isKip ? Palette.kipEye : Palette.night)
                     .frame(width: size * 0.105, height: size * 0.25)
                     .scaleEffect(x: 1, y: eyesShut ? 0.12 : 1)
             }
@@ -71,7 +71,7 @@ struct BotFace: View {
     }
 
     private var fill: AnyShapeStyle {
-        if bot.isKip { return AnyShapeStyle(Palette.cream) }
+        if bot.isKip { return AnyShapeStyle(Palette.kipBody) }
         let base = Color(hex: bot.colorHex)
         return AnyShapeStyle(LinearGradient(colors: [base.mix(with: .white, by: 0.22), base.mix(with: .black, by: 0.12)], startPoint: .top, endPoint: .bottom))
     }

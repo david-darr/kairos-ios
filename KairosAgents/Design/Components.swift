@@ -40,6 +40,19 @@ extension View {
             .toolbar(.hidden, for: .navigationBar)
     }
 
+    /// Sheets are warm frosted glass, not the system grey.
+    func kSheet(_ detents: Set<PresentationDetent> = [.large]) -> some View {
+        presentationDetents(detents)
+            .presentationDragIndicator(.visible)
+            .presentationBackground {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Palette.ground.opacity(0.8)
+                    RadialGradient(colors: [Palette.glow.opacity(0.55), Palette.glow.opacity(0)], center: .top, startRadius: 0, endRadius: 420)
+                }
+            }
+    }
+
     /// Rows and cards arrive one after another.
     func arrives(_ index: Int) -> some View { modifier(Arrive(index: index)) }
 }
@@ -235,13 +248,26 @@ struct TabHeader<Trailing: View>: View {
         .padding(.horizontal, 20)
         .padding(.top, 4)
         .padding(.bottom, 12)
-        .background {
+        .background { HeaderFade() }
+    }
+}
+
+/// What sits behind a floating header: the content blurs and fades out as it scrolls under.
+struct HeaderFade: View {
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            Palette.ground.opacity(0.6)
+        }
+        .mask(
             LinearGradient(
-                stops: [.init(color: Palette.ground.opacity(0.96), location: 0), .init(color: Palette.ground.opacity(0.85), location: 0.6), .init(color: Palette.ground.opacity(0), location: 1)],
+                stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.62), .init(color: .clear, location: 1)],
                 startPoint: .top, endPoint: .bottom
             )
-            .ignoresSafeArea(edges: .top)
-        }
+        )
+        .padding(.bottom, -14)
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
     }
 }
 

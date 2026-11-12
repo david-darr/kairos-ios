@@ -102,8 +102,7 @@ struct SearchView: View {
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
         }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
+        .kSheet()
         .onAppear { if router.debugScreen != "search" { typing = true } }
     }
 }
@@ -141,10 +140,7 @@ struct YouView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel(text: "Look")
-                    Picker("Look", selection: Binding(get: { app.appearance }, set: { app.setAppearance($0) })) {
-                        ForEach(AppLook.allCases) { look in Text(look.title).tag(look) }
-                    }
-                    .pickerStyle(.segmented)
+                    GlassSwitch(items: AppLook.allCases, selection: Binding(get: { app.appearance }, set: { app.setAppearance($0) })) { $0.title }
                 }
 
                 VStack(spacing: 0) {
@@ -173,7 +169,6 @@ struct YouView: View {
             .padding(.bottom, 30)
         }
         .scrollIndicators(.hidden)
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
+        .kSheet()
     }
 }

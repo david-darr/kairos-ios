@@ -32,7 +32,8 @@ struct BotChatView: View {
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: messages.count) {
-                withAnimation(Motion.snappy) { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+                guard let last = messages.last else { return }
+                withAnimation(Motion.snappy) { proxy.scrollTo(last.id, anchor: .bottom) }
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { header }
@@ -46,9 +47,7 @@ struct BotChatView: View {
             CallView(bot: bot)
         }
         .sheet(isPresented: $showTools) {
-            ToolsSheet()
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+            ToolsSheet().kSheet()
         }
         .onAppear {
             if messages.isEmpty { messages = SampleData.thread(for: bot) }
@@ -91,10 +90,7 @@ struct BotChatView: View {
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
-        .background {
-            LinearGradient(colors: [Palette.ground.opacity(0.92), Palette.ground.opacity(0)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .top)
-        }
+        .background { HeaderFade() }
     }
 
     private var composer: some View {

@@ -65,6 +65,9 @@ shot 20-search -onboarded YES -kScreen search
 shot 21-home-light -onboarded YES -kScreen home -kAppearance light
 shot 22-bot-light -onboarded YES -kScreen bot -kAppearance light
 shot 23-chat-live-light -onboarded YES -kScreen chatlive -kAppearance light
+shot 24-jump-light -onboarded YES -kScreen jump -kAppearance light
+shot 25-you-light -onboarded YES -kScreen you -kAppearance light
+shot 26-onboarding-light -onboarded NO -kAppearance light
 
 xcrun simctl shutdown "$UDID" || true
 ls -la "$OUT"

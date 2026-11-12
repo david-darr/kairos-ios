@@ -36,7 +36,6 @@ struct MakeView: View {
                         }
                     }
                     .scrollIndicators(.hidden)
-                    .scrollClipDisabled()
                 }
                 .padding(16)
                 .kGlass(RoundedRectangle(cornerRadius: 26, style: .continuous))

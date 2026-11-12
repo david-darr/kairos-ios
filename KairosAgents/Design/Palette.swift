@@ -39,6 +39,10 @@ nonisolated enum Palette {
     static let glassTint = dyn(0x3A2E26, 0xFBF6EE, 0.38, 0.35)
     static let glassTintStrong = dyn(0x342922, 0xFBF6EE, 0.62, 0.6)
 
+    // Kip's own body follows the look: cream at night, bistre in the light look
+    static let kipBody = dyn(0xF2E8D8, 0x3A2A20)
+    static let kipEye = dyn(0x1B1612, 0xF3EADB)
+
     // Fixed colours (same in both looks)
     static let cream = Color(hex: 0xF2E8D8)
     static let night = Color(hex: 0x1B1612)

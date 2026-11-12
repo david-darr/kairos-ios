@@ -181,6 +181,7 @@ struct JumpPanel: View {
 
             if !SampleData.addedTabs.isEmpty {
                 SectionLabel(text: "Added tabs")
+                ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     ForEach(SampleData.addedTabs) { tab in
                         Button {
@@ -189,7 +190,7 @@ struct JumpPanel: View {
                         } label: {
                             HStack(spacing: 7) {
                                 Image(systemName: tab.symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.goldText)
-                                Text(tab.title).font(KFont.ui(14, .medium, relativeTo: .footnote)).foregroundStyle(Palette.ink).lineLimit(1)
+                                Text(tab.title).font(KFont.ui(14, .medium, relativeTo: .footnote)).foregroundStyle(Palette.ink).lineLimit(1).fixedSize()
                             }
                             .padding(.horizontal, 12)
                             .frame(minHeight: 44)
@@ -198,6 +199,8 @@ struct JumpPanel: View {
                         .buttonStyle(PressStyle())
                     }
                 }
+                }
+                .scrollIndicators(.hidden)
             }
 
             SectionLabel(text: "Everything")

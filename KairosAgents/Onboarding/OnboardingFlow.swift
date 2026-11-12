@@ -165,6 +165,7 @@ private struct OnboardingArt: View {
                     .padding(.horizontal, 14)
                     .frame(height: 62)
                     .background(Color.black.opacity(0.82), in: Capsule())
+                    .environment(\.colorScheme, .dark)
                     notification("Scout is waiting for your answer", "Tap to answer in Kairos.")
                     notification("Your reply is ready", "Private mode hides the chat title.")
                 }

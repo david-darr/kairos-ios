@@ -46,19 +46,13 @@ struct ModelChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .kScreen(glowAt: UnitPoint(x: 0.8, y: -0.05))
         .sheet(isPresented: $showModel) {
-            ModelSheet(choice: $model)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
+            ModelSheet(choice: $model).kSheet([.medium, .large])
         }
         .sheet(isPresented: $showTools) {
-            ToolsSheet()
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+            ToolsSheet().kSheet()
         }
         .sheet(item: $viewer) { start in
-            DocumentViewer(documents: SampleData.documents, index: start.id)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+            DocumentViewer(documents: SampleData.documents, index: start.id).kSheet()
         }
         .onAppear {
             switch router.debugScreen {
@@ -107,10 +101,7 @@ struct ModelChatView: View {
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
-        .background {
-            LinearGradient(colors: [Palette.ground.opacity(0.92), Palette.ground.opacity(0)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .top)
-        }
+        .background { HeaderFade() }
     }
 
     // MARK: Transcripts (sample)

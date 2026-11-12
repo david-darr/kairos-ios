@@ -146,10 +146,12 @@ final class ChromeState {
     var jumpOpen = false
     var liveWork: LiveWork? = SampleData.liveWork
     var toast: String?
+    /// Debug screenshots hold the bar still.
+    var held = false
     private var toastTask: Task<Void, Never>?
 
     func scrolled(from old: CGFloat, to new: CGFloat) {
-        guard !jumpOpen else { return }
+        guard !jumpOpen, !held else { return }
         if new < 12 {
             if collapsed { collapsed = false }
         } else if new - old > 5 {
