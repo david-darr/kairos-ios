@@ -29,11 +29,16 @@ jobs:
     timeout-minutes: 45
     env:
       BUNDLE_ID: app.kairos-agents.mobile
-      ARCHIVE: ${{ runner.temp }}/KairosAgents.xcarchive
-      EXPORT_DIR: ${{ runner.temp }}/export
-      KEYCHAIN: ${{ runner.temp }}/signing.keychain-db
     steps:
       - uses: actions/checkout@v4
+
+      - name: Paths
+        run: |
+          {
+            echo "ARCHIVE=$RUNNER_TEMP/KairosAgents.xcarchive"
+            echo "EXPORT_DIR=$RUNNER_TEMP/export"
+            echo "KEYCHAIN=$RUNNER_TEMP/signing.keychain-db"
+          } >> "$GITHUB_ENV"
 
       - name: Check the secrets are set
         env:
