@@ -32,6 +32,8 @@ xcrun simctl boot "$UDID" || true
 xcrun simctl bootstatus "$UDID" -b
 xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 || true
 xcrun simctl install "$UDID" "$APP"
+# The call screen asks for the microphone; answer it here so the question is not in every later picture.
+xcrun simctl privacy "$UDID" grant microphone "$BUNDLE" || true
 # Warm up: the first launch after a boot is slow.
 xcrun simctl launch "$UDID" "$BUNDLE" -onboarded YES >/dev/null 2>&1 || true
 sleep 12
