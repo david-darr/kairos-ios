@@ -592,7 +592,7 @@ struct BotKnowMemoryPage: View {
     @State private var newNote = ""
     @State private var newSection = "Notes"
     @State private var search = ""
-    @State private var removing: BotKnowNoteDTO?
+    @State private var removing: BotKnowNoteAsk?
     @State private var adding = false
     @State private var problem: String?
 
@@ -610,9 +610,9 @@ struct BotKnowMemoryPage: View {
             }
             .buttonStyle(PressStyle(scale: 0.98))
         }
-        .sheet(item: $removing) { note in
-            ConfirmSheet(title: "Remove this note?", detail: "\"\(note.text ?? "")\" is removed from its notes on your desktop. You can undo it right after.", confirm: "Remove note") {
-                live.removeNote(botID, note)
+        .sheet(item: $removing) { ask in
+            ConfirmSheet(title: "Remove this note?", detail: "\"\(ask.note.text ?? "")\" is removed from its notes on your desktop. You can undo it right after.", confirm: "Remove note") {
+                live.removeNote(botID, ask.note, hash: ask.hash)
             }
         }
         .task(id: BotsKnowledgeLive.connectionKey) {
@@ -661,10 +661,16 @@ struct BotKnowMemoryPage: View {
 
         if let undo = live.undos[botID] {
             HStack(spacing: 10) {
-                Text("Removed \"\(undo.text)\".").font(KFont.ui(15)).foregroundStyle(Palette.ink).lineLimit(2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Removed \"\(undo.text)\".").font(KFont.ui(15)).foregroundStyle(Palette.ink).lineLimit(2)
+                    if undo.replaced {
+                        Text("Undo brings back only this last removal.")
+                            .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
+                    }
+                }
                 Spacer(minLength: 4)
                 PillButton(title: "Undo", look: .filled) { live.undoRemove(botID) }
-                    .disabled(live.busy.contains("undo|\(botID)"))
+                    .disabled(live.pageBusy(botID))
             }
             .padding(12)
             .kCard(radius: 18, raised: true)
@@ -700,8 +706,14 @@ struct BotKnowMemoryPage: View {
             if let problem {
                 HintLine(text: problem, symbol: "exclamationmark.circle", color: Palette.goldText).padding(.horizontal, 4)
             }
-            PillButton(title: adding ? "Adding" : "Add note", symbol: "plus", look: .filled, wide: true) { add() }
-                .disabled(adding || live.busy.contains("note|\(botID)"))
+            if live.addChecks[botID] != nil {
+                // The last add's answer was lost and no read has settled it: adding now could add it twice.
+                PillButton(title: adding ? "Checking" : "Check again", symbol: "arrow.clockwise", look: .filled, wide: true) { checkAdd() }
+                    .disabled(adding)
+            } else {
+                PillButton(title: adding ? "Adding" : "Add note", symbol: "plus", look: .filled, wide: true) { add() }
+                    .disabled(adding || live.pageBusy(botID))
+            }
         }
 
         BotsSection(title: "Topics", footer: "Add or delete topics on your desktop.") {
@@ -737,7 +749,7 @@ struct BotKnowMemoryPage: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 PillButton(title: "Tidy now", symbol: "wand.and.stars") { live.tidy(botID) }
-                    .disabled(!upkeep || live.busy.contains("tidy|\(botID)"))
+                    .disabled(!upkeep || live.pageBusy(botID))
             }
             .padding(.horizontal, 14)
             .frame(minHeight: 56)
@@ -745,7 +757,8 @@ struct BotKnowMemoryPage: View {
     }
 
     private func noteRow(_ note: BotKnowNoteDTO) -> some View {
-        let waits = live.busy.contains("rm|\(botID)|\(note.id)")
+        // One change to its notes at a time: every trash button waits while one is on its way.
+        let waits = live.pageBusy(botID)
         return HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text((note.section ?? "Notes").uppercased()).font(KFont.label).tracking(1).foregroundStyle(Palette.goldText)
@@ -755,7 +768,9 @@ struct BotKnowMemoryPage: View {
             Spacer(minLength: 0)
             Button {
                 Haptics.tap()
-                removing = note
+                // The hash of the page this note was read from goes with it, so a changed page is refused.
+                guard let hash = live.memory[botID]?.index?.hash else { return }
+                removing = BotKnowNoteAsk(note: note, hash: hash)
             } label: {
                 Image(systemName: "trash").font(.system(size: 15)).foregroundStyle(Palette.danger).frame(width: 44, height: 44)
             }
@@ -802,23 +817,47 @@ struct BotKnowMemoryPage: View {
     private func add() {
         let text = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { store.say("Write the note first."); return }
-        guard text.count <= 1000 else { store.say("A note can be up to 1,000 characters."); return }
+        guard BotsKnowledgeLive.length(BotsKnowledgeLive.cleanNote(text)) <= 1000 else {
+            store.say("A note can be up to 1,000 characters."); return
+        }
         adding = true
         problem = nil
         let section = newSection
         Task {
             let outcome = await live.addNote(botID, section: section, text: text)
             adding = false
-            switch outcome {
-            case .done(let words):
-                Haptics.success()
-                if newNote.trimmingCharacters(in: .whitespacesAndNewlines) == text { newNote = "" }
-                store.say(words)
-            case .refused(let words), .unsure(let words):
-                problem = words
-            }
+            show(outcome, text: text)
         }
     }
+
+    private func checkAdd() {
+        adding = true
+        let text = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            let outcome = await live.checkAdd(botID)
+            adding = false
+            if let outcome { show(outcome, text: text) }
+        }
+    }
+
+    private func show(_ outcome: BotKnowOutcome, text: String) {
+        switch outcome {
+        case .done(let words):
+            Haptics.success()
+            problem = nil
+            if newNote.trimmingCharacters(in: .whitespacesAndNewlines) == text { newNote = "" }
+            store.say(words)
+        case .refused(let words), .unsure(let words):
+            problem = words
+        }
+    }
+}
+
+/// A note the person asked to remove, with the hash of the page it was read from.
+nonisolated struct BotKnowNoteAsk: Identifiable, Sendable {
+    let note: BotKnowNoteDTO
+    let hash: String
+    var id: String { note.id }
 }
 
 // MARK: - Paired: About you
@@ -867,9 +906,10 @@ struct BotKnowAboutPage: View {
             .lineLimit(5...14)
             .padding(14)
             .kCard(radius: 18)
-            Text("\(live.aboutDraft.count.formatted()) / \(limit.formatted()) characters")
+            let used = BotsKnowledgeLive.length(live.aboutDraft)
+            Text("\(used.formatted()) / \(limit.formatted()) characters")
                 .font(KFont.ui(12.5, relativeTo: .caption))
-                .foregroundStyle(live.aboutDraft.count > limit ? Palette.danger : Palette.inkFaint)
+                .foregroundStyle(used > limit ? Palette.danger : Palette.inkFaint)
                 .padding(.horizontal, 4)
         }
 
@@ -881,6 +921,7 @@ struct BotKnowAboutPage: View {
                     PillButton(title: "Keep mine", look: .filled, wide: true) { live.keepMyAbout() }
                     PillButton(title: "Use the desktop's", wide: true) { live.useDesktopAbout() }
                 }
+                .disabled(live.aboutBusy)
             }
             .padding(14)
             .kCard(radius: 20, raised: true)
@@ -888,13 +929,15 @@ struct BotKnowAboutPage: View {
             VStack(alignment: .leading, spacing: 10) {
                 HintLine(text: words, symbol: "exclamationmark.circle", color: Palette.goldText)
                 PillButton(title: "Save again", look: .filled, wide: true) { live.keepMyAbout() }
+                    .disabled(live.aboutBusy)
             }
             .padding(14)
             .kCard(radius: 20, raised: true)
         case .unsure(let words):
             VStack(alignment: .leading, spacing: 10) {
                 HintLine(text: words, symbol: "questionmark.circle", color: Palette.goldText)
-                PillButton(title: "Check again", look: .filled, wide: true) { live.checkAboutAgain() }
+                PillButton(title: live.aboutChecking ? "Checking" : "Check again", look: .filled, wide: true) { live.checkAboutAgain() }
+                    .disabled(live.aboutBusy)
             }
             .padding(14)
             .kCard(radius: 20, raised: true)

@@ -35,6 +35,15 @@ nonisolated enum BotKnowAboutState: Equatable, Sendable {
 nonisolated struct BotKnowUndo: Equatable, Sendable {
     var change: String
     var text: String
+    /// It took the place of an earlier removal's Undo: only this last removal can be undone.
+    var replaced = false
+}
+
+/// A note whose add answer was lost: what was SENT, and the page hash it was sent against.
+nonisolated struct BotKnowSentNote: Equatable, Sendable {
+    var section: String
+    var text: String
+    var hash: String
 }
 
 /// The usage page's period.
@@ -107,6 +116,8 @@ final class BotsKnowledgeLive {
 
     var memory: [String: BotKnowMemoryDTO] = [:]
     var undos: [String: BotKnowUndo] = [:]
+    /// Adds whose answer was lost and that no read has settled yet: Add waits until one does.
+    var addChecks: [String: BotKnowSentNote] = [:]
 
     var aboutBase: BotKnowAboutDTO?
     var aboutDraft = ""
@@ -135,6 +146,12 @@ final class BotsKnowledgeLive {
     @ObservationIgnored private var writeGeneration = 0
     @ObservationIgnored private var aboutTask: Task<Void, Never>?
     @ObservationIgnored private var aboutSaving = false
+    /// The last About you text sent and the hash it was sent against, until an answer or a read settles it.
+    @ObservationIgnored private var aboutSent: (text: String, expected: String)?
+    /// Goes up with every save the desktop confirmed: a read that started before one does not replace the text.
+    @ObservationIgnored private var aboutSaves = 0
+    /// Goes up when everything is dropped for another account.
+    @ObservationIgnored private var resets = 0
 
     // MARK: Which desktop
 
@@ -170,9 +187,14 @@ final class BotsKnowledgeLive {
         busy = []
         memory = [:]
         undos = [:]
+        addChecks = [:]
         aboutTask?.cancel()
         aboutTask = nil
         aboutSaving = false
+        aboutChecking = false
+        aboutSent = nil
+        aboutSaves += 1
+        resets += 1
         aboutBase = nil
         aboutDraft = ""
         aboutState = .idle
@@ -262,9 +284,10 @@ final class BotsKnowledgeLive {
 
     /// One read. A read that began before a write finished does not replace what that write showed (the write
     /// reads again itself), and an older read never replaces a newer one. `force` is for the read after a lost
-    /// answer, which must land.
+    /// answer, which must land: if another write began or ended while it read, it reads again (twice at most)
+    /// so it does not put back what that write showed.
     @discardableResult
-    private func fetch<T>(_ key: String, failed: String, force: Bool = false,
+    private func fetch<T>(_ key: String, failed: String, force: Bool = false, attempt: Int = 0,
                           _ call: (APIClient) async throws -> T, apply: (T) -> Void) async -> Bool {
         guard active else { return false }
         let account = self.account
@@ -277,6 +300,9 @@ final class BotsKnowledgeLive {
             let value = try await call(try client())
             guard stillLive(account), seqs[key] == seq else { return false }
             if !force && prior == .loaded && (writing > 0 || writeGeneration != generation) { return false }
+            if force && attempt < 2 && (writing > 0 || writeGeneration != generation) {
+                return await fetch(key, failed: failed, force: true, attempt: attempt + 1, call, apply: apply)
+            }
             apply(value)
             loads[key] = .loaded
             return true
@@ -384,9 +410,63 @@ final class BotsKnowledgeLive {
         memory[botID]?.index?.notes = page.notes
     }
 
-    private func count(_ botID: String, section: String, text: String) -> Int {
-        BotKnowWire.items(memory[botID]?.index?.notes).items
-            .filter { $0.superseded == nil && $0.section == section && $0.text == text }.count
+    /// A change to its main page is on its way (add, remove, undo or tidy): the others wait, so each one is
+    /// sent against the page the last one left, and a refusal is never caused by this iPhone's own change.
+    func pageBusy(_ botID: String) -> Bool {
+        ["note", "rm", "undo", "tidy"].contains { busy.contains("\($0)|\(botID)") }
+    }
+
+    /// A note's text as the desktop stores it (bot_memory_entries.clean_text): one kind of line break, no
+    /// control characters but newlines and tabs, no spaces at either end or at the end of a line.
+    static func cleanNote(_ text: String) -> String {
+        let unified = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        var scalars = String.UnicodeScalarView()
+        for scalar in unified.unicodeScalars {
+            let value = scalar.value
+            if value == 0x0A || value == 0x09 || (value > 0x1F && value != 0x7F) { scalars.append(scalar) }
+        }
+        let body = String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.components(separatedBy: "\n")
+            .map { line in
+                var line = line
+                while let last = line.unicodeScalars.last, CharacterSet.whitespaces.contains(last) { line.unicodeScalars.removeLast() }
+                return line
+            }
+            .joined(separator: "\n")
+    }
+
+    /// The length the desktop counts (Python `len`: code points, not what the eye sees as characters).
+    static func length(_ text: String) -> Int { text.unicodeScalars.count }
+
+    /// A note's words for matching what was sent with what the desktop shows: a trailing " · until <date>"
+    /// is read by the desktop as an end date, and line breaks and spacing may differ.
+    private static func matchKey(_ text: String) -> String {
+        var body = cleanNote(text)
+        if let range = body.range(of: #" · until \d{4}-\d{2}-\d{2}$"#, options: .regularExpression) {
+            body.removeSubrange(range)
+        }
+        return body.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    private func has(_ botID: String, _ sent: BotKnowSentNote) -> Bool {
+        let want = Self.matchKey(sent.text)
+        let section = sent.section.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return BotKnowWire.items(memory[botID]?.index?.notes).items.contains {
+            $0.superseded == nil && ($0.section ?? "") == section && Self.matchKey($0.text ?? "") == want
+        }
+    }
+
+    /// After a lost add, with a fresh read in hand: say what the desktop really has. The note is never called
+    /// missing while the desktop has its text.
+    private func settleAdd(_ botID: String, _ sent: BotKnowSentNote) -> BotKnowOutcome {
+        addChecks[botID] = nil
+        if has(botID, sent) {
+            return .done("Your desktop did not answer at first, but it has this note.")
+        }
+        if memory[botID]?.index?.hash == sent.hash {
+            return .refused("Your desktop did not answer, and its notes are as they were: the note was not added. Your text is kept here.")
+        }
+        return .refused("Your desktop did not answer, and it does not have this note. Your text is kept here.")
     }
 
     /// Add a note under a heading of the main page, against the page as it was read.
@@ -394,11 +474,12 @@ final class BotsKnowledgeLive {
         guard active, isCurrent, let hash = memory[botID]?.index?.hash else {
             return .refused("Its notes have not been read from your desktop yet.")
         }
+        guard addChecks[botID] == nil else { return .refused("Check whether the last note arrived before adding another.") }
         let key = "note|\(botID)"
-        guard !busy.contains(key) else { return .refused("A note is still on its way.") }
+        guard !pageBusy(botID) else { return .refused("A change to its notes is still on its way.") }
         let account = self.account
-        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\r\n", with: "\n")
-        let before = count(botID, section: section, text: clean)
+        let clean = Self.cleanNote(text)
+        let sent = BotKnowSentNote(section: section, text: clean, hash: hash)
         busy.insert(key)
         beginWrite()
         defer { if stillLive(account) { busy.remove(key) } }
@@ -419,15 +500,12 @@ final class BotsKnowledgeLive {
             Connection.shared.note(error)
             guard stillLive(account) else { return .refused("Your desktop changed while the note was being added.") }
             if unconfirmed(error) {
+                // Until a read settles it, Add waits: a second tap could put the note in twice.
+                addChecks[botID] = sent
                 let read = await loadMemory(botID, force: true)
                 guard stillLive(account) else { return .refused("Your desktop changed while the note was being added.") }
-                if read && count(botID, section: section, text: clean) > before {
-                    return .done("Your desktop did not answer at first, but it has the note now.")
-                }
-                if read {
-                    return .unsure("Your desktop did not answer, and it does not have the note now. Your text is kept here.")
-                }
-                return .unsure(unsure("the note was added") + " Your text is kept here.")
+                if read { return settleAdd(botID, sent) }
+                return .unsure(unsure("the note was added") + " Your text is kept here. Check again before adding it again.")
             }
             if status(error) == 409 {
                 await loadMemory(botID, force: true)
@@ -437,11 +515,28 @@ final class BotsKnowledgeLive {
         }
     }
 
-    /// Remove one note (asked first on screen). Undo stays offered until the next change.
-    func removeNote(_ botID: String, _ note: BotKnowNoteDTO) {
-        guard active, isCurrent, let hash = memory[botID]?.index?.hash else { return }
-        let key = "rm|\(botID)|\(note.id)"
-        guard !busy.contains(key) else { return }
+    /// Read again after a lost add whose read failed too.
+    func checkAdd(_ botID: String) async -> BotKnowOutcome? {
+        guard active, let sent = addChecks[botID] else { return nil }
+        let account = self.account
+        let read = await loadMemory(botID, force: true)
+        guard stillLive(account), addChecks[botID] == sent else { return nil }
+        if read { return settleAdd(botID, sent) }
+        return .unsure(unsure("the note was added") + " Your text is kept here. Check again before adding it again.")
+    }
+
+    /// Remove one note (asked first on screen), against the page hash read together with that note. If the
+    /// page changed since, nothing is sent and the person picks again. Undo stays offered until the next change,
+    /// and only for the last removal.
+    func removeNote(_ botID: String, _ note: BotKnowNoteDTO, hash: String) {
+        guard active, isCurrent, memory[botID] != nil else { return }
+        guard !pageBusy(botID) else { say("A change to its notes is still on its way. Nothing was removed."); return }
+        guard memory[botID]?.index?.hash == hash else {
+            say("Its notes changed since you picked this one, so nothing was removed. This shows what your desktop has now; pick it again to remove it.")
+            Task { await loadMemory(botID, force: true) }
+            return
+        }
+        let key = "rm|\(botID)"
         let account = self.account
         busy.insert(key)
         beginWrite()
@@ -452,27 +547,33 @@ final class BotsKnowledgeLive {
                 endWrite()
                 guard stillLive(account) else { return }
                 withAnimation(Motion.snappy) { applyPage(botID, answer.file) }
+                let replaced = undos[botID] != nil
                 if let change = answer.changeId {
-                    undos[botID] = BotKnowUndo(change: change, text: note.text ?? "")
+                    undos[botID] = BotKnowUndo(change: change, text: note.text ?? "", replaced: replaced)
+                    say(replaced ? "Note removed. Undo now brings back only this note, not the one removed before it."
+                                 : "Note removed.")
                 } else {
                     undos[botID] = nil
+                    say(replaced ? "Note removed. It cannot be undone here, and neither can the one removed before it."
+                                 : "Note removed. It cannot be undone here.")
                 }
-                say("Note removed.")
                 await loadMemory(botID)
             } catch {
                 endWrite()
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
-                undos[botID] = nil
                 if unconfirmed(error) {
                     let read = await loadMemory(botID, force: true)
                     guard stillLive(account) else { return }
+                    // The page changed: an earlier removal's Undo would be refused now.
+                    if read && memory[botID]?.index?.hash != hash { undos[botID] = nil }
                     let gone = read && !BotKnowWire.items(memory[botID]?.index?.notes).items.contains { $0.id == note.id }
-                    say(gone ? "Your desktop did not answer at first, but the note is gone from it now."
+                    say(gone ? "Your desktop did not answer at first, but the note is gone from it now. It cannot be undone here."
                              : unsure("the note was removed"))
                     return
                 }
                 if status(error) == 409 {
+                    undos[botID] = nil
                     say("Its notes changed on your desktop, so nothing was removed. This shows what your desktop has now.")
                 } else {
                     say("The note was not removed. " + error.plainWords)
@@ -486,7 +587,7 @@ final class BotsKnowledgeLive {
     func undoRemove(_ botID: String) {
         guard active, let undo = undos[botID] else { return }
         let key = "undo|\(botID)"
-        guard !busy.contains(key) else { return }
+        guard !pageBusy(botID) else { return }
         let account = self.account
         busy.insert(key)
         beginWrite()
@@ -523,7 +624,7 @@ final class BotsKnowledgeLive {
     func tidy(_ botID: String) {
         guard active else { return }
         let key = "tidy|\(botID)"
-        guard !busy.contains(key) else { return }
+        guard !pageBusy(botID) else { return }
         let account = self.account
         busy.insert(key)
         beginWrite()
@@ -549,12 +650,34 @@ final class BotsKnowledgeLive {
 
     // MARK: About you
 
+    /// A read that started before a save the desktop confirmed, or that lands while a save or a check is on its
+    /// way, updates only the learned facts: it never puts older text back in the box.
     @discardableResult
     func loadAbout(force: Bool = false) async -> Bool {
-        await fetch("about", failed: "About you could not be read.", force: force,
-                    { try await $0.botKnowledgeAbout() }) { value in
-            showAbout(value)
+        let saves = aboutSaves
+        return await fetch("about", failed: "About you could not be read.", force: force,
+                           { try await $0.botKnowledgeAbout() }) { value in
+            if aboutSaves != saves || aboutSaving {
+                showLearned(value)
+            } else {
+                showAbout(value)
+            }
         }
+    }
+
+    /// Only the learned facts: the text and its hash stay as they are.
+    @discardableResult
+    private func loadLearned() async -> Bool {
+        await fetch("learned", failed: "What your bots learned could not be read.", force: true,
+                    { try await $0.botKnowledgeAbout() }) { value in
+            showLearned(value)
+        }
+    }
+
+    private func showLearned(_ value: BotKnowAboutDTO) {
+        let items = BotKnowWire.items(value.learned)
+        learned = items.items
+        skipped["about"] = items.skipped
     }
 
     /// Take the desktop's text as the base. What the person typed is never replaced: if they have unsent text
@@ -564,9 +687,7 @@ final class BotsKnowledgeLive {
         let old = aboutBase
         let edited = old != nil && aboutDraft != (old?.text ?? "")
         aboutBase = value
-        let items = BotKnowWire.items(value.learned)
-        learned = items.items
-        skipped["about"] = items.skipped
+        showLearned(value)
         if old == nil || !edited {
             aboutDraft = fresh
             if aboutState != .saved { aboutState = .idle }
@@ -608,20 +729,24 @@ final class BotsKnowledgeLive {
             return
         }
         let limit = base.limit ?? 24_000
-        guard text.count <= limit else {
+        guard Self.length(text) <= limit else {
             aboutState = .refused("About you is limited to \(limit.formatted()) characters. Shorten it to save.")
             return
         }
         let account = self.account
+        let epoch = resets
         let expected = base.hash ?? ""
         aboutSaving = true
+        aboutSent = (text, expected)
         aboutState = .saving
         beginWrite()
         do {
             let saved = try await client().botKnowledgeAboutSave(text: text, expectedHash: expected)
             endWrite()
-            aboutSaving = false
+            if resets == epoch { aboutSaving = false }
             guard stillLive(account) else { return }
+            aboutSaves += 1
+            aboutSent = nil
             aboutBase?.text = saved.text
             aboutBase?.hash = saved.hash
             aboutBase?.chars = saved.chars
@@ -637,35 +762,40 @@ final class BotsKnowledgeLive {
             }
         } catch {
             endWrite()
-            aboutSaving = false
             Connection.shared.note(error)
-            guard stillLive(account) else { return }
-            if status(error) == 409 {
-                await recheckAbout(sent: text, expected: expected)
+            guard stillLive(account) else {
+                if resets == epoch { aboutSaving = false }
                 return
             }
-            if unconfirmed(error) {
+            if status(error) == 409 || unconfirmed(error) {
+                // No other save starts until the desktop has been read and compared with what was sent.
                 await recheckAbout(sent: text, expected: expected)
+                if resets == epoch { aboutSaving = false }
                 return
             }
+            aboutSaving = false
+            aboutSent = nil
             aboutState = .refused("About you was not saved. " + error.plainWords)
         }
     }
 
-    /// After a lost answer or a refusal: read the desktop and compare it with what was SENT.
-    func recheckAbout(sent: String, expected: String) async {
+    /// After a lost answer or a refusal: read the desktop and compare it with what was SENT. The caller holds
+    /// `aboutSaving`, so no save runs meanwhile.
+    private func recheckAbout(sent: String, expected: String) async {
         guard active else { return }
         let account = self.account
+        let saves = aboutSaves
         do {
             let fresh = try await client().botKnowledgeAbout()
-            guard stillLive(account) else { return }
+            guard stillLive(account), aboutSaves == saves else { return }
             let text = fresh.text ?? ""
             aboutBase = fresh
-            let items = BotKnowWire.items(fresh.learned)
-            learned = items.items
-            skipped["about"] = items.skipped
+            showLearned(fresh)
             loads["about"] = .loaded
+            // Settled either way: the sent text is no longer in doubt.
+            aboutSent = nil
             if text == sent {
+                aboutSaves += 1
                 if aboutDraft == sent {
                     aboutState = .saved
                 } else {
@@ -688,23 +818,48 @@ final class BotsKnowledgeLive {
 
     /// The person chose to keep their text over the desktop's (or to try again after nothing was saved).
     func keepMyAbout() {
-        guard let base = aboutBase else { return }
+        guard let base = aboutBase, !aboutSaving else { return }
         aboutState = aboutDraft == (base.text ?? "") ? .idle : .unsaved
         Task { await saveAbout() }
     }
 
     /// The person chose the desktop's text.
     func useDesktopAbout() {
+        guard !aboutSaving else { return }
         aboutTask?.cancel()
         aboutDraft = aboutBase?.text ?? ""
         aboutState = .idle
     }
 
-    /// Check again after an answer that never came: nothing is sent.
+    /// Whether a save or a check is on its way (the buttons that would send again wait).
+    var aboutBusy: Bool { aboutState == .saving || aboutChecking }
+    private(set) var aboutChecking = false
+
+    /// Check again after an answer that never came: nothing is sent. The desktop is compared with the text
+    /// that was SENT and the hash it was sent against, never with what is in the box now.
     func checkAboutAgain() {
-        guard let base = aboutBase else { return }
-        let sent = aboutDraft
-        Task { await recheckAbout(sent: sent, expected: base.hash ?? "") }
+        guard active, !aboutSaving else { return }
+        guard let sent = aboutSent else {
+            // Nothing sent is in doubt: read again. The text in the box is kept; if it is not the desktop's,
+            // the person chooses.
+            let account = self.account
+            Task {
+                let read = await loadAbout(force: true)
+                guard read, stillLive(account), case .unsure = aboutState else { return }
+                aboutState = aboutDraft == (aboutBase?.text ?? "") ? .idle : .changedOnDesktop
+            }
+            return
+        }
+        let epoch = resets
+        aboutSaving = true
+        aboutChecking = true
+        Task {
+            await recheckAbout(sent: sent.text, expected: sent.expected)
+            if resets == epoch {
+                aboutSaving = false
+                aboutChecking = false
+            }
+        }
     }
 
     /// Remove a learned fact (asked first on screen). Bots will not learn it again.
@@ -728,14 +883,15 @@ final class BotsKnowledgeLive {
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
                 if unconfirmed(error) {
-                    let read = await loadAbout(force: true)
+                    // Only the learned list: About you's text and hash are not touched by this read.
+                    let read = await loadLearned()
                     guard stillLive(account) else { return }
                     say(read && !learned.contains { $0.id == fact.id } ? "Your desktop did not answer at first, but the fact is gone from it now."
                                                                     : unsure("the fact was removed"))
                     return
                 }
                 say(status(error) == 404 ? "That fact was already gone from your desktop." : "It was not removed. " + error.plainWords)
-                await loadAbout(force: true)
+                await loadLearned()
             }
         }
     }
@@ -870,12 +1026,37 @@ final class BotsKnowledgeLive {
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
                 busy.remove(key)
-                problem = unconfirmed(error) ? unsure("every one was archived") : "Some were not archived. " + error.plainWords
+                problem = unconfirmed(error) ? "Your desktop did not answer." : "Some were not archived. " + error.plainWords
                 break
             }
         }
-        say(problem ?? "\(archived) archived.")
-        await loadThreads(botID, force: true)
+        let read = await loadThreads(botID, force: true)
+        guard stillLive(account) else { return }
+        guard let problem else { say("\(archived) archived."); return }
+        let wanted = ids.filter { $0 != main }
+        guard read else { say(problem + " This iPhone could not read your desktop either, so it cannot say how many were archived."); return }
+        let rows = threads[botID] ?? []
+        let done = wanted.filter { id in rows.contains { $0.id == id && $0.thread?.archivedAt != nil } }.count
+        say(problem + " Your desktop has \(done) of the \(wanted.count) archived now.")
+    }
+
+    /// After a delete whose answer was lost or refused: read again and say how many of those picked are
+    /// really still on the desktop.
+    private func sayLeft(_ botID: String, ids: [String], first: String, read: Bool) {
+        guard read else {
+            say(first + " This iPhone could not read your desktop either, so it cannot say which are left.")
+            return
+        }
+        let rows = threads[botID] ?? []
+        let left = ids.filter { id in rows.contains { $0.id == id } }.count
+        let gone = ids.count - left
+        if left == 0 {
+            say(first + (ids.count == 1 ? " It is gone from your desktop now." : " All \(ids.count) are gone from your desktop now."))
+        } else if gone == 0 {
+            say(first + (ids.count == 1 ? " It is still on your desktop." : " All \(ids.count) are still on your desktop."))
+        } else {
+            say(first + " \(gone) of the \(ids.count) are gone; \(left) \(left == 1 ? "is" : "are") still on your desktop.")
+        }
     }
 
     /// Delete conversations (asked first on screen). The desktop keeps busy ones and always keeps one.
@@ -905,8 +1086,14 @@ final class BotsKnowledgeLive {
             endWrite()
             Connection.shared.note(error)
             guard stillLive(account) else { return }
-            say(unconfirmed(error) ? unsure("they were deleted") : "Nothing was deleted. " + error.plainWords)
-            await loadThreads(botID, force: true)
+            let lost = unconfirmed(error)
+            let read = await loadThreads(botID, force: true)
+            guard stillLive(account) else { return }
+            if lost {
+                sayLeft(botID, ids: ids, first: "Your desktop did not answer.", read: read)
+            } else {
+                sayLeft(botID, ids: ids, first: "Your desktop refused: " + error.plainWords, read: read)
+            }
         }
     }
 
