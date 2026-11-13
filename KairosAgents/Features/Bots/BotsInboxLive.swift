@@ -208,7 +208,7 @@ final class BotsInboxLive {
     @ObservationIgnored private var writeSerial: [String: Int] = [:]
     /// Rows the desktop refused an answer for, at the revision refused: not sent again until a read of the inbox
     /// shows what the desktop has.
-    @ObservationIgnored private var refusedRows: [String: Int] = [:]
+    @ObservationIgnored private var refusedRows: [String: String] = [:]
     /// Light checks made per bot while something of it runs.
     @ObservationIgnored private var pollTicks: [String: Int] = [:]
 
