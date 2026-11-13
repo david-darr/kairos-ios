@@ -13,14 +13,30 @@ struct DriveFormEditor: View {
     @State private var removing: DriveQuestion?
     @State private var responses: [String]?
     @State private var started = false
+    // Paired: the form as last read, the title it was filled from, and a change on its way.
+    @State private var liveRead: DriveDTOForm?
+    @State private var liveLoad: DriveLiveLoad = .idle
+    @State private var titleBase = ""
+    @State private var liveNote: String?
+    @State private var moreResponses = false
 
     private var file: DriveFile? { ui.store.file(fileID) }
-    private var form: DriveForm? { file?.form }
+    private var form: DriveForm? {
+        if ui.live { return liveRead.map(DriveStore.liveForm) }
+        return file?.form
+    }
+    private var working: Bool { ui.live && ui.store.busy.contains(fileID) }
 
     var body: some View {
         ScrollView {
             if let form {
                 VStack(alignment: .leading, spacing: 18) {
+                    if ui.live, let liveNote {
+                        DriveLiveLine(text: liveNote, action: "OK") { self.liveNote = nil }
+                    }
+                    if working {
+                        HintLine(text: "Sending to your desktop.", symbol: "hourglass")
+                    }
                     titleCard.arrives(0)
                     questions(form).arrives(1)
                     newQuestion.arrives(2)
@@ -29,6 +45,12 @@ struct DriveFormEditor: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
                 .padding(.bottom, 40)
+            } else if ui.live, case .failed(let why) = liveLoad {
+                DriveLiveLine(text: why, action: "Try again") { Task { await loadLive() } }
+                    .padding(.horizontal, 16)
+            } else if ui.live {
+                DriveLiveLine(text: "Reading the form.")
+                    .padding(.horizontal, 16)
             } else {
                 FilesEmpty(symbol: "list.bullet.rectangle", title: "This form is gone", detail: "It was deleted or moved out of this Drive.", action: "Go back") { dismiss() }
             }
@@ -44,6 +66,7 @@ struct DriveFormEditor: View {
             started = true
             title = form?.title ?? ""
         }
+        .task(id: DriveStore.connectionKey) { await loadLive() }
         .confirmationDialog(
             "Remove question?",
             isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
@@ -74,6 +97,10 @@ struct DriveFormEditor: View {
                         ui.toaster.say("Give the form a title")
                         return
                     }
+                    if ui.live {
+                        saveTitleLive(clean)
+                        return
+                    }
                     ui.store.setFormTitle(fileID, clean)
                     Haptics.success()
                     ui.toaster.say("Form title saved")
@@ -100,6 +127,12 @@ struct DriveFormEditor: View {
                     }
                 }
                 .kCard(radius: 18)
+                if ui.live {
+                    // Google removes a question by its position, and the desktop cannot send Google's revision
+                    // guard: a change in between could remove a different question and its answers.
+                    HintLine(text: "Remove questions in Google Forms.", symbol: "info.circle")
+                        .padding(.horizontal, 4)
+                }
             }
         }
     }
@@ -115,7 +148,7 @@ struct DriveFormEditor: View {
                 Text(question.text)
                     .font(KFont.ui(16, .medium))
                     .foregroundStyle(Palette.ink)
-                Text(question.type.title)
+                Text(question.label ?? question.type.title)
                     .font(KFont.ui(13.5, relativeTo: .footnote))
                     .foregroundStyle(Palette.inkFaint)
                 if !question.choices.isEmpty {
@@ -125,18 +158,20 @@ struct DriveFormEditor: View {
                 }
             }
             Spacer(minLength: 4)
-            Button {
-                Haptics.tap()
-                removing = question
-            } label: {
-                Text("Remove")
-                    .font(KFont.ui(14, .medium, relativeTo: .footnote))
-                    .foregroundStyle(Palette.danger)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
+            if !ui.live {
+                Button {
+                    Haptics.tap()
+                    removing = question
+                } label: {
+                    Text("Remove")
+                        .font(KFont.ui(14, .medium, relativeTo: .footnote))
+                        .foregroundStyle(Palette.danger)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel("Remove \(question.text)")
             }
-            .buttonStyle(PressStyle())
-            .accessibilityLabel("Remove \(question.text)")
         }
         .padding(.leading, 14)
         .padding(.trailing, 8)
@@ -189,6 +224,10 @@ struct DriveFormEditor: View {
                 return
             }
         }
+        if ui.live {
+            addQuestionLive(DriveQuestion(text: text, type: type, choices: choices))
+            return
+        }
         withAnimation(Motion.snappy) {
             ui.store.addQuestion(fileID, DriveQuestion(text: text, type: type, choices: choices))
         }
@@ -213,18 +252,36 @@ struct DriveFormEditor: View {
                 }
                 HStack(spacing: 10) {
                     pillButton(form.published ? "Unpublish" : "Publish") {
+                        if ui.live {
+                            let on = !form.published
+                            let name = form.title
+                            ui.sheet = .confirm(DriveLiveConfirm(
+                                title: on ? "Publish \(name)?" : "Unpublish \(name)?",
+                                detail: on ? "Anyone with the form's link can open it and send answers."
+                                           : "The form stops taking answers. Answers already sent stay.",
+                                confirm: on ? "Publish" : "Unpublish", danger: !on
+                            ) { run({ await ui.store.publishLive(fileID, on) }, done: on ? "Form published" : "Form unpublished") })
+                            return
+                        }
                         ui.store.setPublished(fileID, !form.published)
                         Haptics.success()
                         ui.toaster.say("Publish state updated")
                     }
                     pillButton("Load responses") {
                         Haptics.tap()
+                        if ui.live {
+                            loadResponsesLive()
+                            return
+                        }
                         withAnimation(Motion.snappy) { responses = form.responses }
                     }
                 }
                 if let responses {
                     responseList(responses)
                         .transition(.opacity)
+                    if ui.live && moreResponses {
+                        HintLine(text: "Showing the first \(responses.count) responses. See the rest in Google Forms.")
+                    }
                 }
             }
             .padding(14)
@@ -246,6 +303,98 @@ struct DriveFormEditor: View {
                         Text(line).font(KFont.ui(15))
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: Paired desktop
+
+    /// Read the form. The title field follows the desktop only while the person has not changed it.
+    private func loadLive() async {
+        guard ui.live else { return }
+        if liveRead == nil { liveLoad = .loading }
+        do {
+            let read = try await ui.store.formLive(fileID)
+            show(read)
+            liveLoad = .loaded
+        } catch {
+            if error is CancellationError || Task.isCancelled { return }
+            liveLoad = .failed("This form could not be read. " + error.plainWords)
+        }
+    }
+
+    private func show(_ read: DriveDTOForm) {
+        let fresh = read.info?.title ?? ""
+        if title.trimmingCharacters(in: .whitespacesAndNewlines) == titleBase.trimmingCharacters(in: .whitespacesAndNewlines) {
+            title = fresh
+            titleBase = fresh
+        }
+        liveRead = read
+    }
+
+    /// One form change; the form is read again after, and the outcome said plainly.
+    private func run(_ change: @escaping () async -> (DriveLiveOutcome, DriveDTOForm?), done: String,
+                     after: @escaping (DriveLiveOutcome, DriveDTOForm?) -> Void = { _, _ in }) {
+        guard !working else {
+            ui.toaster.say("Wait for the last change to finish")
+            return
+        }
+        liveNote = nil
+        Task {
+            let (outcome, read) = await change()
+            after(outcome, read)
+            if let read { show(read) }
+            switch outcome {
+            case .done:
+                Haptics.success()
+                ui.toaster.say(done)
+            case .busy:
+                ui.toaster.say("Wait for the last change to finish")
+            case .failed(let why), .unconfirmed(let why):
+                Haptics.thud()
+                liveNote = why
+            }
+        }
+    }
+
+    /// Only a changed title is sent, and only if the desktop's title is still the one this field was filled from
+    /// (the store reads it just before sending). If it changed, nothing is sent: the person's text stays and a
+    /// second save sends it on purpose.
+    private func saveTitleLive(_ clean: String) {
+        guard clean != titleBase.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            ui.toaster.say("The title has not changed")
+            return
+        }
+        let filledFrom = titleBase
+        run({ await ui.store.formTitleLive(fileID, title: clean, filledFrom: filledFrom) }, done: "Form title saved") { outcome, read in
+            if outcome == .done {
+                titleBase = clean
+            } else if let desktop = read?.info?.title, desktop != filledFrom {
+                titleBase = desktop
+            }
+        }
+    }
+
+    /// Added at the end of the form as the desktop has it just before sending (the store reads it first).
+    private func addQuestionLive(_ question: DriveQuestion) {
+        run({ await ui.store.addQuestionLive(fileID, question) }, done: "Question added") { outcome, _ in
+            if outcome == .done {
+                questionText = ""
+                choicesText = ""
+            }
+        }
+    }
+
+    private func loadResponsesLive() {
+        guard let read = liveRead else { return }
+        Task {
+            do {
+                let page = try await ui.store.formResponsesLive(fileID, form: read)
+                moreResponses = page.more
+                withAnimation(Motion.snappy) { responses = page.lines }
+            } catch {
+                if error is CancellationError { return }
+                liveNote = "Responses could not be read. " + error.plainWords
             }
         }
     }

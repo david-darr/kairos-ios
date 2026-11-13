@@ -14,11 +14,63 @@ struct DriveBrowser: View {
     private var folder: DriveFile? { folderID.flatMap { store.file($0) } }
 
     private var items: [DriveFile] {
-        store.listing(section: ui.section, folder: folderID, query: isRoot ? ui.query : "", filter: ui.filter)
+        if ui.live { return store.liveItems(liveKey) }
+        return store.listing(section: ui.section, folder: folderID, query: isRoot ? ui.query : "", filter: ui.filter)
+    }
+
+    private var quickHome: Bool {
+        isRoot && ui.section == .myDrive && ui.query.isEmpty && ui.filter == .all
     }
 
     private var showQuick: Bool {
-        isRoot && ui.section == .myDrive && ui.query.isEmpty && ui.filter == .all && !ui.loading && !store.recent(limit: 1).isEmpty
+        if ui.live { return quickHome && !quickFiles.isEmpty }
+        return quickHome && !ui.loading && !store.recent(limit: 1).isEmpty
+    }
+
+    private var quickFiles: [DriveFile] {
+        guard ui.live else { return store.recent(limit: 10) }
+        return Array(store.liveItems(quickKey).filter { !$0.isFolder }.prefix(10))
+    }
+
+    // MARK: Paired desktop
+
+    private var liveKey: DriveLiveKey? {
+        store.key(section: ui.section, folder: folderID, query: isRoot ? ui.query : "", filter: ui.filter)
+    }
+
+    private var quickKey: DriveLiveKey? {
+        store.key(section: .recent, folder: nil, query: "", filter: .all)
+    }
+
+    private var liveList: DriveLiveList? { liveKey.flatMap { store.lists[$0] } }
+
+    /// Paired: the selected files that are on screen now, in screen order. Only these are ever acted on.
+    private var shownSelection: [String] {
+        guard ui.live else { return Array(ui.selected) }
+        return items.map(\.id).filter { ui.selected.contains($0) }
+    }
+
+    /// Where the files on screen are, for the trash confirm.
+    private var placeName: String {
+        if let folder { return folder.name }
+        if !ui.query.isEmpty { return "these search results" }
+        return ui.section.title
+    }
+
+    private var liveTaskID: String {
+        "\(DriveStore.connectionKey)|\(String(describing: liveKey))|\(store.currentAccountID ?? "")"
+    }
+
+    /// Read this list (and Quick access on the home) from the desktop. A search waits for typing to pause.
+    private func loadLive() async {
+        guard ui.live, let key = liveKey else { return }
+        store.shownKey = key
+        if !key.query.isEmpty {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+        }
+        await store.loadList(key)
+        if quickHome, let quick = quickKey, !Task.isCancelled { await store.loadList(quick) }
     }
 
     var body: some View {
@@ -29,6 +81,7 @@ struct DriveBrowser: View {
                 } else {
                     breadcrumb
                 }
+                if ui.live { liveLines }
                 if store.currentAccount != nil {
                     toolsRow
                     if showQuick { quickAccess }
@@ -52,6 +105,31 @@ struct DriveBrowser: View {
         }
         .animation(Motion.snappy, value: ui.selecting)
         .animation(Motion.snappy, value: ui.loading)
+        .task(id: liveTaskID) { await loadLive() }
+        .onAppear { if ui.live, let key = liveKey { store.shownKey = key } }
+    }
+
+    /// Paired: the last change's longer sentence, an upload's progress, and what the account says.
+    @ViewBuilder
+    private var liveLines: some View {
+        if let note = store.liveNote {
+            DriveLiveLine(text: note, action: "OK") { store.liveNote = nil }
+        }
+        if let progress = store.uploadProgress {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Uploading, \(Int(progress * 100)) percent sent")
+                    .font(KFont.ui(14, relativeTo: .footnote))
+                    .foregroundStyle(Palette.inkDim)
+                DriveStorageBar(fraction: progress)
+            }
+            .padding(14)
+            .kCard(radius: 16)
+            .accessibilityElement(children: .combine)
+        }
+        if isRoot, let account = store.currentAccount, account.broken {
+            HintLine(text: (account.problem ?? "Sign-in expired or revoked") + " Reconnect it in Kairos on your desktop.",
+                     symbol: "exclamationmark.circle", color: Palette.danger)
+        }
     }
 
     // MARK: Header
@@ -63,7 +141,7 @@ struct DriveBrowser: View {
                 headerButtons
             }
         } else {
-            FilesHeader(title: folder?.name ?? "Folder", subtitle: "\(items.count) items", back: { dismiss() }) {
+            FilesHeader(title: folder?.name ?? "Folder", subtitle: liveList?.load == .loading && items.isEmpty ? "Loading" : "\(items.count) items", back: { dismiss() }) {
                 headerButtons
             }
         }
@@ -116,6 +194,10 @@ struct DriveBrowser: View {
             .accessibilityLabel("Drive views")
 
             FilesSearchField(text: queryBinding, prompt: "Search Drive")
+        } else if ui.live && (store.accountsLoad == .loading || store.accountsLoad == .idle) {
+            DriveLiveLine(text: "Reading your Google accounts.")
+        } else if ui.live, case .failed(let why) = store.accountsLoad {
+            DriveLiveLine(text: why, action: "Try again") { Task { await store.loadAccountsLive() } }
         } else {
             FilesEmpty(
                 symbol: "person.crop.circle",
@@ -137,9 +219,20 @@ struct DriveBrowser: View {
 
     // MARK: Breadcrumb
 
+    /// Unpaired: the folders above this one. Paired: the folders opened to get here.
+    private var chain: [DriveFile] {
+        guard ui.live else { return folderID.map { store.ancestors(of: $0) } ?? [] }
+        var opened: [DriveFile] = []
+        for route in ui.path {
+            if case .folder(let id) = route, let item = store.file(id) { opened.append(item) }
+            if case .folder(let id) = route, id == folderID { break }
+        }
+        return opened
+    }
+
     private var breadcrumb: some View {
-        let chain = folderID.map { store.ancestors(of: $0) } ?? []
-        let top = chain.first?.sharedWithMe == true ? DriveSection.shared.title : DriveSection.myDrive.title
+        let chain = self.chain
+        let top = ui.live ? ui.section.title : (chain.first?.sharedWithMe == true ? DriveSection.shared.title : DriveSection.myDrive.title)
         return ScrollView(.horizontal) {
             HStack(spacing: 4) {
                 crumb(top, current: false) { ui.path = [] }
@@ -149,7 +242,11 @@ struct DriveBrowser: View {
                         .foregroundStyle(Palette.inkFaint)
                         .accessibilityHidden(true)
                     crumb(item.name, current: index == chain.count - 1) {
-                        ui.path = chain.prefix(index + 1).map { DriveRoute.folder($0.id) }
+                        if ui.live {
+                            if let at = ui.path.firstIndex(of: .folder(item.id)) { ui.path = Array(ui.path.prefix(at + 1)) }
+                        } else {
+                            ui.path = chain.prefix(index + 1).map { DriveRoute.folder($0.id) }
+                        }
                     }
                 }
             }
@@ -222,7 +319,7 @@ struct DriveBrowser: View {
         FilesGroup(label: "Quick access") {
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
-                    ForEach(Array(store.recent(limit: 10).enumerated()), id: \.element.id) { index, file in
+                    ForEach(Array(quickFiles.enumerated()), id: \.element.id) { index, file in
                         NavigationLink(value: DriveRoute.preview(file.id)) {
                             DriveQuickTile(file: file)
                         }
@@ -241,7 +338,20 @@ struct DriveBrowser: View {
 
     @ViewBuilder
     private var results: some View {
-        if ui.loading {
+        if ui.live, !isRoot, liveKey == nil {
+            DriveLiveLine(text: "This folder is not in the Drive you are browsing now.")
+        } else if ui.live, items.isEmpty, case .failed(let why) = liveList?.load {
+            DriveLiveLine(text: why, action: "Try again") { Task { await loadLive() } }
+        } else if ui.live && items.isEmpty && liveList?.load != .loaded {
+            HStack(spacing: 10) {
+                ProgressView().tint(Palette.goldText)
+                Text("Loading Drive")
+                    .font(KFont.ui(15, relativeTo: .subheadline))
+                    .foregroundStyle(Palette.inkDim)
+            }
+            .frame(maxWidth: .infinity, minHeight: 160)
+            .transition(.opacity)
+        } else if ui.loading {
             HStack(spacing: 10) {
                 ProgressView().tint(Palette.goldText)
                 Text("Loading Drive")
@@ -262,6 +372,37 @@ struct DriveBrowser: View {
             }
             if !others.isEmpty {
                 FilesGroup(label: "Files") { collection(others, offset: folders.count) }
+            }
+            if ui.live { liveFooter }
+        }
+    }
+
+    /// Paired: a failed refresh over a list already shown, a partial search, and Load more.
+    @ViewBuilder
+    private var liveFooter: some View {
+        if let list = liveList {
+            if !items.isEmpty, case .failed(let why) = list.load {
+                DriveLiveLine(text: why, action: "Try again") { Task { await loadLive() } }
+            }
+            if list.partial {
+                HintLine(text: "Google returned a partial result. Narrow the search.")
+            }
+            if list.next != nil, let key = liveKey {
+                Button {
+                    Haptics.tap()
+                    Task { await store.loadList(key, more: true) }
+                } label: {
+                    HStack(spacing: 8) {
+                        if list.loadingMore { ProgressView().tint(Palette.goldText) }
+                        Text(list.loadingMore ? "Loading more" : "Load more")
+                            .font(KFont.ui(15, .semibold, relativeTo: .subheadline))
+                            .foregroundStyle(Palette.goldText)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .kCard(radius: 16)
+                }
+                .buttonStyle(PressStyle())
+                .disabled(list.loadingMore)
             }
         }
     }
@@ -323,26 +464,28 @@ struct DriveBrowser: View {
         Button { ui.path.append(.details(file.id)) } label: { Label("Details", systemImage: "info.circle") }
         Button { ui.ask(.rename(file.id), text: file.name) } label: { Label("Rename", systemImage: "pencil") }
         Button { ui.sheet = .move([file.id]) } label: { Label("Move", systemImage: "folder") }
-        Button { ui.copy([file.id]) } label: { Label("Copy", systemImage: "doc.on.doc") }
+        if !(ui.live && file.isFolder) {
+            Button { ui.copy([file.id]) } label: { Label("Copy", systemImage: "doc.on.doc") }
+        }
         Button { ui.star([file.id], !file.starred) } label: {
             Label(file.starred ? "Unstar" : "Star", systemImage: file.starred ? "star.slash" : "star")
         }
         Button { ui.path.append(.sharing(file.id)) } label: { Label("Share", systemImage: "person.badge.plus") }
-        if !file.isFolder {
+        if !file.isFolder && !ui.live {
             Button { ui.download(file) } label: { Label("Download", systemImage: "arrow.down.circle") }
         }
         Divider()
         if file.trashed {
             Button { ui.restore([file.id]) } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
         } else {
-            Button(role: .destructive) { ui.trash([file.id]) } label: { Label("Move to trash", systemImage: "trash") }
+            Button(role: .destructive) { ui.askTrash([file.id], place: placeName) } label: { Label("Move to trash", systemImage: "trash") }
         }
     }
 
     // MARK: Selection toolbar
 
     private var selectionBar: some View {
-        let ids = Array(ui.selected)
+        let ids = shownSelection
         let none = ids.isEmpty
         return VStack(spacing: 6) {
             HStack {
@@ -366,11 +509,13 @@ struct DriveBrowser: View {
                 if ui.section == .trash {
                     DriveToolButton(symbol: "arrow.uturn.backward", title: "Restore") { ui.restore(ids) }
                 } else {
-                    DriveToolButton(symbol: "trash", title: "Trash", danger: true) { confirmTrash = true }
+                    DriveToolButton(symbol: "trash", title: "Trash", danger: true) {
+                        if ui.live { ui.askTrash(ids, place: placeName) } else { confirmTrash = true }
+                    }
                 }
             }
-            .disabled(none)
-            .opacity(none ? 0.45 : 1)
+            .disabled(none || ui.batchRunning)
+            .opacity(none || ui.batchRunning ? 0.45 : 1)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

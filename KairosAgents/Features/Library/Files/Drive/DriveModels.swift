@@ -4,6 +4,8 @@ import SwiftUI
 
 nonisolated enum DriveKind: String, CaseIterable, Hashable, Sendable {
     case folder, doc, sheet, form, slides, pdf, image, text
+    /// Any other file Google holds (a zip, a video, a drawing). Only the paired desktop's Drive has these.
+    case file
 
     var label: String {
         switch self {
@@ -15,6 +17,7 @@ nonisolated enum DriveKind: String, CaseIterable, Hashable, Sendable {
         case .pdf: "PDF"
         case .image: "Image"
         case .text: "Text file"
+        case .file: "File"
         }
     }
 
@@ -28,6 +31,7 @@ nonisolated enum DriveKind: String, CaseIterable, Hashable, Sendable {
         case .pdf: "doc.richtext"
         case .image: "photo"
         case .text: "doc.plaintext"
+        case .file: "doc"
         }
     }
 
@@ -37,7 +41,7 @@ nonisolated enum DriveKind: String, CaseIterable, Hashable, Sendable {
         case .doc, .image: Palette.working
         case .sheet: Palette.success
         case .pdf: Palette.danger
-        case .text: Palette.inkDim
+        case .text, .file: Palette.inkDim
         }
     }
 
@@ -86,6 +90,8 @@ nonisolated struct DriveMember: Identifiable, Hashable, Sendable {
     var audience: DriveAudience
     var address: String
     var access: DriveAccess
+    /// Paired: the role in Google's words when it is not one the phone can grant ("Organizer").
+    var roleLabel: String? = nil
 
     var title: String {
         switch audience {
@@ -125,6 +131,9 @@ nonisolated struct DriveQuestion: Identifiable, Hashable, Sendable {
     var text: String
     var type: DriveQuestionType
     var choices: [String] = []
+    /// Paired: Google's item id, and a label for an item that is not a question (a section, a picture).
+    var remoteID: String? = nil
+    var label: String? = nil
 }
 
 nonisolated struct DriveForm: Hashable, Sendable {
@@ -150,6 +159,12 @@ nonisolated struct DriveFile: Identifiable, Hashable, Sendable {
     var body: String = ""
     var sheets: [DriveSheetTab] = []
     var form: DriveForm? = nil
+    /// Paired: Google's own id (`id` is the account and this id together), its first parent folder,
+    /// its type, and the link the desktop gave to open it in Google.
+    var remoteID: String? = nil
+    var parentRemote: String? = nil
+    var mime: String = ""
+    var webLink: String? = nil
 
     var isFolder: Bool { kind == .folder }
 
@@ -183,9 +198,13 @@ nonisolated struct DriveAccount: Identifiable, Hashable, Sendable {
     var totalGB: Double
     var broken = false
     var canSend = true
+    /// Paired: the storage line as read from Google ("6.2 GB used of 15 GB"), or a plain sentence while it is not known.
+    var storageText: String? = nil
+    /// Paired: what the desktop says is wrong with this account.
+    var problem: String? = nil
 
     var letter: String { String(email.prefix(1)).uppercased() }
-    var storage: String { String(format: "%.1f GB used of %.0f GB", usedGB, totalGB) }
+    var storage: String { storageText ?? String(format: "%.1f GB used of %.0f GB", usedGB, totalGB) }
     var fraction: Double { totalGB > 0 ? min(1, usedGB / totalGB) : 0 }
 }
 

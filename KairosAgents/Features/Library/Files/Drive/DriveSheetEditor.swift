@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Edit a block of cells in a Google Sheet: pick a tab and a range, change cells, save.
+/// Edit a block of cells in a Google Sheet: pick a tab and a range, change cells, save. Paired, the cells are read
+/// only: the desktop gives only shown values, so the phone cannot tell a formula from its result, and saving would
+/// replace a formula with its value. The screen says to change cells in Google Sheets.
 struct DriveSheetEditor: View {
     let fileID: String
     @Environment(DriveUI.self) private var ui
@@ -15,6 +17,9 @@ struct DriveSheetEditor: View {
     @State private var problem: String?
     @State private var loadCount = 0
     @State private var started = false
+    // Paired: the tabs, and a read on its way.
+    @State private var liveTabs: [String] = []
+    @State private var reading = false
 
     private static let maxRows = 20
     private static let maxColumns = 12
@@ -25,7 +30,11 @@ struct DriveSheetEditor: View {
         ScrollView {
             if let file {
                 VStack(alignment: .leading, spacing: 16) {
-                    if file.sheets.count > 1 { tabs(file) }
+                    if ui.live {
+                        if liveTabs.count > 1 { tabs(titles: liveTabs) }
+                    } else if file.sheets.count > 1 {
+                        tabs(file)
+                    }
                     rangeBar
                     if let problem {
                         Label(problem, systemImage: "exclamationmark.circle")
@@ -33,9 +42,18 @@ struct DriveSheetEditor: View {
                             .foregroundStyle(Palette.danger)
                             .transition(.opacity)
                     }
+                    if ui.live && reading && loaded == nil {
+                        DriveLiveLine(text: "Reading the sheet.")
+                    }
                     if let loaded { gridView(loaded) }
-                    GoldButton(title: "Save cells", action: save)
-                        .padding(.top, 4)
+                    if ui.live {
+                        HintLine(text: "Change cells in Google Sheets. Your phone cannot tell a formula from the value it shows, so it does not save cells.")
+                    } else {
+                        GoldButton(title: "Save cells", action: save)
+                            .padding(.top, 4)
+                            .disabled(reading)
+                            .opacity(reading ? 0.6 : 1)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
@@ -54,7 +72,11 @@ struct DriveSheetEditor: View {
         .onAppear {
             guard !started else { return }
             started = true
-            load()
+            if ui.live {
+                Task { await startLive() }
+            } else {
+                load()
+            }
         }
         .onChange(of: tab) {
             load()
@@ -62,8 +84,68 @@ struct DriveSheetEditor: View {
     }
 
     private var tabTitle: String {
+        if ui.live {
+            guard tab < liveTabs.count else { return "Sheets editor" }
+            return "Sheets editor · \(liveTabs[tab])"
+        }
         guard let file, tab < file.sheets.count else { return "Sheets editor" }
         return "Sheets editor · \(file.sheets[tab].title)"
+    }
+
+    private func tabs(titles: [String]) -> some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
+                    FilterPill(title: title, symbol: "tablecells", on: tab == index) { tab = index }
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sheet tabs")
+    }
+
+    // MARK: Paired desktop
+
+    private func startLive() async {
+        reading = true
+        do {
+            liveTabs = try await ui.store.sheetTabsLive(fileID)
+            reading = false
+            load()
+        } catch {
+            reading = false
+            if error is CancellationError { return }
+            problem = "This sheet could not be read. " + error.plainWords
+        }
+    }
+
+    private func loadLive(_ range: DriveCellRange) {
+        guard tab < liveTabs.count else {
+            problem = liveTabs.isEmpty ? "This sheet has no tabs to show." : "Choose a tab"
+            return
+        }
+        let title = liveTabs[tab]
+        let text = normalized(rangeText)
+        let chosen = tab
+        reading = true
+        Task {
+            defer { reading = false }
+            do {
+                let cells = try await ui.store.cellsLive(fileID, tab: title, range: range)
+                guard chosen == tab, text == normalized(rangeText) else { return }
+                grid = cells
+                loaded = range
+                loadedText = text
+                loadedTab = chosen
+                loadCount += 1
+                problem = nil
+                Haptics.select()
+            } catch {
+                if error is CancellationError { return }
+                problem = "These cells could not be read. " + error.plainWords
+            }
+        }
     }
 
     // MARK: Tabs and range
@@ -143,15 +225,28 @@ struct DriveSheetEditor: View {
                 .foregroundStyle(Palette.inkFaint)
                 .frame(width: 36, height: 44)
             ForEach(0..<range.columns, id: \.self) { c in
-                TextField("", text: cell(r, c))
-                    .font(KFont.ui(15, r == 0 && range.top == 0 ? .semibold : .regular))
-                    .foregroundStyle(Palette.ink)
-                    .autocorrectionDisabled()
-                    .padding(.horizontal, 10)
-                    .frame(width: 112, height: 44)
-                    .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
-                    .accessibilityLabel("Row \(range.top + r + 1) column \(range.left + c + 1)")
+                if ui.live {
+                    Text(cell(r, c).wrappedValue)
+                        .font(KFont.ui(15, r == 0 && range.top == 0 ? .semibold : .regular))
+                        .foregroundStyle(Palette.ink)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .frame(width: 112, height: 44, alignment: .leading)
+                        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
+                        .accessibilityLabel("Row \(range.top + r + 1) column \(range.left + c + 1)")
+                        .accessibilityValue(cell(r, c).wrappedValue)
+                } else {
+                    TextField("", text: cell(r, c))
+                        .font(KFont.ui(15, r == 0 && range.top == 0 ? .semibold : .regular))
+                        .foregroundStyle(Palette.ink)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 10)
+                        .frame(width: 112, height: 44)
+                        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
+                        .accessibilityLabel("Row \(range.top + r + 1) column \(range.left + c + 1)")
+                }
             }
         }
     }
@@ -181,6 +276,10 @@ struct DriveSheetEditor: View {
             problem = "Choose up to 20 rows and 12 columns"
             return
         }
+        if ui.live {
+            loadLive(range)
+            return
+        }
         grid = ui.store.cells(fileID, tab: tab, range: range)
         loaded = range
         loadedText = normalized(rangeText)
@@ -199,6 +298,8 @@ struct DriveSheetEditor: View {
             problem = "Load the new range before saving"
             return
         }
+        // Paired, cells are never saved from the phone (see the type's note); the button is not drawn.
+        guard !ui.live else { return }
         ui.store.saveCells(fileID, tab: tab, range: range, values: grid)
         problem = nil
         Haptics.success()
