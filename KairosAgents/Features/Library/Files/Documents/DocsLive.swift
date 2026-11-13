@@ -1,5 +1,7 @@
 import SwiftUI
 import PDFKit
+import ImageIO
+import CryptoKit
 
 // The paired desktop behind Library documents, chat files and uploads (see Net/DocsAPI.swift for the routes).
 // Unpaired, nothing here runs and the screens show their sample stores exactly as before.
@@ -31,6 +33,9 @@ nonisolated enum DocsLiveCreateOutcome: Sendable {
     case refused(String)
     /// Sent, and the answer never came. Nothing may be offered again until the desktop is checked.
     case unconfirmed(DocsLivePendingCreate, String)
+    /// Sent, the answer never came, and the desktop does not have it yet. It may still land late, so it is
+    /// looked for again before anything is sent again.
+    case notFound(DocsLivePendingCreate, String)
 }
 
 /// A create whose answer was lost: what was sent, and which documents existed before it.
@@ -88,6 +93,10 @@ final class DocsLiveStore {
     /// An import whose answer never arrived: checked on the desktop before Import is offered again.
     var pendingImport: DocsLivePendingCreate?
     var pendingImportName = ""
+    /// An import whose answer never arrived and that was not on the desktop when checked: looked for again
+    /// before the next import is sent, so a late one is not made twice.
+    var lostImport: DocsLivePendingCreate?
+    var lostImportName = ""
 
     private var docsSerial = 0
     private var filesSerial = 0
@@ -110,11 +119,29 @@ final class DocsLiveStore {
     /// Paired right now: screens never show a sample item.
     static var paired: Bool { !Connection.shared.usesSampleData }
 
+    private init() {
+        // A new run of the app: copies a viewer left behind (a crash, the app killed) are removed before
+        // any viewer of this run can exist.
+        DocsLiveTempFiles.sweep()
+    }
+
     func stillLive(_ key: String) -> Bool {
         isLive && account == key && Self.accountKey == key
     }
 
-    private static let desktopChanged = "Your paired desktop changed. Try again."
+    static let desktopChanged = "Your paired desktop changed. Try again."
+
+    /// The document list is shown, but the last read of it failed: one line says so.
+    var docsStale: String? {
+        guard case .failed(let why) = docsLoad, !documents.isEmpty else { return nil }
+        return "This list may be out of date. " + why
+    }
+
+    /// The chat files are shown, but the last read of them failed.
+    var filesStale: String? {
+        guard case .failed(let why) = filesLoad, !groups.isEmpty else { return nil }
+        return "This list may be out of date. " + why
+    }
 
     func followConnection() {
         let wantLive = Self.paired
@@ -141,9 +168,13 @@ final class DocsLiveStore {
         busyDocs = []
         pendingImport = nil
         pendingImportName = ""
+        lostImport = nil
+        lostImportName = ""
         docsSerial += 1
         filesSerial += 1
         writeSerial += 1
+        // Unpaired, or another desktop or account: no copy of the old desktop's files stays on the phone.
+        DocsLiveTempFiles.sweep()
     }
 
     private func client() throws -> APIClient {
@@ -234,8 +265,8 @@ final class DocsLiveStore {
         read.groups.map { group in
             let files = group.files.map { dto -> ChatDocsFile in
                 let name = dto.name?.string ?? "File"
-                let size = dto.size?.double
-                return ChatDocsFile(id: group.sessionId + "|" + dto.id, name: name, bytes: Int(size ?? 0),
+                let size = byteCount(dto.size?.double)
+                return ChatDocsFile(id: group.sessionId + "|" + dto.id, name: name, bytes: size ?? 0,
                                     origin: DocsWire.origin(dto.origin), look: DocsWire.look(forName: name),
                                     available: dto.exists?.bool == true && dto.url?.string != nil,
                                     url: dto.url?.string, added: DocsWire.time(dto.createdAt), sizeKnown: size != nil)
@@ -243,6 +274,13 @@ final class DocsLiveStore {
             let title = (group.title ?? "").isEmpty ? "Untitled chat" : (group.title ?? "")
             return ChatDocsGroup(id: group.sessionId, title: title, files: files)
         }
+    }
+
+    /// A byte count from the desktop. One that is not a whole, sane number is treated as unknown rather than
+    /// trapping on the conversion.
+    nonisolated static func byteCount(_ value: Double?) -> Int? {
+        guard let value, value.isFinite, value >= 0, value < 1e15 else { return nil }
+        return Int(value)
     }
 
     static func ref(_ file: ChatDocsFile, in group: ChatDocsGroup) -> DocsLiveFileRef? {
@@ -333,7 +371,8 @@ final class DocsLiveStore {
         }
     }
 
-    /// Look for a create whose answer was lost.
+    /// Look for a create whose answer was lost. Not finding it is not final: it may still land, so the
+    /// caller keeps it and looks again before it sends anything new.
     func findCreated(_ pending: DocsLivePendingCreate, why: String = "") async -> DocsLiveCreateOutcome {
         let key = account
         let unsure = "Your desktop did not confirm this, and it could not be read to check. " +
@@ -341,12 +380,20 @@ final class DocsLiveStore {
         guard await loadDocuments(), stillLive(key) else { return .unconfirmed(pending, unsure) }
         let candidates = documents.filter { !pending.before.contains($0.id) && $0.title == (pending.title.isEmpty ? "Untitled" : pending.title) }
         for candidate in candidates.prefix(5) {
-            guard case .found(let doc) = await read(candidate.id), stillLive(key) else { continue }
-            if doc.content == pending.content { return .made(doc) }
+            switch await read(candidate.id) {
+            case .found(let doc):
+                guard stillLive(key) else { return .unconfirmed(pending, unsure) }
+                if doc.content == pending.content { return .made(doc) }
+            case .gone:
+                continue
+            case .failed:
+                // A candidate that could not be read may be the one: nothing is proven.
+                return .unconfirmed(pending, unsure)
+            }
         }
         guard stillLive(key) else { return .unconfirmed(pending, unsure) }
-        return .refused("Your desktop did not confirm this, and it is not in your documents. " +
-                        "Your text is still here, so you can try again. " + why)
+        return .notFound(pending, "Your desktop did not confirm this, and it is not in your documents yet. " +
+                         "Your text is still here. Trying again looks for it first, so it is not made twice. " + why)
     }
 
     /// Save the fields the person changed. The desktop keeps no revision, so the document is read first and
@@ -501,30 +548,182 @@ struct DocsLiveLine: View {
 
 // MARK: - The viewer for real files
 
-/// Temporary copies of opened files, for the share sheet. They live in the app's temporary folder (never
-/// backed up or synced) and are removed when the viewer closes.
+/// What the desktop said a file is, kept for the life of one viewer so a page that comes back is not asked again.
+nonisolated struct DocsLiveFileInfo: Sendable {
+    var kind: DocsFileKind
+    var size: Int
+}
+
+/// A decoded picture handed from the decoding task to the screen. A CGImage is immutable once made.
+nonisolated struct DocsLivePicture: @unchecked Sendable {
+    let image: CGImage
+}
+
+/// Temporary copies of the files one viewer opened, for the share sheet.
+///
+/// Each viewer has its own folder under `tmp/docs-viewer/`; inside it each file has a folder named from its
+/// desktop id (cleaned so it holds no path separator and no dot), holding one copy under the file's own name.
+/// A file is written once per viewer, so Share always hands over the bytes of the file on screen. Nothing is
+/// written after the viewer closed or the paired desktop changed; closing cancels every task the viewer started
+/// and removes its folder. Copies left by a crash are removed at the next start, and every copy is removed when
+/// the phone unpairs or another desktop or account is paired. The folder is excluded from backup.
 @Observable
 final class DocsLiveTempFiles {
-    private let folder = FileManager.default.temporaryDirectory
-        .appendingPathComponent("docs-viewer-" + UUID().uuidString, isDirectory: true)
-    private(set) var urls: [String: URL] = [:]
+    static let root = FileManager.default.temporaryDirectory.appendingPathComponent("docs-viewer", isDirectory: true)
 
-    func keep(_ data: Data, for ref: DocsLiveFileRef) {
-        let place = folder.appendingPathComponent(String(urls.count), isDirectory: true)
-        let safe = ref.name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        let url = place.appendingPathComponent(safe.isEmpty ? "file" : safe)
+    /// The paired desktop this viewer was opened for.
+    let account: String
+    private let folder = DocsLiveTempFiles.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    private(set) var urls: [String: URL] = [:]
+    private(set) var closed = false
+    @ObservationIgnored private var infos: [String: DocsLiveFileInfo] = [:]
+    @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
+
+    init(account: String) {
+        self.account = account
+    }
+
+    /// Open, and still showing the desktop it was opened for. Nothing is written otherwise.
+    var isOpen: Bool { !closed && DocsLiveStore.shared.stillLive(account) }
+
+    func info(_ id: String) -> DocsLiveFileInfo? { infos[id] }
+
+    func remember(_ info: DocsLiveFileInfo, for id: String) {
+        guard isOpen else { return }
+        infos[id] = info
+    }
+
+    /// Keep one copy of a file's bytes. A file already kept by this viewer is never written again.
+    @discardableResult
+    func keep(_ data: Data, for ref: DocsLiveFileRef) -> URL? {
+        guard isOpen else { return nil }
+        if let url = urls[ref.id] { return url }
+        let manager = FileManager.default
+        let place = folder.appendingPathComponent(Self.diskName(forID: ref.id), isDirectory: true)
+        let url = place.appendingPathComponent(Self.diskName(forFile: ref.name), isDirectory: false)
         do {
-            try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+            try Self.makeRoot()
+            try manager.createDirectory(at: place, withIntermediateDirectories: true)
             try data.write(to: url, options: [.atomic, .completeFileProtection])
             urls[ref.id] = url
+            return url
         } catch {
             // Without a copy the file still shows; only sharing is off.
+            try? manager.removeItem(at: place)
+            return nil
         }
     }
 
-    func clear() {
-        try? FileManager.default.removeItem(at: folder)
+    /// The bytes this viewer already kept for a file, read off the main actor.
+    func keptData(for id: String) async -> Data? {
+        guard let url = urls[id] else { return nil }
+        return await Task.detached(priority: .userInitiated) { try? Data(contentsOf: url) }.value
+    }
+
+    /// Start a task that belongs to this viewer: it is cancelled when the viewer closes.
+    func run(_ work: @escaping @MainActor () async -> Void) {
+        guard isOpen else { return }
+        let id = UUID()
+        tasks[id] = Task { [weak self] in
+            await work()
+            self?.tasks[id] = nil
+        }
+    }
+
+    /// The viewer closed, or its desktop is gone: cancel its tasks and remove everything it wrote.
+    func close() {
+        closed = true
+        for task in tasks.values { task.cancel() }
+        tasks = [:]
+        infos = [:]
         urls = [:]
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    /// Remove every viewer copy on the phone.
+    static func sweep() {
+        let manager = FileManager.default
+        try? manager.removeItem(at: root)
+        // Copies from earlier test builds, which used one folder per viewer at the top of tmp.
+        let tmp = manager.temporaryDirectory
+        if let names = try? manager.contentsOfDirectory(atPath: tmp.path(percentEncoded: false)) {
+            for name in names where name.hasPrefix("docs-viewer-") {
+                try? manager.removeItem(at: tmp.appendingPathComponent(name, isDirectory: true))
+            }
+        }
+    }
+
+    private static func makeRoot() throws {
+        var url = root
+        let manager = FileManager.default
+        if !manager.fileExists(atPath: url.path(percentEncoded: false)) {
+            try manager.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
+
+    /// A folder name made from a desktop file id. Letters, digits and "-" stay; every other byte becomes
+    /// "_" and two hex digits, so two ids never share a name, and no name holds "/", "." or "..".
+    nonisolated static func diskName(forID id: String) -> String {
+        var name = "f"
+        for byte in id.utf8 {
+            let keep = (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte) || byte == 0x2D
+            if keep {
+                name.append(Character(Unicode.Scalar(byte)))
+            } else {
+                name += String(format: "_%02X", byte)
+            }
+        }
+        guard name.utf8.count > 160 else { return name }
+        // A very long id: its SHA-256, still one name per id.
+        return "h" + SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The file's own name, safe as one path component, so the share sheet shows it.
+    nonisolated static func diskName(forFile name: String) -> String {
+        let cleaned = name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "\u{0}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty || cleaned.allSatisfy({ $0 == "." }) { return "file" }
+        guard cleaned.utf8.count > 200 else { return cleaned }
+        let ext = (cleaned as NSString).pathExtension
+        return ext.isEmpty || ext.utf8.count > 20 ? "file" : "file." + ext
+    }
+}
+
+/// Decoding a file's bytes for the screen, off the main actor.
+nonisolated enum DocsLiveDecode {
+    /// A picture scaled down to at most `maxPixels` on its long side, never decoded whole.
+    static func picture(_ data: Data, maxPixels: CGFloat) -> DocsLivePicture? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
+            return nil
+        }
+        var longSide = maxPixels
+        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+           let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+           width > 0, height > 0 {
+            longSide = min(maxPixels, CGFloat(max(width, height)))
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, Int(longSide)),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return DocsLivePicture(image: image)
+    }
+
+    /// Text for the screen: the start of it when it is long.
+    static func text(_ data: Data, limit: Int) -> (text: String, cut: Bool) {
+        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        guard text.count > limit else { return (text, false) }
+        return (String(text.prefix(limit)), true)
     }
 }
 
@@ -532,9 +731,12 @@ final class DocsLiveTempFiles {
 struct DocsLiveViewer: View {
     let files: [DocsLiveFileRef]
     @State var index: Int
-    @State private var temp = DocsLiveTempFiles()
+    @State private var temp = DocsLiveTempFiles(account: DocsLiveStore.shared.account)
+    private let store = DocsLiveStore.shared
 
     private var current: DocsLiveFileRef { files[min(max(0, index), files.count - 1)] }
+    /// The paired desktop is still the one these files came from.
+    private var desktopSame: Bool { store.stillLive(temp.account) }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -545,7 +747,7 @@ struct DocsLiveViewer: View {
                     .contentTransition(.numericText())
                 HStack(spacing: 4) {
                     Spacer()
-                    if let url = temp.urls[current.id] {
+                    if temp.isOpen, let url = temp.urls[current.id] {
                         ShareLink(item: url) {
                             Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44)
                         }
@@ -559,28 +761,37 @@ struct DocsLiveViewer: View {
             .padding(.top, 28)
             .padding(.horizontal, 12)
 
-            HStack(spacing: 10) {
-                Text(current.name).font(KFont.ui(13.5, .medium, relativeTo: .footnote)).foregroundStyle(Palette.ink).lineLimit(1)
-                Text(DocsLiveViewer.details(current)).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).lineLimit(1)
+            if temp.isOpen {
+                HStack(spacing: 10) {
+                    Text(current.name).font(KFont.ui(13.5, .medium, relativeTo: .footnote)).foregroundStyle(Palette.ink).lineLimit(1)
+                    Text(DocsLiveViewer.details(current)).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 40)
+                .kCard(radius: 14)
+                .padding(.horizontal, 16)
+
+                TabView(selection: $index) {
+                    ForEach(Array(files.enumerated()), id: \.offset) { offset, file in
+                        DocsLivePage(file: file, temp: temp)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
+                            .tag(offset)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+            } else {
+                DocsLiveLine(text: "Your paired desktop changed, so this file was closed. Open it again from the list.")
+                    .padding(.horizontal, 16)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 14)
-            .frame(height: 40)
-            .kCard(radius: 14)
-            .padding(.horizontal, 16)
-
-            TabView(selection: $index) {
-                ForEach(Array(files.enumerated()), id: \.offset) { offset, file in
-                    DocsLivePage(file: file, temp: temp)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
-                        .tag(offset)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
         }
         .animation(Motion.snappy, value: index)
-        .onDisappear { temp.clear() }
+        .onChange(of: desktopSame) { _, same in
+            if !same { temp.close() }
+        }
+        .onDisappear { temp.close() }
     }
 
     static func details(_ file: DocsLiveFileRef) -> String {
@@ -611,8 +822,13 @@ private struct DocsLivePage: View {
     @State private var phase: Phase = .loading
     @State private var fetching = false
     @State private var fetchProblem: String?
+    @State private var box: CGSize = .zero
+    @Environment(\.displayScale) private var displayScale
     private let store = DocsLiveStore.shared
     private static let textLimit = 200_000
+
+    /// This page's task may still change the screen or write: the viewer is open and the task was not cancelled.
+    private var stillOpen: Bool { temp.isOpen && !Task.isCancelled }
 
     var body: some View {
         ZStack {
@@ -660,6 +876,7 @@ private struct DocsLivePage: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { box = $0 }
         .task(id: file.id) { await open() }
     }
 
@@ -696,42 +913,66 @@ private struct DocsLivePage: View {
         }
     }
 
+    /// Bring a file the app cannot show over for the share sheet. The task belongs to the viewer: closing the
+    /// viewer cancels it, and it writes nothing once the viewer is closed.
     private func fetchForShare() {
-        guard !fetching else { return }
+        guard !fetching, temp.isOpen, temp.urls[file.id] == nil else { return }
         fetching = true
         fetchProblem = nil
-        Task {
+        let file = file
+        let temp = temp
+        let store = store
+        temp.run {
+            defer { fetching = false }
             do {
                 let data = try await store.fileBytes(file, download: true)
-                temp.keep(data, for: file)
-                if temp.urls[file.id] == nil { fetchProblem = "The file could not be kept for sharing." }
+                guard temp.isOpen, !Task.isCancelled else { return }
+                if temp.keep(data, for: file) == nil { fetchProblem = "The file could not be kept for sharing." }
             } catch is CancellationError {
             } catch {
+                guard temp.isOpen, !Task.isCancelled else { return }
                 fetchProblem = "The file could not be read. " + error.plainWords
             }
-            fetching = false
         }
     }
 
     private func open() async {
+        guard stillOpen else { return }
         do {
-            let info = try await store.fileInfo(file)
-            let kind = DocsFileKind(wire: info.kind)
-            let size = Int(info.size ?? Double(file.bytes))
-            switch kind {
+            let info: DocsLiveFileInfo
+            if let known = temp.info(file.id) {
+                info = known
+            } else {
+                let dto = try await store.fileInfo(file)
+                guard stillOpen else { return }
+                info = DocsLiveFileInfo(kind: DocsFileKind(wire: dto.kind), size: DocsLiveStore.byteCount(dto.size) ?? file.bytes)
+                temp.remember(info, for: file.id)
+            }
+            switch info.kind {
             case .markdown, .text, .html, .image, .pdf:
-                guard size <= DocsWire.maxBytes else {
-                    phase = .other(kind: kind, size: size)
+                guard info.size <= DocsWire.maxBytes else {
+                    phase = .other(kind: info.kind, size: info.size)
                     return
                 }
-                let data = try await store.fileBytes(file, download: false)
-                temp.keep(data, for: file)
-                phase = show(data, kind: kind, size: size)
+                let data: Data
+                if let kept = await temp.keptData(for: file.id) {
+                    guard stillOpen else { return }
+                    data = kept
+                } else {
+                    let fetched = try await store.fileBytes(file, download: false)
+                    guard stillOpen else { return }
+                    temp.keep(fetched, for: file)
+                    data = fetched
+                }
+                let shown = await show(data, kind: info.kind, size: info.size)
+                guard stillOpen else { return }
+                phase = shown
             default:
-                phase = .other(kind: kind, size: size)
+                phase = .other(kind: info.kind, size: info.size)
             }
         } catch is CancellationError {
         } catch {
+            guard stillOpen else { return }
             if case .server(status: 404, _) = error as? APIError {
                 phase = .failed("No longer available. This file is not on your desktop any more.")
             } else {
@@ -740,19 +981,23 @@ private struct DocsLivePage: View {
         }
     }
 
-    private func show(_ data: Data, kind: DocsFileKind, size: Int) -> Phase {
+    /// Pictures and text are decoded off the main actor; a picture is scaled to this page's size on screen.
+    private func show(_ data: Data, kind: DocsFileKind, size: Int) async -> Phase {
         switch kind {
         case .image:
-            if let image = UIImage(data: data) { return .image(image) }
+            let edge = max(box.width, box.height) * displayScale
+            let maxPixels = min(4096, edge > 0 ? max(256, edge) : 2048)
+            let picture = await Task.detached(priority: .userInitiated) { DocsLiveDecode.picture(data, maxPixels: maxPixels) }.value
+            if let picture { return .image(UIImage(cgImage: picture.image)) }
             return .other(kind: kind, size: size)
         case .pdf:
+            // PDFKit reads pages as they are drawn; the file is at most 25 MB.
             if let document = PDFDocument(data: data) { return .pdf(document) }
             return .other(kind: kind, size: size)
         default:
-            let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-            let cut = text.count > Self.textLimit
-            let shown = cut ? String(text.prefix(Self.textLimit)) : text
-            return kind == .markdown && !cut ? .markdown(shown) : .text(shown, cut: cut)
+            let limit = Self.textLimit
+            let read = await Task.detached(priority: .userInitiated) { DocsLiveDecode.text(data, limit: limit) }.value
+            return kind == .markdown && !read.cut ? .markdown(read.text) : .text(read.text, cut: read.cut)
         }
     }
 }

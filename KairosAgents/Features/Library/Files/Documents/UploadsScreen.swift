@@ -75,10 +75,11 @@ struct UploadsScreen: View {
         } message: {
             Text("The extension stays the same.")
         }
-        .sheet(item: $deleting) { file in
-            ConfirmSheet(title: "Delete \(file.fileName)?", detail: "This can't be undone.", confirm: "Delete file") {
-                deleteFile(file)
-            }
+        .confirmationDialog(deleteTitle, isPresented: deletingShown, titleVisibility: .visible) {
+            Button("Delete", role: .destructive, action: deleteFile)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This can't be undone.")
         }
         .sheet(item: $liveViewing) { item in
             DocsLiveViewer(files: item.files, index: item.index)
@@ -150,6 +151,9 @@ struct UploadsScreen: View {
         let lookup = liveUploads
         HintLine(text: "These are the files sent to your chats. To upload a file, attach it to a chat message. Your desktop cannot rename or delete them.")
             .padding(.horizontal, 4)
+        if let stale = live.filesStale {
+            DocsLiveLine(text: stale, action: "Try again") { Task { await live.loadFiles() } }
+        }
         if live.groups.isEmpty, live.filesLoad != .loaded {
             if case .failed(let why) = live.filesLoad {
                 DocsLiveLine(text: why, action: "Try again") { Task { await live.loadFiles() } }
@@ -218,10 +222,18 @@ struct UploadsScreen: View {
         Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
     }
 
+    private var deletingShown: Binding<Bool> {
+        Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
+    }
+
     private var countLine: String {
         guard searching else { return "Sorted by \(store.sort.rawValue.lowercased())" }
         let count = shown.count
         return count == 1 ? "1 match" : "\(count) matches"
+    }
+
+    private var deleteTitle: String {
+        "Delete \(deleting?.fileName ?? "this file")?"
     }
 
     // MARK: - Actions
@@ -246,8 +258,9 @@ struct UploadsScreen: View {
         toaster.say("Renamed to \(clean)")
     }
 
-    private func deleteFile(_ file: UploadedFile) {
-        guard !paired else { return }
+    /// Not paired only: paired, the desktop keeps uploads with their chat and this screen deletes nothing.
+    private func deleteFile() {
+        guard !paired, let file = deleting else { return }
         deleting = nil
         Haptics.thud()
         store.delete(file.id)

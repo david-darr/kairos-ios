@@ -224,6 +224,9 @@ struct LibraryFilesSection: View {
                 FilesEmpty(symbol: "doc.text", title: "No documents yet", detail: "Notes and drafts saved to your Library show up here.", action: "Create a document") { cover = .document(nil) }
                     .kCard(radius: 20)
             } else {
+                if DocsLiveStore.paired, let stale = live.docsStale {
+                    DocsLiveLine(text: stale, action: "Try again") { Task { await live.loadDocuments() } }
+                }
                 VStack(spacing: 0) {
                     ForEach(Array(docs.enumerated()), id: \.element.id) { index, doc in
                         Button {

@@ -18,6 +18,8 @@ nonisolated enum DocsLiveEditorState: Equatable, Sendable {
 nonisolated struct DocsLiveSent: Equatable, Sendable {
     var title: String?
     var content: String?
+    /// The title as typed when the save went out (a blank one is sent as "Untitled").
+    var typedTitle: String? = nil
 }
 
 /// The Library document editor, a full-screen cover: a title, a comfortable text area, Save, and Delete.
@@ -47,6 +49,9 @@ struct LibraryDocumentEditor: View {
     @State private var liveState: DocsLiveEditorState = .ready
     @State private var problem: String?
     @State private var pendingCreate: DocsLivePendingCreate?
+    /// A new document whose answer was lost and that was not on the desktop when checked. It may still land, so
+    /// it is looked for again before the next save sends anything.
+    @State private var lostCreate: DocsLivePendingCreate?
     @State private var unconfirmedSave: DocsLiveSent?
     @State private var unconfirmedDelete = false
     @State private var conflict: DocsLiveDoc?
@@ -99,13 +104,19 @@ struct LibraryDocumentEditor: View {
             }
         }
         .filesToasts(toaster)
-        .interactiveDismissDisabled(dirty || writing)
+        .interactiveDismissDisabled(dirty || (live && writing))
         .onAppear(perform: load)
         .confirmationDialog("Discard unsaved changes?", isPresented: $confirmDiscard, titleVisibility: .visible) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Keep editing", role: .cancel) {}
         }
-        .sheet(isPresented: $confirmDelete) {
+        .confirmationDialog("Delete this document?", isPresented: sampleDeleteShown, titleVisibility: .visible) {
+            Button("Delete", role: .destructive, action: deleteDocument)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This can't be undone.")
+        }
+        .sheet(isPresented: liveDeleteShown) {
             ConfirmSheet(title: "Delete \"\(deleteName)\"?", detail: "This can't be undone.", confirm: "Delete document") {
                 deleteDocument()
             }
@@ -117,10 +128,10 @@ struct LibraryDocumentEditor: View {
                 toaster.say("Your version is copied")
             }
             Button("Reload their version") {
-                title = latest.title.isEmpty ? "Untitled" : latest.title
+                title = latest.title
                 text = latest.content
-                savedTitle = title
-                savedText = text
+                savedTitle = latest.title
+                savedText = latest.content
                 toaster.say("Loaded the latest version")
             }
             Button("Cancel", role: .cancel) { rebase(to: latest) }
@@ -134,6 +145,15 @@ struct LibraryDocumentEditor: View {
     private var deleteName: String {
         let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return clean.isEmpty ? "Untitled" : clean
+    }
+
+    /// Not paired, delete asks exactly as it always did; paired, it asks with the stronger sheet.
+    private var sampleDeleteShown: Binding<Bool> {
+        Binding(get: { confirmDelete && !live }, set: { if !$0 { confirmDelete = false } })
+    }
+
+    private var liveDeleteShown: Binding<Bool> {
+        Binding(get: { confirmDelete && live }, set: { if !$0 { confirmDelete = false } })
     }
 
     private var conflictShown: Binding<Bool> {
@@ -198,7 +218,8 @@ struct LibraryDocumentEditor: View {
     }
 
     private var titleField: some View {
-        TextField("Title", text: $title)
+        // Paired, an empty desktop title shows as empty, so the form never starts out looking edited.
+        TextField(live ? "Untitled" : "Title", text: $title)
             .font(KFont.ui(26, .semibold, relativeTo: .title))
             .foregroundStyle(Palette.ink)
             .focused($field, equals: .title)
@@ -318,7 +339,7 @@ struct LibraryDocumentEditor: View {
 
     private func fill(_ doc: DocsLiveDoc) {
         documentID = doc.id
-        title = doc.title.isEmpty ? "Untitled" : doc.title
+        title = doc.title
         text = doc.content
         savedTitle = doc.title
         savedText = doc.content
@@ -334,14 +355,12 @@ struct LibraryDocumentEditor: View {
         savedText = doc.content
     }
 
-    /// The desktop answered this save: untouched-since-sending fields follow it, the base becomes it.
-    private func settle(_ doc: DocsLiveDoc, sentTitle: String?, sentText: String?) {
-        if let sentTitle, title == sentTitle { title = doc.title }
-        if sentTitle == nil, title == savedTitle { title = doc.title }
-        if let sentText, text == sentText { text = doc.content }
-        if sentText == nil, text == savedText { text = doc.content }
-        savedTitle = doc.title
-        savedText = doc.content
+    /// The desktop confirmed the fields that were sent: their base becomes the value sent (the desktop stores
+    /// exactly what it gets). A field that was not sent keeps the base it was filled from and its text is left
+    /// alone, so a newer desktop value in it is still caught as a conflict by the next save that sends it.
+    private func settle(sentTitle: String?, sentText: String?) {
+        if let sentTitle { savedTitle = sentTitle }
+        if let sentText { savedText = sentText }
     }
 
     private func leave() {
@@ -398,15 +417,27 @@ struct LibraryDocumentEditor: View {
         withAnimation(Motion.snappy) { saveState = .saving }
         guard let id = documentID else {
             let sentText = text
-            let typed = title
+            let typedTitle = title
+            let lost = lostCreate
             Task {
+                if let lost {
+                    // The last try may have landed late: look for it before anything new is sent.
+                    let found = await docs.findCreated(lost)
+                    if case .notFound = found {
+                        lostCreate = nil
+                    } else {
+                        withAnimation(Motion.snappy) { saveState = .idle }
+                        createFinished(found, sent: lost, typedTitle: nil)
+                        return
+                    }
+                }
                 let outcome = await docs.create(title: finalTitle, content: sentText)
-                saveState = .idle
-                createFinished(outcome, sentTitle: typed, sentText: sentText)
+                withAnimation(Motion.snappy) { saveState = .idle }
+                createFinished(outcome, sent: DocsLivePendingCreate(title: finalTitle, content: sentText, before: []), typedTitle: typedTitle)
             }
             return
         }
-        let sent = DocsLiveSent(title: title != savedTitle ? finalTitle : nil, content: text != savedText ? text : nil)
+        let sent = DocsLiveSent(title: title != savedTitle ? finalTitle : nil, content: text != savedText ? text : nil, typedTitle: title)
         let typedTitle = title
         let filledTitle = savedTitle
         let filledText = savedText
@@ -414,9 +445,9 @@ struct LibraryDocumentEditor: View {
             let outcome = await docs.save(id, title: sent.title, content: sent.content, filledTitle: filledTitle, filledContent: filledText)
             withAnimation(Motion.snappy) { saveState = .idle }
             switch outcome {
-            case .saved(let doc):
+            case .saved:
                 if sent.title != nil, title == typedTitle { title = finalTitle }
-                settle(doc, sentTitle: sent.title, sentText: sent.content)
+                settle(sentTitle: sent.title, sentText: sent.content)
                 withAnimation(Motion.snappy) { saveState = .saved }
                 Haptics.success()
                 toaster.say("Document saved")
@@ -435,21 +466,39 @@ struct LibraryDocumentEditor: View {
         }
     }
 
-    private func createFinished(_ outcome: DocsLiveCreateOutcome, sentTitle: String, sentText: String) {
+    /// How a new document's save ended. `sent` is what went out for the document that was made or looked for;
+    /// the base becomes exactly that, and anything typed since stays as an edit. `typedTitle` is the title as it
+    /// was typed, so a blank one sent as "Untitled" shows as "Untitled" unless the person typed again since.
+    private func createFinished(_ outcome: DocsLiveCreateOutcome, sent: DocsLivePendingCreate, typedTitle: String?) {
         switch outcome {
         case .made(let doc):
             pendingCreate = nil
-            problem = nil
+            lostCreate = nil
             documentID = doc.id
-            settle(doc, sentTitle: sentTitle, sentText: sentText)
+            if let typedTitle {
+                if title == typedTitle { title = sent.title }
+            } else if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, sent.title == "Untitled" {
+                title = sent.title
+            }
+            settle(sentTitle: sent.title, sentText: sent.content)
             saveState = .saved
             Haptics.success()
-            toaster.say("Document saved")
+            if dirty {
+                problem = "Your document is on your desktop. Your newer changes are not saved yet; save again to send them."
+                toaster.say("Document made")
+            } else {
+                problem = nil
+                toaster.say("Document saved")
+            }
         case .refused(let why):
             pendingCreate = nil
             problem = why
         case .unconfirmed(let pending, let why):
             pendingCreate = pending
+            problem = why
+        case .notFound(let pending, let why):
+            pendingCreate = nil
+            lostCreate = pending
             problem = why
         }
     }
@@ -461,8 +510,7 @@ struct LibraryDocumentEditor: View {
         Task {
             defer { checking = false }
             if let pending = pendingCreate {
-                let outcome = await docs.findCreated(pending)
-                createFinished(outcome, sentTitle: title, sentText: pending.content)
+                createFinished(await docs.findCreated(pending), sent: pending, typedTitle: nil)
                 return
             }
             if unconfirmedDelete, let id = documentID {
@@ -491,7 +539,8 @@ struct LibraryDocumentEditor: View {
                     let titleSent = sent.title.map { now.title == $0 } ?? true
                     let textSent = sent.content.map { now.content == $0 } ?? true
                     if titleSent && textSent {
-                        settle(now, sentTitle: sent.title, sentText: sent.content)
+                        if sent.title != nil, let typed = sent.typedTitle, title == typed { title = sent.title ?? title }
+                        settle(sentTitle: sent.title, sentText: sent.content)
                         problem = nil
                         saveState = .saved
                         toaster.say("Document saved")

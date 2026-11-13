@@ -20,6 +20,14 @@ struct DocsLiveViewing: Identifiable {
     let index: Int
 }
 
+/// Where the desktop's text search for the current query stands (paired).
+nonisolated enum DocsLiveSearchState: Equatable, Sendable {
+    case idle, searching
+    /// Answered; `capped` when the desktop sent its most (five), so more may match.
+    case done(capped: Bool)
+    case failed
+}
+
 /// The editor opened on a document, or on a new one.
 struct ChatDocsEditing: Identifiable {
     let id: String
@@ -50,6 +58,7 @@ struct ChatDocumentsScreen: View {
     @State private var liveViewing: DocsLiveViewing?
     /// Paired: the desktop's text search, id to snippet, for the current query.
     @State private var searchHits: [String: String] = [:]
+    @State private var searchState: DocsLiveSearchState = .idle
     /// Paired: an import whose answer never arrived lives in the store, so closing this screen cannot lose it.
     @State private var importProblem: String?
     @State private var checkingImport = false
@@ -160,11 +169,20 @@ struct ChatDocumentsScreen: View {
         }
         .task(id: paired ? needle : "") {
             searchHits = [:]
+            searchState = .idle
             guard paired, !needle.isEmpty else { return }
             let asked = needle
+            searchState = .searching
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            if let hits = await live.search(asked), !Task.isCancelled, asked == needle { searchHits = hits }
+            let hits = await live.search(asked)
+            guard !Task.isCancelled, asked == needle else { return }
+            if let hits {
+                searchHits = hits
+                searchState = .done(capped: hits.count >= 5)
+            } else {
+                searchState = .failed
+            }
         }
         .onChange(of: editing == nil) {
             // Back from the editor: the desktop's list is read again.
@@ -232,8 +250,36 @@ struct ChatDocumentsScreen: View {
         }
     }
 
+    /// Paired: one line above the documents when the list may be out of date, or the search is partial.
+    private var documentsNote: DocsLiveLine? {
+        if let stale = live.docsStale {
+            return DocsLiveLine(text: stale, action: "Try again") { Task { await live.loadDocuments() } }
+        }
+        guard searching else { return nil }
+        switch searchState {
+        case .failed:
+            return DocsLiveLine(text: "Your desktop's text search did not answer, so only titles are matched here.")
+        case .done(capped: true):
+            return DocsLiveLine(text: "Your desktop sends at most five text matches, so some documents that match may not be listed.")
+        default:
+            return nil
+        }
+    }
+
     @ViewBuilder
     private var documentsBody: some View {
+        if paired, let note = documentsNote {
+            VStack(alignment: .leading, spacing: 8) {
+                note
+                documentsList
+            }
+        } else {
+            documentsList
+        }
+    }
+
+    @ViewBuilder
+    private var documentsList: some View {
         let list = shownDocuments
         if paired, allDocuments.isEmpty, live.docsLoad != .loaded {
             if case .failed(let why) = live.docsLoad {
@@ -246,6 +292,8 @@ struct ChatDocumentsScreen: View {
                 editing = ChatDocsEditing(documentID: nil)
             }
             .kCard(radius: 20)
+        } else if list.isEmpty, paired, searchState == .searching {
+            DocsLiveLine(text: "Searching your documents…")
         } else if list.isEmpty {
             FilesEmpty(symbol: "magnifyingglass", title: "No documents match", detail: "Nothing matches \"\(needle)\". Chat files are listed below.")
                 .kCard(radius: 20)
@@ -284,6 +332,18 @@ struct ChatDocumentsScreen: View {
 
     @ViewBuilder
     private var filesBody: some View {
+        if paired, let stale = live.filesStale {
+            VStack(alignment: .leading, spacing: 8) {
+                DocsLiveLine(text: stale, action: "Try again") { Task { await live.loadFiles() } }
+                filesList
+            }
+        } else {
+            filesList
+        }
+    }
+
+    @ViewBuilder
+    private var filesList: some View {
         let groups = shownGroups
         if paired, allGroups.isEmpty, live.filesLoad != .loaded {
             if case .failed(let why) = live.filesLoad {
@@ -399,17 +459,38 @@ struct ChatDocumentsScreen: View {
         importProblem = nil
         withAnimation(Motion.snappy) { importStatus = "Importing \(name)…" }
         Task {
-            let read = ChatDocsImport.read(url)
+            let read = await Task.detached(priority: .userInitiated) { DocsLiveImportFile.read(url, name: name) }.value
             let text: String
             switch read {
-            case .success(let value):
+            case .text(let value):
                 text = value
-            case .failure(let error):
+            case .problem(let why):
                 withAnimation(Motion.snappy) { importStatus = nil }
-                toaster.say("Import failed: \(error.localizedDescription)")
+                importProblem = why
                 return
             }
-            let outcome = await live.create(title: DocsWire.importTitle(name), content: text, importing: name)
+            let title = DocsWire.importTitle(name)
+            if let lost = live.lostImport {
+                // The last import may have landed late: look for it before anything new is sent.
+                let lostName = live.lostImportName
+                switch await live.findCreated(lost) {
+                case .made(let doc):
+                    live.lostImport = nil
+                    if lost.title == title && lost.content == text {
+                        withAnimation(Motion.snappy) { importStatus = nil }
+                        importFinished(.made(doc), name: name)
+                        return
+                    }
+                    toaster.say("\(lostName) did reach your desktop")
+                case .notFound:
+                    live.lostImport = nil
+                case let other:
+                    withAnimation(Motion.snappy) { importStatus = nil }
+                    importFinished(other, name: lostName)
+                    return
+                }
+            }
+            let outcome = await live.create(title: title, content: text, importing: name)
             withAnimation(Motion.snappy) { importStatus = nil }
             importFinished(outcome, name: name)
         }
@@ -430,6 +511,11 @@ struct ChatDocumentsScreen: View {
             live.pendingImport = pending
             live.pendingImportName = name
             importProblem = why
+        case .notFound(let pending, let why):
+            live.pendingImport = nil
+            live.lostImport = pending
+            live.lostImportName = name
+            importProblem = "\(name) was not confirmed. " + why
         }
     }
 
@@ -442,6 +528,36 @@ struct ChatDocumentsScreen: View {
             checkingImport = false
             importFinished(outcome, name: name)
         }
+    }
+}
+
+/// What reading a picked file for the desktop gave.
+nonisolated enum DocsLiveImportRead: Sendable {
+    case text(String)
+    case problem(String)
+}
+
+/// Reading a picked text file to import it to the paired desktop: off the main actor, with a size cap, and
+/// a plain sentence for a file that is too large or is not UTF-8 text.
+nonisolated enum DocsLiveImportFile {
+    static let maxBytes = 5 * 1024 * 1024
+
+    static func read(_ url: URL, name: String) -> DocsLiveImportRead {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let tooLarge = DocsLiveImportRead.problem(
+            "\(name) was not imported. Files over 5 MB cannot be imported from this iPhone; import it on your desktop.")
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maxBytes { return tooLarge }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+            return .problem("\(name) was not imported. It could not be read on this iPhone.")
+        }
+        guard data.count <= maxBytes else { return tooLarge }
+        if let text = String(data: data, encoding: .utf8) { return .text(text) }
+        // UTF-16 only with its byte-order mark, so other text is never guessed at.
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]), let text = String(data: data, encoding: .utf16) {
+            return .text(text)
+        }
+        return .problem("\(name) was not imported. It is not UTF-8 text; save it as UTF-8 and import it again.")
     }
 }
 
