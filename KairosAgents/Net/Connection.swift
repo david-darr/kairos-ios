@@ -319,8 +319,18 @@ final class Connection {
         PushBridge.answer = { requestID, choice, text in
             await Connection.shared.answerFromNotification(requestID: requestID, choice: choice, text: text)
         }
-        PushBridge.ring = { ringID, answer in
-            await Connection.shared.answerRing(ringID, answer: answer)
+        PushBridge.ring = { ringID, answer, deadline in
+            await Connection.shared.answerRing(ringID, answer: answer, until: deadline)
+        }
+        PushBridge.ringState = { ringID in
+            await Connection.shared.ringStatus(ringID)
+        }
+        PushBridge.isPaired = {
+            Connection.shared.isPaired && Connection.shared.client != nil
+        }
+        PushBridge.liveBot = { botID in
+            let store = ChatStore.shared
+            return store.isSample ? nil : store.bots.first(where: { $0.id == botID })
         }
     }
 
@@ -383,16 +393,54 @@ final class Connection {
         }
     }
 
-    private func answerRing(_ ringID: String, answer: Bool) async {
-        guard let client else { return }
-        do {
-            if answer {
-                _ = try await client.ringAnswer(ringID, viaLink: true)
-            } else {
+    /// Answer or decline a ring. A ring can wake a closed app before the connection is up, so this starts it
+    /// when needed and keeps trying every two seconds until `deadline`. A later try that finds the ring already
+    /// answered (or declined) checks whether an earlier try got there first, so one answer never counts twice
+    /// and is never mistaken for an answer somewhere else.
+    private func answerRing(_ ringID: String, answer: Bool, until deadline: Date) async -> RingReply {
+        guard !isPreview else { return .sample }
+        if client == nil { start() }
+        guard state != .sample else { return .sample }
+        var tried = false
+        while !Task.isCancelled {
+            guard let client else { return .failed }
+            do {
+                if answer {
+                    let reply = try await client.ringAnswer(ringID, viaLink: true)
+                    return .sent(botID: reply.agentId, botName: reply.botName)
+                }
                 try await client.ringDecline(ringID)
+                return .sent(botID: nil, botName: nil)
+            } catch APIError.server(let code, _) where code == 404 || code == 409 {
+                // The ring is over on the desktop.
+                let now = try? await client.phoneRingState(ringID)
+                let outcome = now?.status ?? "expired"
+                if tried, outcome == (answer ? "answered" : "declined") {
+                    return .sent(botID: now?.agentId, botName: now?.botName)
+                }
+                return .ended(outcome)
+            } catch APIError.unauthorized {
+                tokenRefused()
+                return .failed
+            } catch {
+                // Not reached, or the reply was lost: an earlier try may still have counted.
+                tried = true
+                note(error)
             }
+            guard !Task.isCancelled, Date().addingTimeInterval(2) < deadline else { return .failed }
+            try? await Task.sleep(for: .seconds(2))
+        }
+        return .failed
+    }
+
+    /// `GET /api/rings/{id}`: where a ring stands. nil when there is no client or it could not be read.
+    private func ringStatus(_ ringID: String) async -> String? {
+        guard let client else { return nil }
+        do {
+            return try await client.phoneRingState(ringID).status
         } catch {
             note(error)
+            return nil
         }
     }
 }
