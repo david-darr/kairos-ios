@@ -24,6 +24,13 @@ nonisolated enum NativeLink: Hashable, Sendable {
     /// Home, where usage, spend and the glance row live.
     case home
     case desktop
+    /// Every bot and team (the team widget when it cannot know which team).
+    case allBots
+
+    /// The id a widget or a push uses for Kip when it cannot know the desktop's own id.
+    /// On a paired phone it means the paired desktop's Kip, found when the link is followed, unless the desktop
+    /// has a bot whose own id is "kip" (desktop ids are generated, so that is not expected).
+    static let kip = "kip"
 
     static let scheme = "kairos-agents"
 
@@ -46,6 +53,7 @@ nonisolated enum NativeLink: Hashable, Sendable {
         case .addedTab(let title): parts.host = "tab"; parts.path = "/" + title
         case .home: parts.host = "home"
         case .desktop: parts.host = "desktop"
+        case .allBots: parts.host = "bots"
         }
         return parts.url ?? URL(string: "kairos-agents://home")!
     }
@@ -70,6 +78,7 @@ nonisolated enum NativeLink: Hashable, Sendable {
         case "tab" where !value.isEmpty: self = .addedTab(value)
         case "home": self = .home
         case "desktop": self = .desktop
+        case "bots": self = .allBots
         default: return nil
         }
     }

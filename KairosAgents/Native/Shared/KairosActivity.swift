@@ -80,6 +80,10 @@ nonisolated struct KairosActivityAttributes: ActivityAttributes {
         var startedAt: Date = .now
         /// Calls only.
         var muted: Bool = false
+        /// The step before this one, drawn dimmed above it as the line moves on. Set by the phone.
+        var previous: String? = nil
+        /// Set only by the extension when the activity went stale: drawn as not connected.
+        var stale: Bool? = nil
     }
 
     /// The run, ring or session id the desktop knows it by.
@@ -101,6 +105,9 @@ nonisolated struct KairosActivityAttributes: ActivityAttributes {
 }
 
 extension KairosActivityAttributes.ContentState {
+    /// The state language every surface shares.
+    var mood: BotMood { BotMood(phase, stale: stale == true) }
+
     /// Words for the end states, matching the reference: "Done: ..." and "Couldn't finish: ...".
     func headline(for attributes: KairosActivityAttributes, hidingTitles: Bool) -> String {
         let title = hidingTitles ? attributes.kind.label : attributes.title

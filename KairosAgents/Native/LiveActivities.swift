@@ -54,6 +54,11 @@ final class LiveActivities {
 
     func update(_ id: String, _ state: State) {
         guard let activity = activity(id) else { return }
+        var state = state
+        // The step line moves on: the step it replaces stays, dimmed, above it.
+        if let old = running[id], !old.step.isEmpty, old.step != state.step, state.phase == .running {
+            state.previous = old.step
+        }
         running[id] = state
         Task {
             await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(15 * 60),
@@ -63,11 +68,21 @@ final class LiveActivities {
 
     /// End with the Done or Couldn't finish card, which leaves the Lock Screen on its own: five minutes
     /// for done or stopped, thirty for failed. The desktop's end push uses the same times.
+    ///
+    /// A state that is not an end (the phone only saw the work disappear while it was away, so it does not know
+    /// how it ended) ends quietly instead: no Done card, nothing left behind. An activity the desktop's push
+    /// already ended keeps the card that push gave it.
     func finish(_ id: String, _ state: State) {
         guard let activity = activity(id) else { return }
         running[id] = nil
         tokenTasks[id]?.cancel()
         tokenTasks[id] = nil
+        guard state.phase.ended else {
+            if activity.activityState == .active || activity.activityState == .stale {
+                Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            }
+            return
+        }
         let linger: TimeInterval = state.phase == .failed ? 30 * 60 : 5 * 60
         Task { await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(Date().addingTimeInterval(linger))) }
     }
@@ -106,9 +121,12 @@ final class LiveActivities {
     // MARK: Calls
 
     func startCall(bot: Bot, ringID: String) {
+        // An answered ring whose bot the desktop has not named yet has no id. Its link must never read as "kip"
+        // (that is Kip): "_" is no bot, so a tap shows the running call, and after it ends opens no one.
+        let link = NativeLink.call(bot.id.isEmpty ? "_" : bot.id).url.absoluteString
         let attributes = KairosActivityAttributes(
             id: ringID, kind: .call, title: "Call with \(bot.name)", botID: bot.id, botName: bot.name,
-            botColor: bot.isKip ? nil : bot.colorHex, botShape: bot.shape.rawValue, link: NativeLink.call(bot.id).url.absoluteString)
+            botColor: bot.isKip ? nil : bot.colorHex, botShape: bot.shape.rawValue, link: link)
         if begin(attributes, State(step: "On a call", detail: "Kairos call", startedAt: .now)) { callActivityID = ringID }
     }
 

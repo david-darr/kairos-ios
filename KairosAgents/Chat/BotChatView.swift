@@ -105,6 +105,10 @@ private struct BotChatScreen: View {
             case "call": router.debugScreen = nil; showCall = true
             default: break
             }
+            // Opened by an Ask link (the Ask Kip widget): the keyboard comes up once the push has settled.
+            if NativeLinks.shared.takeAskFocus(for: chat.botID) {
+                Task { try? await Task.sleep(for: .milliseconds(450)); typing = true }
+            }
         }
         .onChange(of: chat.notice) {
             guard let notice = chat.notice else { return }

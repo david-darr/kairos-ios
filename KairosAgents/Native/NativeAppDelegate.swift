@@ -66,7 +66,13 @@ enum WidgetSync {
             WidgetCenter.shared.reloadAllTimelines()
             return
         }
-        WidgetSnapshotStore.write(snapshot ?? NativeSample.snapshot())
+        if let snapshot {
+            WidgetSnapshotStore.write(snapshot)
+        } else if Connection.shared.usesSampleData {
+            // Made-up bots and work only on a phone that is not paired. A paired phone keeps what it last
+            // stored until the connection publishes real numbers.
+            WidgetSnapshotStore.write(NativeSample.snapshot())
+        }
         WidgetCenter.shared.reloadAllTimelines()
     }
 }
@@ -78,15 +84,139 @@ final class NativeLinks {
 
     var pending: NativeLink?
     var showSettings = false
+    @ObservationIgnored private var waiting: Task<Void, Never>?
+    /// The bot whose chat an Ask link just opened, so that chat can bring the keyboard up (`takeAskFocus`).
+    @ObservationIgnored private var askFocus: (botID: String, at: Date)?
 
+    /// Widgets and some pushes name Kip as "kip" and the sample team as "content-team". On a paired phone a link
+    /// is resolved against the paired desktop's own bots when it is followed: "kip" is the desktop's Kip, and a bot
+    /// the desktop does not have opens Home instead of a screen for nothing. Not paired, every link goes where it
+    /// always went.
+    ///
+    /// Which links may wait for the bot list (paired only):
+    /// - ring: never. Answered at once by `CallCenter`.
+    /// - call: never. With a call already running it only shows that call. With the list there it dials at once;
+    ///   without it, it waits as the bot's own screen (Call is one tap there) and never dials later.
+    /// - bot, ask, approval: may wait, up to 20 seconds, for the list (or for one fresh read when the list there
+    ///   does not have the bot). The wait is dropped the moment the person moves, a sheet or cover comes up,
+    ///   another link is tapped or the account changes; when it runs out nothing happens.
+    /// - chat, new chat, area, tab, home, desktop, all bots: never. They name no bot.
     func open(_ link: NativeLink) {
+        cancelWaiting()
+        // A call that is already running is only ever shown: a link never hangs it up and never dials anyone else.
+        if case .call = link, CallCenter.shared.session != nil {
+            CallCenter.shared.showingCall = true
+            return
+        }
+        let store = ChatStore.shared
+        guard !store.isSample, Self.namesBot(link) else {
+            deliver(link)
+            return
+        }
+        if store.homeLoaded, let resolved = Self.resolve(link, in: store) {
+            deliver(resolved)
+            return
+        }
+        wait(for: link, in: store)
+    }
+
+    /// The person moved (another screen, tab or sheet): a link still waiting for the bot list is dropped.
+    func cancelWaiting() {
+        waiting?.cancel()
+        waiting = nil
+    }
+
+    /// Wait for the bot list, then follow the link as a screen only. A call never dials from here.
+    private func wait(for link: NativeLink, in store: ChatStore) {
+        let generation = store.generation
+        let presenting = Self.presenting
+        let readAgain = store.homeLoaded
+        let screen = Self.asScreen(link)
+        let task = Task { [weak self] in
+            // The list is there but does not have this bot: it may be older than the desktop's, so read it once more.
+            if readAgain { await store.refreshHome() }
+            let deadline = Date().addingTimeInterval(20)
+            while !Task.isCancelled, !store.homeLoaded, Date() < deadline, Self.stillTrying,
+                  store.generation == generation, Self.presenting == presenting {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.waiting = nil
+            // Another account, a sheet or cover that came up, or no list in time: nothing happens.
+            guard !store.isSample, store.generation == generation, Self.presenting == presenting, store.homeLoaded else { return }
+            self.deliver(Self.resolve(screen, in: store) ?? .home)
+        }
+        waiting = task
+    }
+
+    private func deliver(_ link: NativeLink) {
         switch link {
         case .ring(let ring, let bot):
             CallCenter.shared.answerFromLink(ringID: ring, botID: bot)
         case .call(let bot):
-            CallCenter.shared.startCall(with: SampleData.bot(bot))
+            // The same path a call from the bot's own screen takes: CallCenter with the bot itself.
+            let store = ChatStore.shared
+            CallCenter.shared.startCall(with: store.isSample ? SampleData.bot(bot) : store.bot(bot))
+        case .ask(let bot):
+            askFocus = (bot, Date())
+            pending = link
         default:
             pending = link
+        }
+    }
+
+    /// True once, when the chat of `botID` opens right after an Ask link: that chat brings the keyboard up.
+    /// Any other way of opening a chat answers false.
+    func takeAskFocus(for botID: String) -> Bool {
+        guard let askFocus, askFocus.botID == botID, Date().timeIntervalSince(askFocus.at) < 5 else { return false }
+        self.askFocus = nil
+        return true
+    }
+
+    /// Links that carry a bot id. A ring's bot comes from the ring itself and is left to `CallCenter`.
+    private static func namesBot(_ link: NativeLink) -> Bool {
+        switch link {
+        case .bot, .ask, .call, .approval: true
+        default: false
+        }
+    }
+
+    /// What a link shows when it had to wait: a call becomes its bot's screen, where Call is one tap.
+    private static func asScreen(_ link: NativeLink) -> NativeLink {
+        if case .call(let id) = link { return .bot(id) }
+        return link
+    }
+
+    /// The connection is still on its way (or there), so the bot list can still come.
+    private static var stillTrying: Bool {
+        switch Connection.shared.state {
+        case .signedOut, .sample: false
+        default: true
+        }
+    }
+
+    /// Whether any sheet or full-screen cover is up, in any window. A change while a link waits drops the link.
+    private static var presenting: Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .contains { $0.rootViewController?.presentedViewController != nil }
+    }
+
+    /// The link with its bot id swapped for the paired desktop's own, or nil when that bot is not there.
+    /// A real bot whose id is "kip" keeps its own links; only otherwise does "kip" mean the desktop's Kip.
+    static func resolve(_ link: NativeLink, in store: ChatStore) -> NativeLink? {
+        func real(_ id: String) -> String? {
+            if store.bots.contains(where: { $0.id == id }) { return id }
+            if id == NativeLink.kip { return store.kip?.id }
+            return nil
+        }
+        switch link {
+        case .bot(let id): return real(id).map { NativeLink.bot($0) }
+        case .ask(let id): return real(id).map { NativeLink.ask($0) }
+        case .call(let id): return real(id).map { NativeLink.call($0) }
+        case .approval(let request, let id): return real(id).map { NativeLink.approval(requestID: request, botID: $0) }
+        default: return link
         }
     }
 }
@@ -124,6 +254,12 @@ private struct NativeLinksModifier: ViewModifier {
                 links.pending = nil
                 follow(link)
             }
+            // The person moved on their own: a link still waiting for the bot list must not move them again.
+            .onChange(of: router.paths) { links.cancelWaiting() }
+            .onChange(of: router.tab) { links.cancelWaiting() }
+            .onChange(of: router.sheet) { links.cancelWaiting() }
+            .onChange(of: calls.showingCall) { links.cancelWaiting() }
+            .onChange(of: links.showSettings) { links.cancelWaiting() }
             .onAppear {
                 NativeServices.start()
                 if let link = links.pending { links.pending = nil; follow(link) }
@@ -148,6 +284,7 @@ private struct NativeLinksModifier: ViewModifier {
         case .addedTab(let title): router.push(.page(title))
         case .home: router.paths[.home] = []; router.select(.home)
         case .desktop: router.paths[.desktop] = []; router.select(.desktop)
+        case .allBots: router.paths[.home] = []; router.push(.allBots, on: .home)
         case .ring, .call: break
         }
     }

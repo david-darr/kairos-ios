@@ -7,6 +7,7 @@ enum NativeDebug {
         if name.hasPrefix("activity-"), let kind = ActivityKind(rawValue: String(name.dropFirst("activity-".count))) {
             return AnyView(ActivityKindPage(kind: kind))
         }
+        if let view = stateView(name) { return view }
         switch name {
         case "activity-ends": return AnyView(ActivityEndsPage())
         case "activity-private": return AnyView(ActivityPrivatePage())
@@ -28,6 +29,25 @@ enum NativeDebug {
         case "settings": return AnyView(NotificationSettingsScreen())
         case "call": return AnyView(CallView(bot: SampleData.kip))
         case "call-pill": return AnyView(CallPillPage())
+        default: return nil
+        }
+    }
+
+    /// One picture per state: `activity-state-<state>`, `widgets-<small|medium|large|lock>-<state>`,
+    /// where the state is working, needs, done, failed, idle or offline. Widgets also have `stale`:
+    /// work a paired phone last saw 20 minutes ago.
+    private static func stateView(_ name: String) -> AnyView? {
+        let parts = name.split(separator: "-").map(String.init)
+        guard parts.count == 3 else { return nil }
+        let stale = parts[0] == "widgets" && parts[2] == "stale"
+        let found: BotMood? = stale ? BotMood.offline : BotMood(galleryName: parts[2])
+        guard let mood = found else { return nil }
+        switch (parts[0], parts[1]) {
+        case ("activity", "state"): return AnyView(ActivityStatePage(mood: mood))
+        case ("widgets", "small"): return AnyView(WidgetStatePage(family: .systemSmall, mood: mood, stale: stale))
+        case ("widgets", "medium"): return AnyView(WidgetStatePage(family: .systemMedium, mood: mood, stale: stale))
+        case ("widgets", "large"): return AnyView(WidgetStatePage(family: .systemLarge, mood: mood, stale: stale))
+        case ("widgets", "lock"): return AnyView(LockWidgetStatePage(mood: mood, stale: stale))
         default: return nil
         }
     }

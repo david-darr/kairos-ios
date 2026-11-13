@@ -16,6 +16,13 @@ enum NativeGlue {
     private static var publishQueued = false
     /// Turns whose chat the person opened: their Live Activity was ended and does not come back.
     private static var opened: Set<String> = []
+    /// Each running turn's step and the one before it, so a widget can move the line on.
+    private static var steps: [String: (now: String, before: String?)] = [:]
+    /// The newest turn that finished or failed, for the widgets' end card. Only an end the desktop reported:
+    /// a turn the phone saw disappear while it was away reaches `runEnded` still "processing" and leaves no card.
+    private static var lastEnded: WidgetSnapshot.Ended?
+    /// `ChatStore.generation` when the widgets were last written, so another account's work is dropped.
+    private static var accountGeneration: Int?
 
     /// Called once at launch, before any screen is up.
     static func join() {
@@ -26,7 +33,14 @@ enum NativeGlue {
         ConnectionSeam.runChanged = { run in follow(run) }
         ConnectionSeam.runEnded = { run in
             live[run.turnID] = nil
+            steps[run.turnID] = nil
             opened.remove(run.turnID)
+            if run.status == "done" || run.status == "failed" {
+                let who = face(run)
+                lastEnded = WidgetSnapshot.Ended(
+                    title: title(run), botName: who.name, botColor: who.color, botShape: who.shape,
+                    failed: run.status == "failed", at: .now, link: link(run), isKip: isKip(run))
+            }
             LiveActivities.shared.finish(run.turnID, state(run))
             publishSoon()
         }
@@ -60,6 +74,10 @@ enum NativeGlue {
     private static func follow(_ run: ConnectionSeam.RunInfo) {
         live[run.turnID] = run
         threads[run.turnID] = run.chatID
+        if !run.step.isEmpty {
+            let known = steps[run.turnID]
+            if known?.now != run.step { steps[run.turnID] = (now: run.step, before: known?.now) }
+        }
         if run.botID == nil { chats[run.turnID] = run.chatID }
         if !opened.contains(run.turnID) { LiveActivities.shared.begin(attributes(run), state(run)) }
         publishSoon()
@@ -94,6 +112,10 @@ enum NativeGlue {
     private static func state(_ run: ConnectionSeam.RunInfo) -> LiveActivities.State {
         // Keep the start time (and anything else already showing) across updates.
         var state = LiveActivities.shared.running[run.turnID] ?? LiveActivities.State(step: "")
+        if LiveActivities.shared.running[run.turnID] == nil, let started = ChatStore.shared.runs[run.chatID]?.startedAt {
+            // The desktop's own start time, so the timer is true from the first frame.
+            state.startedAt = started
+        }
         state.step = run.step.isEmpty ? "Working" : run.step
         switch run.status {
         case "done":
@@ -116,6 +138,11 @@ enum NativeGlue {
     private static func link(_ run: ConnectionSeam.RunInfo) -> String {
         if let botID = run.botID { return NativeLink.bot(botID).url.absoluteString }
         return NativeLink.chat(run.chatID).url.absoluteString
+    }
+
+    private static func isKip(_ run: ConnectionSeam.RunInfo) -> Bool {
+        guard let botID = run.botID else { return false }
+        return ChatStore.shared.kip?.id == botID
     }
 
     /// The face a turn is drawn with: the bot's own, or Kip's ink body for a model chat.
@@ -141,6 +168,13 @@ enum NativeGlue {
     /// they come from the desktop and include work this phone has not opened.
     private static func publishWidgets() {
         let store = ChatStore.shared
+        if let seen = accountGeneration, seen != store.generation {
+            // Unpaired, or paired with another desktop: nothing of the last account may show or be tapped.
+            live = [:]
+            steps = [:]
+            lastEnded = nil
+        }
+        accountGeneration = store.generation
         guard !store.isSample else {
             WidgetSync.publish()
             return
@@ -151,7 +185,12 @@ enum NativeGlue {
             let who = face(run)
             return WidgetSnapshot.Running(
                 id: run.turnID, title: title(run), botName: who.name, botColor: who.color, botShape: who.shape,
-                progress: nil, step: run.step, link: link(run))
+                progress: nil, step: run.step, link: link(run), botID: run.botID, isKip: isKip(run),
+                waiting: run.waitingOnPerson, startedAt: store.runs[run.chatID]?.startedAt,
+                previousStep: steps[run.turnID]?.before)
+        }
+        if let ended = lastEnded, Date() < ended.at.addingTimeInterval(WidgetSnapshot.Ended.shownFor) {
+            snapshot.ended = ended
         }
         snapshot.needsYou = runs.filter(\.waitingOnPerson).map { run in
             let who = face(run)
