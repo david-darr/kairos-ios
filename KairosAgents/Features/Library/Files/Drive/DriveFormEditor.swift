@@ -18,6 +18,7 @@ struct DriveFormEditor: View {
     @State private var liveLoad: DriveLiveLoad = .idle
     @State private var titleBase = ""
     @State private var liveNote: String?
+    @State private var moreResponses = false
 
     private var file: DriveFile? { ui.store.file(fileID) }
     private var form: DriveForm? {
@@ -155,11 +156,12 @@ struct DriveFormEditor: View {
                 Haptics.tap()
                 if ui.live {
                     guard let itemID = question.remoteID else { return }
+                    let shown = question.text
                     ui.sheet = .confirm(DriveLiveConfirm(
                         title: "Remove question?",
-                        detail: "\"\(question.text)\" and its answers leave the form in Google.",
+                        detail: "\"\(shown)\" and its answers leave the form in Google.",
                         confirm: "Remove"
-                    ) { run({ await ui.store.removeQuestionLive(fileID, itemID: itemID) }, done: "Question removed") })
+                    ) { run({ await ui.store.removeQuestionLive(fileID, itemID: itemID, title: shown) }, done: "Question removed") })
                 } else {
                     removing = question
                 }
@@ -280,6 +282,9 @@ struct DriveFormEditor: View {
                 if let responses {
                     responseList(responses)
                         .transition(.opacity)
+                    if ui.live && moreResponses {
+                        HintLine(text: "Showing the first \(responses.count) responses. See the rest in Google Forms.")
+                    }
                 }
             }
             .padding(14)
@@ -332,7 +337,7 @@ struct DriveFormEditor: View {
 
     /// One form change; the form is read again after, and the outcome said plainly.
     private func run(_ change: @escaping () async -> (DriveLiveOutcome, DriveDTOForm?), done: String,
-                     after: @escaping (DriveLiveOutcome) -> Void = { _ in }) {
+                     after: @escaping (DriveLiveOutcome, DriveDTOForm?) -> Void = { _, _ in }) {
         guard !working else {
             ui.toaster.say("Wait for the last change to finish")
             return
@@ -340,7 +345,7 @@ struct DriveFormEditor: View {
         liveNote = nil
         Task {
             let (outcome, read) = await change()
-            after(outcome)
+            after(outcome, read)
             if let read { show(read) }
             switch outcome {
             case .done:
@@ -355,56 +360,30 @@ struct DriveFormEditor: View {
         }
     }
 
-    /// Only a changed title is sent. If the desktop's title changed since this field was filled, nothing is sent:
-    /// the person's text stays and a second save sends it on purpose.
+    /// Only a changed title is sent, and only if the desktop's title is still the one this field was filled from
+    /// (the store reads it just before sending). If it changed, nothing is sent: the person's text stays and a
+    /// second save sends it on purpose.
     private func saveTitleLive(_ clean: String) {
         guard clean != titleBase.trimmingCharacters(in: .whitespacesAndNewlines) else {
             ui.toaster.say("The title has not changed")
             return
         }
-        guard !working else { return }
         let filledFrom = titleBase
-        liveNote = nil
-        Task {
-            guard let now = try? await ui.store.formLive(fileID) else {
-                liveNote = "The title was not saved: the form could not be read first. Try again."
-                return
-            }
-            let desktop = now.info?.title ?? ""
-            liveRead = now
-            if desktop != filledFrom {
+        run({ await ui.store.formTitleLive(fileID, title: clean, filledFrom: filledFrom) }, done: "Form title saved") { outcome, read in
+            if outcome == .done {
+                titleBase = clean
+            } else if let desktop = read?.info?.title, desktop != filledFrom {
                 titleBase = desktop
-                Haptics.thud()
-                liveNote = "The title changed on your desktop to \"\(desktop)\". Your text is still here; save again to replace it."
-                return
-            }
-            run({ await ui.store.formTitleLive(fileID, title: clean) }, done: "Form title saved") { outcome in
-                // Saved: the field now matches the desktop. Otherwise the re-read decides what the field shows.
-                if outcome == .done { titleBase = clean }
             }
         }
     }
 
-    /// Added at the end of the form as the desktop has it now; the form is read first for its items.
+    /// Added at the end of the form as the desktop has it just before sending (the store reads it first).
     private func addQuestionLive(_ question: DriveQuestion) {
-        guard !working else {
-            ui.toaster.say("Wait for the last change to finish")
-            return
-        }
-        liveNote = nil
-        Task {
-            guard let now = try? await ui.store.formLive(fileID) else {
-                liveNote = "The question was not added: the form could not be read first. Try again."
-                return
-            }
-            show(now)
-            let items = now.items?.items ?? []
-            let before = Set(items.compactMap(\.itemId))
-            run({ await ui.store.addQuestionLive(fileID, question, before: before, count: items.count) }, done: "Question added") { outcome in
-                if outcome == .done {
-                    questionText = ""
-                    choicesText = ""
-                }
+        run({ await ui.store.addQuestionLive(fileID, question) }, done: "Question added") { outcome, _ in
+            if outcome == .done {
+                questionText = ""
+                choicesText = ""
             }
         }
     }
@@ -413,8 +392,9 @@ struct DriveFormEditor: View {
         guard let read = liveRead else { return }
         Task {
             do {
-                let lines = try await ui.store.formResponsesLive(fileID, form: read)
-                withAnimation(Motion.snappy) { responses = lines }
+                let page = try await ui.store.formResponsesLive(fileID, form: read)
+                moreResponses = page.more
+                withAnimation(Motion.snappy) { responses = page.lines }
             } catch {
                 if error is CancellationError { return }
                 liveNote = "Responses could not be read. " + error.plainWords

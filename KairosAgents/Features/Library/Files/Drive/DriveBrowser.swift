@@ -44,6 +44,19 @@ struct DriveBrowser: View {
 
     private var liveList: DriveLiveList? { liveKey.flatMap { store.lists[$0] } }
 
+    /// Paired: the selected files that are on screen now, in screen order. Only these are ever acted on.
+    private var shownSelection: [String] {
+        guard ui.live else { return Array(ui.selected) }
+        return items.map(\.id).filter { ui.selected.contains($0) }
+    }
+
+    /// Where the files on screen are, for the trash confirm.
+    private var placeName: String {
+        if let folder { return folder.name }
+        if !ui.query.isEmpty { return "these search results" }
+        return ui.section.title
+    }
+
     private var liveTaskID: String {
         "\(DriveStore.connectionKey)|\(String(describing: liveKey))|\(store.currentAccountID ?? "")"
     }
@@ -325,7 +338,9 @@ struct DriveBrowser: View {
 
     @ViewBuilder
     private var results: some View {
-        if ui.live, items.isEmpty, case .failed(let why) = liveList?.load {
+        if ui.live, !isRoot, liveKey == nil {
+            DriveLiveLine(text: "This folder is not in the Drive you are browsing now.")
+        } else if ui.live, items.isEmpty, case .failed(let why) = liveList?.load {
             DriveLiveLine(text: why, action: "Try again") { Task { await loadLive() } }
         } else if ui.live && items.isEmpty && liveList?.load != .loaded {
             HStack(spacing: 10) {
@@ -463,14 +478,14 @@ struct DriveBrowser: View {
         if file.trashed {
             Button { ui.restore([file.id]) } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
         } else {
-            Button(role: .destructive) { ui.askTrash([file.id]) } label: { Label("Move to trash", systemImage: "trash") }
+            Button(role: .destructive) { ui.askTrash([file.id], place: placeName) } label: { Label("Move to trash", systemImage: "trash") }
         }
     }
 
     // MARK: Selection toolbar
 
     private var selectionBar: some View {
-        let ids = Array(ui.selected)
+        let ids = shownSelection
         let none = ids.isEmpty
         return VStack(spacing: 6) {
             HStack {
@@ -495,7 +510,7 @@ struct DriveBrowser: View {
                     DriveToolButton(symbol: "arrow.uturn.backward", title: "Restore") { ui.restore(ids) }
                 } else {
                     DriveToolButton(symbol: "trash", title: "Trash", danger: true) {
-                        if ui.live { ui.askTrash(ids) } else { confirmTrash = true }
+                        if ui.live { ui.askTrash(ids, place: placeName) } else { confirmTrash = true }
                     }
                 }
             }

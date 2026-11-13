@@ -1,5 +1,6 @@
 import SwiftUI
 import PDFKit
+import ImageIO
 
 /// A read-only look at a file: a mini grid for sheets, questions for forms, text for documents, colour for images.
 struct DrivePreviewView: View {
@@ -62,7 +63,7 @@ struct DrivePreviewView: View {
                 let read = try await ui.store.livePreview(fileID)
                 if read.mime.hasPrefix("application/pdf"), let document = PDFDocument(data: read.data) {
                     live = .pdf(document)
-                } else if read.mime.hasPrefix("image/"), let image = UIImage(data: read.data) {
+                } else if read.mime.hasPrefix("image/"), let image = await Self.downsampled(read.data) {
                     live = .image(image)
                 } else if read.mime.hasPrefix("text/html") {
                     live = .text(DriveWire.plainText(html: String(decoding: read.data, as: UTF8.self)))
@@ -126,6 +127,23 @@ struct DrivePreviewView: View {
         case .form(let form):
             formPreview(Self.showing(file, sheet: nil, form: form))
         }
+    }
+
+    /// An image no larger than the screen needs, decoded off the main actor with ImageIO, so a very large picture
+    /// never becomes a full-size bitmap in memory.
+    private static func downsampled(_ data: Data) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
+            guard let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) else { return nil }
+            let thumb: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: 2048,
+            ]
+            guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumb as CFDictionary) else { return nil }
+            return UIImage(cgImage: image)
+        }.value
     }
 
     /// The file with what the desktop sent, for the sample's own sheet and form previews.
@@ -261,7 +279,7 @@ struct DrivePreviewView: View {
     @ViewBuilder
     private func editButton(_ file: DriveFile) -> some View {
         if !file.trashed && file.kind == .sheet {
-            GoldButton(title: "Edit cells") {
+            GoldButton(title: ui.live ? "See more cells" : "Edit cells") {
                 Haptics.tap()
                 ui.path.append(.sheetEditor(file.id))
             }

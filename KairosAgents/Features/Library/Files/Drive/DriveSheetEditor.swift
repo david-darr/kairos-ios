@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Edit a block of cells in a Google Sheet: pick a tab and a range, change cells, save.
+/// Edit a block of cells in a Google Sheet: pick a tab and a range, change cells, save. Paired, the cells are read
+/// only: the desktop gives only shown values, so the phone cannot tell a formula from its result, and saving would
+/// replace a formula with its value. The screen says to change cells in Google Sheets.
 struct DriveSheetEditor: View {
     let fileID: String
     @Environment(DriveUI.self) private var ui
@@ -15,12 +17,9 @@ struct DriveSheetEditor: View {
     @State private var problem: String?
     @State private var loadCount = 0
     @State private var started = false
-    // Paired: the tabs, what the loaded cells were filled from, and a read or save on its way.
+    // Paired: the tabs, and a read on its way.
     @State private var liveTabs: [String] = []
-    @State private var baseline: [[String]] = []
     @State private var reading = false
-    @State private var saving = false
-    @State private var liveNote: String?
 
     private static let maxRows = 20
     private static let maxColumns = 12
@@ -43,19 +42,17 @@ struct DriveSheetEditor: View {
                             .foregroundStyle(Palette.danger)
                             .transition(.opacity)
                     }
-                    if ui.live, let liveNote {
-                        DriveLiveLine(text: liveNote)
-                    }
                     if ui.live && reading && loaded == nil {
                         DriveLiveLine(text: "Reading the sheet.")
                     }
                     if let loaded { gridView(loaded) }
-                    GoldButton(title: saving ? "Saving" : "Save cells", action: save)
-                        .padding(.top, 4)
-                        .disabled(saving || reading)
-                        .opacity(saving || reading ? 0.6 : 1)
                     if ui.live {
-                        HintLine(text: "Only the cells you change are sent, one at a time.")
+                        HintLine(text: "Change cells in Google Sheets. Your phone cannot tell a formula from the value it shows, so it does not save cells.")
+                    } else {
+                        GoldButton(title: "Save cells", action: save)
+                            .padding(.top, 4)
+                            .disabled(reading)
+                            .opacity(reading ? 0.6 : 1)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -68,9 +65,8 @@ struct DriveSheetEditor: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .top, spacing: 0) {
-            FilesHeader(title: file?.name ?? "Sheet", subtitle: tabTitle, back: { if !saving { dismiss() } })
+            FilesHeader(title: file?.name ?? "Sheet", subtitle: tabTitle, back: { dismiss() })
         }
-        .interactiveDismissDisabled(saving)
         .kScreen()
         .animation(Motion.snappy, value: problem)
         .onAppear {
@@ -100,10 +96,7 @@ struct DriveSheetEditor: View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
-                    FilterPill(title: title, symbol: "tablecells", on: tab == index) {
-                        guard !saving else { return }
-                        tab = index
-                    }
+                    FilterPill(title: title, symbol: "tablecells", on: tab == index) { tab = index }
                 }
             }
         }
@@ -136,14 +129,12 @@ struct DriveSheetEditor: View {
         let text = normalized(rangeText)
         let chosen = tab
         reading = true
-        liveNote = nil
         Task {
             defer { reading = false }
             do {
                 let cells = try await ui.store.cellsLive(fileID, tab: title, range: range)
                 guard chosen == tab, text == normalized(rangeText) else { return }
                 grid = cells
-                baseline = cells
                 loaded = range
                 loadedText = text
                 loadedTab = chosen
@@ -153,60 +144,6 @@ struct DriveSheetEditor: View {
             } catch {
                 if error is CancellationError { return }
                 problem = "These cells could not be read. " + error.plainWords
-            }
-        }
-    }
-
-    private func saveLive(_ range: DriveCellRange) {
-        guard !saving, loadedTab < liveTabs.count else { return }
-        let title = liveTabs[loadedTab]
-        let sentFrom = baseline
-        let typed = grid
-        saving = true
-        liveNote = nil
-        Task {
-            defer { saving = false }
-            let result = await ui.store.saveCellsLive(fileID, tab: title, range: range, baseline: sentFrom, grid: typed)
-            guard loaded == range, loadedTab < liveTabs.count, liveTabs[loadedTab] == title else { return }
-            // What the person typed while this was saving stays; everything else follows the desktop.
-            var nextBase = baseline
-            var nextGrid = grid
-            if let desktop = result.desktop, desktop.count == nextGrid.count {
-                for r in nextGrid.indices {
-                    for c in nextGrid[r].indices where c < desktop[r].count {
-                        let cell = DriveLiveCell(row: r, column: c)
-                        let untouched = nextGrid[r][c] == sentFrom[r][c]
-                        if let value = result.saved[cell] {
-                            nextBase[r][c] = value
-                        } else if result.conflicts.contains(cell) {
-                            // Changed on the desktop: the person's text stays and a second save sends it on purpose.
-                            nextBase[r][c] = desktop[r][c]
-                        } else if untouched {
-                            nextGrid[r][c] = desktop[r][c]
-                            nextBase[r][c] = desktop[r][c]
-                        }
-                    }
-                }
-            } else {
-                for (cell, value) in result.saved { nextBase[cell.row][cell.column] = value }
-            }
-            baseline = nextBase
-            grid = nextGrid
-            loadCount += 1
-            switch result.outcome {
-            case .done where result.conflicts.isEmpty:
-                problem = nil
-                Haptics.success()
-                ui.toaster.say(result.saved.isEmpty ? "No changes to save" : "Sheet saved")
-            case .done:
-                Haptics.thud()
-                let names = result.conflicts.map { DriveCellRange.columnName(range.left + $0.column) + "\(range.top + $0.row + 1)" }
-                liveNote = "\(names.joined(separator: ", ")) changed on your desktop, so your text there was not saved. It is still in the cells; save again to replace what the desktop has."
-            case .busy:
-                ui.toaster.say("Wait for the last save to finish")
-            case .failed(let why), .unconfirmed(let why):
-                Haptics.thud()
-                liveNote = why
             }
         }
     }
@@ -288,15 +225,28 @@ struct DriveSheetEditor: View {
                 .foregroundStyle(Palette.inkFaint)
                 .frame(width: 36, height: 44)
             ForEach(0..<range.columns, id: \.self) { c in
-                TextField("", text: cell(r, c))
-                    .font(KFont.ui(15, r == 0 && range.top == 0 ? .semibold : .regular))
-                    .foregroundStyle(Palette.ink)
-                    .autocorrectionDisabled()
-                    .padding(.horizontal, 10)
-                    .frame(width: 112, height: 44)
-                    .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
-                    .accessibilityLabel("Row \(range.top + r + 1) column \(range.left + c + 1)")
+                if ui.live {
+                    Text(cell(r, c).wrappedValue)
+                        .font(KFont.ui(15, r == 0 && range.top == 0 ? .semibold : .regular))
+                        .foregroundStyle(Palette.ink)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .frame(width: 112, height: 44, alignment: .leading)
+                        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
+                        .accessibilityLabel("Row \(range.top + r + 1) column \(range.left + c + 1)")
+                        .accessibilityValue(cell(r, c).wrappedValue)
+                } else {
+                    TextField("", text: cell(r, c))
+                        .font(KFont.ui(15, r == 0 && range.top == 0 ? .semibold : .regular))
+                        .foregroundStyle(Palette.ink)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 10)
+                        .frame(width: 112, height: 44)
+                        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
+                        .accessibilityLabel("Row \(range.top + r + 1) column \(range.left + c + 1)")
+                }
             }
         }
     }
@@ -348,10 +298,8 @@ struct DriveSheetEditor: View {
             problem = "Load the new range before saving"
             return
         }
-        if ui.live {
-            saveLive(range)
-            return
-        }
+        // Paired, cells are never saved from the phone (see the type's note); the button is not drawn.
+        guard !ui.live else { return }
         ui.store.saveCells(fileID, tab: tab, range: range, values: grid)
         problem = nil
         Haptics.success()

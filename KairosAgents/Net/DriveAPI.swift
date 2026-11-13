@@ -292,6 +292,46 @@ nonisolated enum DriveWire {
         return FlexibleDate.parse(text)
     }
 
+    /// A Google file id the desktop accepts (google_workspace._id), or "root".
+    static func isGoogleID(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 256
+            && id.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" || $0 == "_" }
+    }
+
+    /// The name the desktop gives an upload: the multipart filename, with quotes and line breaks taken out.
+    static func uploadName(_ name: String) -> String {
+        name.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+    }
+
+    /// The multipart body for POST /api/google/drive/upload, with the file read here. Call it off the main actor.
+    /// At most `maxUpload + 1` bytes are read, so a file that grew past the cap is refused without reading it whole.
+    static func uploadBody(_ item: DriveUploadItem, parent: String?, boundary: String) throws -> Data {
+        if let parent, !isGoogleID(parent) { throw APIError.unreadable("file id") }
+        let scoped = item.url.startAccessingSecurityScopedResource()
+        defer { if scoped { item.url.stopAccessingSecurityScopedResource() } }
+        var read: Result<Data, DriveUploadProblem> = .failure(.unreadable)
+        var coordination: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: item.url, options: [.withoutChanges], error: &coordination) { url in
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+            defer { try? handle.close() }
+            let chunk: Data
+            do { chunk = try handle.read(upToCount: maxUpload + 1) ?? Data() } catch { return }
+            read = chunk.count > maxUpload ? .failure(.tooBig) : .success(chunk)
+        }
+        let data = try read.get()
+        var body = Data()
+        body.reserveCapacity(data.count + 1024)
+        if let parent {
+            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"parent\"\r\n\r\n\(parent)\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(uploadName(item.name))\"\r\n".utf8))
+        body.append(Data("Content-Type: \(item.mimeType)\r\n\r\n".utf8))
+        body.append(data)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        return body
+    }
+
     /// A cell range on one tab, as the desktop's own page writes it: 'Tab name'!A1:F12.
     static func cellRange(tab: String, _ cells: String) -> String {
         "'" + tab.replacingOccurrences(of: "'", with: "''") + "'!" + cells
@@ -331,6 +371,19 @@ nonisolated enum DriveWire {
     }
 }
 
+/// One picked file to upload: where it is and what its attributes said, checked before anything is read.
+nonisolated struct DriveUploadItem: Hashable, Sendable {
+    var url: URL
+    var name: String
+    var size: Int
+    var mimeType: String
+}
+
+/// Why a picked file could not be read for an upload.
+nonisolated enum DriveUploadProblem: Error, Sendable {
+    case tooBig, unreadable
+}
+
 /// A file's bytes for the preview, with the type the desktop said it is.
 nonisolated struct DrivePreviewBytes: Sendable {
     var data: Data
@@ -358,13 +411,11 @@ extension APIClient {
 
     /// Send and read the status. A Google refusal keeps its own status and sentence; only the desktop refusing
     /// this phone's token is `.unauthorized`.
-    func driveData(_ request: URLRequest, watch: DriveUploadWatch? = nil) async throws -> Data {
+    func driveData(_ request: URLRequest, upload: Data? = nil, watch: DriveUploadWatch? = nil) async throws -> Data {
         let answer: (Data, URLResponse)
         do {
-            if let body = request.httpBody, let watch {
-                var bare = request
-                bare.httpBody = nil
-                answer = try await DriveWire.session.upload(for: bare, from: body, delegate: watch)
+            if let upload {
+                answer = try await DriveWire.session.upload(for: request, from: upload, delegate: watch)
             } else {
                 answer = try await DriveWire.session.data(for: request)
             }
@@ -400,10 +451,7 @@ extension APIClient {
 
     /// A Google file id goes into the path as it is. One the desktop would refuse is refused here first.
     private static func driveID(_ id: String) throws -> String {
-        guard !id.isEmpty, id.count <= 256,
-              id.unicodeScalars.allSatisfy({ ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" || $0 == "_" }) else {
-            throw APIError.unreadable("file id")
-        }
+        guard DriveWire.isGoogleID(id) else { throw APIError.unreadable("file id") }
         return id
     }
 
@@ -485,23 +533,18 @@ extension APIClient {
         try DriveWire.decode(DriveDTOPermissions.self, try await driveAction(account: account, ["action": "permissions", "file_id": id]))
     }
 
-    /// POST /api/google/drive/upload: one file, into `parent` (nil for My Drive), with progress.
-    func driveUpload(account: String, file: OutgoingFile, parent: String?, watch: DriveUploadWatch) async throws {
+    /// POST /api/google/drive/upload: one file, into `parent` (nil for My Drive), with progress. The file is read
+    /// and the body built off the main actor, just before it is sent; nothing is kept after.
+    /// Answers the new file's id when the desktop's answer says it.
+    func driveUpload(account: String, item: DriveUploadItem, parent: String?, watch: DriveUploadWatch) async throws -> String? {
         var request = try urlRequest("POST", "/api/google/drive/upload", query: ["account": account])
         let boundary = "kairos-" + UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let safeName = file.name.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
-        var body = Data()
-        if let parent {
-            body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"parent\"\r\n\r\n\(try Self.driveID(parent))\r\n".utf8))
-        }
-        body.append(Data("--\(boundary)\r\n".utf8))
-        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\n".utf8))
-        body.append(Data("Content-Type: \(file.mimeType)\r\n\r\n".utf8))
-        body.append(file.data)
-        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
-        request.httpBody = body
-        _ = try await driveData(request, watch: watch)
+        let body = try await Task.detached(priority: .userInitiated) {
+            try DriveWire.uploadBody(item, parent: parent, boundary: boundary)
+        }.value
+        let answer = try await driveData(request, upload: body, watch: watch)
+        return (try? DriveWire.decode(DriveDTOChanged.self, answer))?.id
     }
 
     /// GET /api/google/sheets/{id}
@@ -537,9 +580,11 @@ extension APIClient {
     }
 
     /// GET /api/google/forms/{id}?responses=true
-    func driveFormResponses(account: String, id: String) async throws -> DriveDTOFormResponses {
+    func driveFormResponses(account: String, id: String, pageToken: String? = nil) async throws -> DriveDTOFormResponses {
         let path = "/api/google/forms/" + (try Self.driveID(id))
-        return try DriveWire.decode(DriveDTOFormResponses.self, try await driveGet(path, ["account": account, "responses": "true"]))
+        var params: [String: String?] = ["account": account, "responses": "true"]
+        if let pageToken { params["page_token"] = pageToken }
+        return try DriveWire.decode(DriveDTOFormResponses.self, try await driveGet(path, params))
     }
 
     /// POST /api/google/forms/action "batch" with exactly ONE request (one item, or the title).
@@ -654,7 +699,8 @@ nonisolated enum DriveAPISamples {
     static let responses = #"""
     {"responses": [{"responseId": "r1", "lastSubmittedTime": "2027-01-03T10:00:00Z",
                     "answers": {"q1": {"questionId": "q1", "textAnswers": {"answers": [{"value": "Online"}]}},
-                                "q2": {"questionId": "q2", "textAnswers": {"answers": [{"value": "Open earlier"}]}}}}]}
+                                "q2": {"questionId": "q2", "textAnswers": {"answers": [{"value": "Open earlier"}]}}}}],
+     "nextPageToken": "responses-2"}
     """#
 
     static let formMade = #"{"formId": "1NeW-form", "info": {"title": "Event sign-up"}}"#
@@ -725,13 +771,21 @@ nonisolated enum DriveAPISamples {
                   mapped.questions[0].type == .choice, mapped.questions[0].choices == ["A friend", "Online"],
                   mapped.questions[1].type == .paragraph, mapped.questions[2].label != nil,
                   mapped.questions[0].remoteID == "a1b2",
-                  lines == ["Online · Open earlier"], made.formId == "1NeW-form" else { throw SampleMismatch("form fields") }
+                  lines == ["Online · Open earlier"], answers.nextPageToken == "responses-2",
+                  made.formId == "1NeW-form" else { throw SampleMismatch("form fields") }
             return "3 items, one not a question, responses"
         },
         DecodeCheck("drive.preview") {
             let text = DriveWire.plainText(html: "<html><head><style>p{}</style></head><body><h1>Report</h1><p>Due &amp; ready</p><ul><li>One</li></ul></body></html>")
             guard text == "Report\nDue & ready\n• One" else { throw SampleMismatch("html text: \(text)") }
             return "html read as text"
+        },
+        DecodeCheck("drive.upload") {
+            let made = try DriveWire.decode(DriveDTOChanged.self, text: #"{"id": "1UpLoAd", "name": "Price list.pdf", "mimeType": "application/pdf"}"#)
+            guard made.id == "1UpLoAd", DriveWire.isGoogleID("root"), DriveWire.isGoogleID("1FoLdEr_abc"),
+                  !DriveWire.isGoogleID("a/b"), !DriveWire.isGoogleID(""),
+                  DriveWire.uploadName("Say \"hi\"\r\n.txt") == "Say hi.txt" else { throw SampleMismatch("upload") }
+            return "upload answer id, ids, names"
         },
     ]
 }

@@ -41,20 +41,26 @@ nonisolated struct DriveLiveList: Equatable, Sendable {
     var loadingMore = false
 }
 
-/// What a sheet save did: which cells went, which changed on the desktop first, and what the desktop has now.
-struct DriveLiveCells {
-    var outcome: DriveLiveOutcome
-    /// The desktop's cells as last read, or nil when they could not be read.
-    var desktop: [[String]]?
-    /// Cells the person changed that changed on the desktop since the grid was filled: not sent.
-    var conflicts: [DriveLiveCell] = []
-    /// Cells sent and confirmed, with what was sent.
-    var saved: [DriveLiveCell: String] = [:]
+/// What the phone knew when it asked for a new item (folder, sheet, form, copy, upload), so that after a lost
+/// answer it only ever takes an item it can prove is that one.
+nonisolated struct DriveMakeProof: Sendable {
+    var name: String
+    /// Google's id of the folder it was made in, or "root" for the top of My Drive.
+    var parent: String
+    /// The exact type Google gives the new item.
+    var mime: String
+    /// Every item with that name and type in that folder just before the request. Nil when that could not be read
+    /// whole, so nothing can be proved.
+    var before: Set<String>?
+    /// When the request went out.
+    var sentAt: Date
 }
 
-nonisolated struct DriveLiveCell: Hashable, Sendable {
-    var row: Int
-    var column: Int
+/// One form change, decided from the form as read just before it is sent.
+enum DriveFormPlan {
+    case send((APIClient, String, String) async throws -> Void)
+    /// Nothing is sent; the outcome says why.
+    case stop(DriveLiveOutcome)
 }
 
 /// The paired desktop behind Google Drive (routes/google_routes.py): accounts (GET /api/google/status), lists
@@ -418,6 +424,8 @@ extension DriveStore {
     func key(section: DriveSection, folder: String?, query: String, filter: DriveFilter) -> DriveLiveKey? {
         guard let account = currentAccountID else { return nil }
         let remote = folder.flatMap { self.file($0)?.remoteID }
+        // A folder this Drive does not know (another desktop or account) is never read as the top of a view.
+        if folder != nil && remote == nil { return nil }
         let words = String(query.trimmingCharacters(in: .whitespaces).prefix(100))
         return DriveLiveKey(account: account, section: folder == nil ? section : (section == .trash ? .trash : section),
                             folder: remote, query: folder == nil ? words : "", filter: filter)
@@ -503,12 +511,28 @@ extension DriveStore {
         Task { if stillLive(account) { await loadList(key) } }
     }
 
-    /// Files named exactly `name` in a place, read from the desktop (nil when it could not be read).
-    private func named(_ name: String, google: String, parent: String?, filter: DriveFilter) async -> [DriveDTOFile]? {
+    /// Read the list on screen again, after a batch stopped.
+    func refreshShownLive() {
+        refreshShown(liveAccount)
+    }
+
+    /// Items named exactly `name` of one type directly in one folder (Google's id, or "root" for the top of My Drive).
+    /// Nil when it could not be read whole: not read, more than one page, a partial search, or a row that could not
+    /// be decoded. A partial read proves nothing.
+    private func named(_ name: String, google: String, parent: String, mime: String) async -> [DriveDTOFile]? {
+        let kind = mime == DriveWire.folderMime ? "folder"
+            : (mime == "application/vnd.google-apps.spreadsheet" ? "sheet" : (mime == "application/vnd.google-apps.form" ? "form" : "all"))
         guard let client = try? liveClient(),
-              let read = try? await client.driveFiles(account: google, section: parent == nil ? "my_drive" : "all", parent: parent,
-                                                      query: name, kind: Self.kindText(filter), pageToken: nil) else { return nil }
-        return (read.files?.items ?? []).filter { $0.name == name && $0.trashed != true }
+              let read = try? await client.driveFiles(account: google, section: "all", parent: parent,
+                                                      query: name, kind: kind, pageToken: nil),
+              read.nextPageToken == nil, read.incompleteSearch != true, (read.files?.skipped ?? 0) == 0 else { return nil }
+        return (read.files?.items ?? []).filter { $0.name == name && $0.mimeType == mime }
+    }
+
+    /// Before a request that makes an item: what is already there under that name.
+    private func proof(_ name: String, google: String, parent: String, mime: String) async -> DriveMakeProof {
+        let before = await named(name, google: google, parent: parent, mime: mime).map { Set($0.map(\.id)) }
+        return DriveMakeProof(name: name, parent: parent, mime: mime, before: before, sentAt: Date())
     }
 
     /// Folders in one Google account whose names match `query`, for "Move to folder".
@@ -533,10 +557,17 @@ extension DriveStore {
         let mine = readSerials[key] ?? 0
         if reads[key] != .loaded { reads[key] = .loading }
         do {
-            let fresh = try await liveClient().driveFile(account: file.account, id: remote)
-            guard stillLive(account), readSerials[key] == mine else { return }
-            upsert(Self.liveFile(fresh, account: file.account))
-            reads[key] = .loaded
+            // A read that was on its way while a change finished is read again, so it never puts the old state back.
+            for _ in 0..<3 {
+                let writes = writeSerial
+                let fresh = try await liveClient().driveFile(account: file.account, id: remote)
+                guard stillLive(account), readSerials[key] == mine else { return }
+                guard writes == writeSerial else { continue }
+                upsert(Self.liveFile(fresh, account: file.account))
+                reads[key] = .loaded
+                return
+            }
+            if reads[key] != .loaded { reads[key] = .failed("This file kept changing while it was read. Try again.") }
         } catch {
             if Self.isCancel(error) { return }
             noteConnection(error)
@@ -606,7 +637,7 @@ extension DriveStore {
 
     /// Send one Drive action for one file. When the answer is lost, the file is read again and `check` says
     /// whether the desktop has the change; the file then shows what Google really has.
-    private func change(_ id: String, action: String, extra: [String: Any] = [:], what: String,
+    private func change(_ id: String, action: String, extra: [String: Any] = [:], what: String, gone: String? = nil,
                         check: @escaping (DriveDTOFile) -> Bool) async -> DriveLiveOutcome {
         guard !isSample, let file = file(id), let remote = file.remoteID else { return .failed("This file is a sample.") }
         guard !busy.contains(id) else { return .busy }
@@ -639,9 +670,9 @@ extension DriveStore {
             guard stillLive(account) else { return .failed(Self.desktopChanged) }
             markBroken(google, error)
             if Self.wasRefused(error) {
+                refreshShown(account)
                 if case .server(status: 404, _) = error as? APIError {
-                    refreshShown(account)
-                    return .failed("\(file.name) is not in this Drive any more.")
+                    return .failed(gone ?? "\(file.name) is not in this Drive any more.")
                 }
                 return .failed(what + " " + error.plainWords)
             }
@@ -685,15 +716,17 @@ extension DriveStore {
             target = "root"
         }
         let before = file.parentRemote
-        return await change(id, action: "move", extra: ["parent": target], what: "It was not moved.") { fresh in
+        let place = folder.flatMap { self.file($0)?.name } ?? "My Drive"
+        return await change(id, action: "move", extra: ["parent": target], what: "It was not moved.",
+                            gone: "\(file.name) was not moved: Google could not find it or \(place). The list now shows what Google has.") { fresh in
             let parents = fresh.parents ?? []
             if target == "root" { return before.map { !parents.contains($0) } ?? false }
             return parents.contains(target)
         }
     }
 
-    /// Copy a file next to it, named "<name> copy". A copy whose answer never arrived is looked for before
-    /// anything is offered again, so a file is never copied twice.
+    /// Copy a file next to it, named "<name> copy". A copy whose answer never arrived is looked for in that
+    /// folder, and only an item proved to be this copy is reported as made; nothing is copied again by itself.
     func copyLive(_ id: String) async -> DriveLiveOutcome {
         guard !isSample, let file = file(id), let remote = file.remoteID else { return .failed("This file is a sample.") }
         guard !file.isFolder else { return .failed("Folders cannot be copied in Google Drive.") }
@@ -706,7 +739,9 @@ extension DriveStore {
             writeSerial += 1
             if liveAccount == account { busy.remove(id) }
         }
-        let before = await named(name, google: google, parent: file.parentRemote, filter: .all).map { Set($0.map(\.id)) }
+        // Google puts a copy with no folder named into the top of My Drive.
+        let place = file.parentRemote ?? "root"
+        let check = await proof(name, google: google, parent: place, mime: file.mime)
         guard stillLive(account) else { return .failed(Self.desktopChanged) }
         var body: [String: Any] = ["action": "copy", "file_id": remote, "name": name]
         if let parent = file.parentRemote { body["parent"] = parent }
@@ -719,34 +754,57 @@ extension DriveStore {
             noteConnection(error)
             guard stillLive(account) else { return .failed(Self.desktopChanged) }
             markBroken(google, error)
-            if Self.wasRefused(error) { return .failed("It was not copied. " + error.plainWords) }
-            return await lookFor(name, google: google, parent: file.parentRemote, filter: .all, before: before, account: account,
-                                 what: "the copy of \(file.name)")
+            if Self.wasRefused(error) {
+                refreshShown(account)
+                return .failed("It was not copied. " + error.plainWords)
+            }
+            return await lookFor(check, google: google, account: account, what: "the copy of \(file.name)").outcome
         }
     }
 
-    /// After a make whose answer never arrived: look for the new item in its place. Only "it is there" is trusted.
-    private func lookFor(_ name: String, google: String, parent: String?, filter: DriveFilter, before: Set<String>?,
-                         account: String, what: String) async -> DriveLiveOutcome {
-        guard let before else {
-            return .unconfirmed("Your desktop did not confirm \(what), and Drive could not be checked first. Look for it before you try again.")
+    /// After a make whose answer never arrived: look in the place it was sent to. Only an item that is provably the
+    /// new one counts: the same name and exact type, not trashed, in that folder, not there before the request, and
+    /// changed no earlier than the request (with two minutes for the phone's clock). Never a same-named older item.
+    /// Anything less is "cannot tell", and the list then shows the folder as Google has it.
+    private func lookFor(_ proof: DriveMakeProof, google: String, account: String,
+                         what: String) async -> (outcome: DriveLiveOutcome, id: String?) {
+        defer { if stillLive(account) { refreshShown(account) } }
+        guard let before = proof.before else {
+            return (.unconfirmed("Your desktop did not confirm \(what), and the phone could not tell what was there before. The list now shows what Google has. Look for it before you try again."), nil)
         }
-        let after = await named(name, google: google, parent: parent, filter: filter)
-        guard stillLive(account) else { return .failed(Self.desktopChanged) }
-        refreshShown(account)
+        let after = await named(proof.name, google: google, parent: proof.parent, mime: proof.mime)
+        guard stillLive(account) else { return (.failed(Self.desktopChanged), nil) }
         guard let after else {
-            return .unconfirmed("Your desktop did not confirm \(what), and Drive could not be read to check. Look for it before you try again.")
+            return (.unconfirmed("Your desktop did not confirm \(what), and Drive could not be read whole to check. The list now shows what Google has. Look for it before you try again."), nil)
         }
-        if let made = after.first(where: { !before.contains($0.id) }) {
-            upsert(Self.liveFile(made, account: google))
-            return .done
+        let earliest = proof.sentAt.addingTimeInterval(-120)
+        let made = after.filter { item in
+            guard item.trashed != true, item.mimeType == proof.mime, !before.contains(item.id),
+                  let changed = DriveWire.time(item.modifiedTime), changed >= earliest else { return false }
+            return proof.parent == "root" || (item.parents ?? []).contains(proof.parent)
         }
-        return .unconfirmed("Your desktop did not confirm \(what), and it is not in Drive yet. It may still appear, so look again before you try again.")
+        if made.count == 1, let item = made.first {
+            upsert(Self.liveFile(item, account: google))
+            return (.done, item.id)
+        }
+        if made.count > 1 {
+            return (.unconfirmed("Your desktop did not confirm \(what), and more than one new item has that name, so the phone cannot tell which is yours. The list now shows what Google has."), nil)
+        }
+        return (.unconfirmed("Your desktop did not confirm \(what), and it is not in Drive yet. It may still appear, so look again before you try again."), nil)
+    }
+
+    static func mime(_ kind: DriveKind) -> String {
+        switch kind {
+        case .folder: DriveWire.folderMime
+        case .sheet: "application/vnd.google-apps.spreadsheet"
+        default: "application/vnd.google-apps.form"
+        }
     }
 
     /// A new folder, sheet or form, in a folder (its phone id) or My Drive. One at a time.
     func createLive(_ kind: DriveKind, name: String, in folder: String?) async -> DriveLiveOutcome {
         guard !isSample, let google = currentAccountID else { return .failed("This Drive is a sample.") }
+        guard kind == .folder || kind == .sheet || kind == .form else { return .failed("Only folders, sheets and forms can be made here.") }
         guard !busy.contains("new") else { return .busy }
         let account = liveAccount
         var parent: String?
@@ -757,15 +815,14 @@ extension DriveStore {
             parent = remote
         }
         let clean = String(name.prefix(200))
-        let filter: DriveFilter = kind == .folder ? .folders : (kind == .sheet ? .sheets : .forms)
         busy.insert("new")
         defer {
             writeSerial += 1
             if liveAccount == account { busy.remove("new") }
         }
         // Sheets and forms are made in My Drive first, then moved, as the desktop's own page does.
-        let home = kind == .folder ? parent : nil
-        let before = await named(clean, google: google, parent: home, filter: filter).map { Set($0.map(\.id)) }
+        let home = kind == .folder ? (parent ?? "root") : "root"
+        let check = await proof(clean, google: google, parent: home, mime: Self.mime(kind))
         guard stillLive(account) else { return .failed(Self.desktopChanged) }
         var made: String?
         do {
@@ -787,18 +844,23 @@ extension DriveStore {
             noteConnection(error)
             guard stillLive(account) else { return .failed(Self.desktopChanged) }
             markBroken(google, error)
-            if Self.wasRefused(error) { return .failed("\(clean) was not made. " + error.plainWords) }
-            let found = await lookFor(clean, google: google, parent: home, filter: filter, before: before, account: account, what: clean)
-            guard found == .done, kind != .folder, parent != nil,
-                  let item = files.first(where: { $0.account == google && $0.name == clean && !(before?.contains($0.remoteID ?? "") ?? true) }) else {
-                return found
+            if Self.wasRefused(error) {
+                refreshShown(account)
+                return .failed("\(clean) was not made. " + error.plainWords)
             }
-            made = item.remoteID
+            let found = await lookFor(check, google: google, account: account, what: clean)
+            guard found.outcome == .done, let id = found.id else { return found.outcome }
+            // Only the item proved to be the new one is ever moved.
+            made = id
         }
         guard stillLive(account) else { return .done }
-        guard let parent, let made else {
+        guard let parent else {
             refreshShown(account)
             return .done
+        }
+        guard let made, DriveWire.isGoogleID(made) else {
+            refreshShown(account)
+            return .unconfirmed("\(clean) was made in My Drive, but your desktop did not say which file it is, so it was not moved into this folder. Look for it in My Drive.")
         }
         do {
             try await liveClient().driveAction(account: google, ["action": "move", "file_id": made, "parent": parent])
@@ -806,15 +868,21 @@ extension DriveStore {
             noteConnection(error)
             guard stillLive(account) else { return .done }
             refreshShown(account)
+            if !Self.wasRefused(error), let fresh = try? await liveClient().driveFile(account: google, id: made), stillLive(account),
+               (fresh.parents ?? []).contains(parent) {
+                upsert(Self.liveFile(fresh, account: google), force: true)
+                return .done
+            }
             return .unconfirmed("\(clean) was made in My Drive, but it may not have moved into this folder. Look for it before you make it again.")
         }
         refreshShown(account)
         return .done
     }
 
-    /// Upload files, one at a time, into a folder (its phone id) or My Drive. Each is up to 25 MB. An upload whose
-    /// answer never arrived is looked for in the folder before anything else is sent.
-    func uploadLive(_ items: [OutgoingFile], in folder: String?) async -> (sent: Int, outcome: DriveLiveOutcome) {
+    /// Upload files, one at a time, into a folder (its phone id) or My Drive. Each file's size was checked from its
+    /// attributes before anything was read; each is read off the main actor just before it is sent and dropped
+    /// after. An upload whose answer never arrived is looked for in the folder before anything else is sent.
+    func uploadLive(_ items: [DriveUploadItem], in folder: String?) async -> (sent: Int, outcome: DriveLiveOutcome) {
         guard !isSample, let google = currentAccountID else { return (0, .failed("This Drive is a sample.")) }
         guard !busy.contains("new") else { return (0, .busy) }
         let account = liveAccount
@@ -836,10 +904,11 @@ extension DriveStore {
         }
         var sent = 0
         for item in items {
-            guard item.data.count <= DriveWire.maxUpload else {
+            guard item.size <= DriveWire.maxUpload else {
                 return (sent, .failed("\(item.name) is over 25 MB, so it was not sent."))
             }
-            let before = await named(item.name, google: google, parent: parent, filter: .all).map { Set($0.map(\.id)) }
+            let name = String(DriveWire.uploadName(item.name).prefix(255))
+            let check = await proof(name, google: google, parent: parent ?? "root", mime: item.mimeType)
             guard stillLive(account) else { return (sent, .failed(Self.desktopChanged)) }
             uploadProgress = 0
             let watch = DriveUploadWatch { fraction in
@@ -849,18 +918,25 @@ extension DriveStore {
                 }
             }
             do {
-                try await liveClient().driveUpload(account: google, file: item, parent: parent, watch: watch)
+                _ = try await liveClient().driveUpload(account: google, item: item, parent: parent, watch: watch)
                 guard stillLive(account) else { return (sent + 1, .done) }
                 sent += 1
+            } catch let problem as DriveUploadProblem {
+                guard stillLive(account) else { return (sent, .failed(Self.desktopChanged)) }
+                switch problem {
+                case .tooBig: return (sent, .failed("\(item.name) is over 25 MB, so it was not sent."))
+                case .unreadable: return (sent, .failed("\(item.name) could not be read on your phone, so it was not sent."))
+                }
             } catch {
                 noteConnection(error)
                 guard stillLive(account) else { return (sent, .failed(Self.desktopChanged)) }
                 markBroken(google, error)
-                refreshShown(account)
-                if Self.wasRefused(error) { return (sent, .failed("\(item.name) was not uploaded. " + error.plainWords)) }
-                let found = await lookFor(item.name, google: google, parent: parent, filter: .all, before: before,
-                                          account: account, what: item.name)
-                guard found == .done else { return (sent, found) }
+                if Self.wasRefused(error) {
+                    refreshShown(account)
+                    return (sent, .failed("\(item.name) was not uploaded. " + error.plainWords))
+                }
+                let found = await lookFor(check, google: google, account: account, what: item.name)
+                guard found.outcome == .done else { return (sent, found.outcome) }
                 sent += 1
             }
         }
@@ -957,7 +1033,11 @@ extension DriveStore {
         }
     }
 
-    // MARK: Sheets, one cell at a time
+    // MARK: Sheets, read only while paired
+
+    // The desktop reads cells only as their shown values (FORMATTED_VALUE) and writes them as typed
+    // (USER_ENTERED), so the phone cannot tell a formula from its result and would replace a formula with its value.
+    // Cells are therefore never written from the phone while paired; the editor says to change them in Google.
 
     func sheetTabsLive(_ id: String) async throws -> [String] {
         guard let file = file(id), let remote = file.remoteID else { throw APIError.notPaired }
@@ -978,70 +1058,6 @@ extension DriveStore {
         return Self.liveGrid(read, rows: range.rows, columns: range.columns)
     }
 
-    /// Save the cells the person changed since the grid was filled from `baseline`, one cell per request.
-    /// The range is read first: a changed cell that also changed on the desktop is not sent (it is a conflict and
-    /// the person's text stays). A cell whose answer never arrived is read back and compared with what was sent.
-    func saveCellsLive(_ id: String, tab: String, range: DriveCellRange, baseline: [[String]], grid: [[String]]) async -> DriveLiveCells {
-        guard !isSample, let file = file(id), let remote = file.remoteID else { return DriveLiveCells(outcome: .failed("This sheet is a sample.")) }
-        guard !busy.contains(id) else { return DriveLiveCells(outcome: .busy) }
-        let account = liveAccount
-        busy.insert(id)
-        defer { if liveAccount == account { busy.remove(id) } }
-        var edits: [DriveLiveCell: String] = [:]
-        for r in 0..<min(baseline.count, grid.count) {
-            for c in 0..<min(baseline[r].count, grid[r].count) where baseline[r][c] != grid[r][c] {
-                edits[DriveLiveCell(row: r, column: c)] = grid[r][c]
-            }
-        }
-        guard !edits.isEmpty else { return DriveLiveCells(outcome: .done) }
-        var result = DriveLiveCells(outcome: .done)
-        do {
-            result.desktop = try await cellsLive(id, tab: tab, range: range)
-        } catch {
-            noteConnection(error)
-            guard stillLive(account) else { return DriveLiveCells(outcome: .failed(Self.desktopChanged)) }
-            return DriveLiveCells(outcome: .failed("Nothing was saved: the sheet could not be read first. " + error.plainWords))
-        }
-        guard let desktop = result.desktop else { return result }
-        let order = edits.keys.sorted { ($0.row, $0.column) < ($1.row, $1.column) }
-        for cell in order {
-            if desktop[cell.row][cell.column] != baseline[cell.row][cell.column] {
-                result.conflicts.append(cell)
-            }
-        }
-        let client: APIClient
-        do { client = try liveClient() } catch { return DriveLiveCells(outcome: .failed(error.plainWords), desktop: desktop) }
-        for cell in order where !result.conflicts.contains(cell) {
-            guard stillLive(account), let value = edits[cell] else { result.outcome = .failed(Self.desktopChanged); return result }
-            let name = DriveCellRange.columnName(range.left + cell.column) + "\(range.top + cell.row + 1)"
-            do {
-                try await client.driveSheetSetCell(account: file.account, id: remote, cell: DriveWire.cellRange(tab: tab, name), value: value)
-                result.saved[cell] = value
-            } catch {
-                noteConnection(error)
-                guard stillLive(account) else { result.outcome = .failed(Self.desktopChanged); return result }
-                if Self.wasRefused(error) {
-                    result.outcome = .failed("Cell \(name) was not saved. " + error.plainWords)
-                    break
-                }
-                // Read the cell back and compare with what was sent.
-                let one = DriveCellRange(top: range.top + cell.row, left: range.left + cell.column, rows: 1, columns: 1)
-                if let back = try? await cellsLive(id, tab: tab, range: one), stillLive(account) {
-                    if back.first?.first == value {
-                        result.saved[cell] = value
-                        continue
-                    }
-                    result.outcome = .unconfirmed("Your desktop did not confirm cell \(name), and the sheet does not show it yet. Your text is still in the cell. Check again in a moment before you save again.")
-                } else {
-                    result.outcome = .unconfirmed("Your desktop did not confirm cell \(name), and the sheet could not be read to check. Your text is still in the cell. Load the range again before you save again.")
-                }
-                break
-            }
-        }
-        if let fresh = try? await cellsLive(id, tab: tab, range: range), stillLive(account) { result.desktop = fresh }
-        return result
-    }
-
     // MARK: Forms, one item at a time
 
     func formLive(_ id: String) async throws -> DriveDTOForm {
@@ -1052,17 +1068,26 @@ extension DriveStore {
         return read
     }
 
-    func formResponsesLive(_ id: String, form: DriveDTOForm) async throws -> [String] {
+    /// Up to five pages of responses (500). `more` is true when Google has more than were read.
+    func formResponsesLive(_ id: String, form: DriveDTOForm) async throws -> (lines: [String], more: Bool) {
         guard let file = file(id), let remote = file.remoteID else { throw APIError.notPaired }
         let account = liveAccount
-        let read = try await liveClient().driveFormResponses(account: file.account, id: remote)
-        guard stillLive(account) else { throw CancellationError() }
-        return Self.liveResponses(read, form: form)
+        var lines: [String] = []
+        var token: String?
+        for _ in 0..<5 {
+            let read = try await liveClient().driveFormResponses(account: file.account, id: remote, pageToken: token)
+            guard stillLive(account) else { throw CancellationError() }
+            lines += Self.liveResponses(read, form: form)
+            token = read.nextPageToken
+            if token == nil { break }
+        }
+        return (lines, token != nil)
     }
 
-    /// One form change: the request is sent alone; when its answer is lost the form is read again and `check`
-    /// says whether the change is there.
-    private func formChange(_ id: String, what: String, send: @escaping (APIClient, String, String) async throws -> Void,
+    /// One form change. The form is read first, under the same hold that blocks a second change, and `plan` decides
+    /// from that read what to send, or to send nothing. The request is sent alone; when its answer is lost the form
+    /// is read again and `check` says whether the change is there.
+    private func formChange(_ id: String, what: String, plan: @escaping (DriveDTOForm) -> DriveFormPlan,
                             check: @escaping (DriveDTOForm) -> Bool) async -> (DriveLiveOutcome, DriveDTOForm?) {
         guard !isSample, let file = file(id), let remote = file.remoteID else { return (.failed("This form is a sample."), nil) }
         guard !busy.contains(id) else { return (.busy, nil) }
@@ -1071,6 +1096,19 @@ extension DriveStore {
         defer {
             writeSerial += 1
             if liveAccount == account { busy.remove(id) }
+        }
+        let fresh: DriveDTOForm
+        do {
+            fresh = try await formLive(id)
+        } catch {
+            noteConnection(error)
+            guard stillLive(account) else { return (.failed(Self.desktopChanged), nil) }
+            return (.failed(what + " The form could not be read first. " + error.plainWords), nil)
+        }
+        let send: (APIClient, String, String) async throws -> Void
+        switch plan(fresh) {
+        case .stop(let outcome): return (outcome, fresh)
+        case .send(let request): send = request
         }
         do {
             try await send(try liveClient(), file.account, remote)
@@ -1089,15 +1127,24 @@ extension DriveStore {
         }
     }
 
-    func formTitleLive(_ id: String, title: String) async -> (DriveLiveOutcome, DriveDTOForm?) {
-        await formChange(id, what: "The title was not saved.", send: { client, google, remote in
-            try await client.driveFormChange(account: google, id: remote,
-                                             ["updateFormInfo": ["info": ["title": title], "updateMask": "title"] as [String: Any]])
+    private static let formChanged = "The form changed on your desktop, so nothing was sent. It now shows what Google has."
+
+    /// Save the title, only if the desktop's title is still the one the field was filled from.
+    func formTitleLive(_ id: String, title: String, filledFrom: String) async -> (DriveLiveOutcome, DriveDTOForm?) {
+        await formChange(id, what: "The title was not saved.", plan: { form in
+            let desktop = form.info?.title ?? ""
+            guard desktop == filledFrom else {
+                return .stop(.failed("The title changed on your desktop to \"\(desktop)\". Your text is still here; save again to replace it."))
+            }
+            return .send({ client, google, remote in
+                try await client.driveFormChange(account: google, id: remote,
+                                                 ["updateFormInfo": ["info": ["title": title], "updateMask": "title"] as [String: Any]])
+            })
         }, check: { $0.info?.title == title })
     }
 
-    /// Add one question at the end of the form as it is on the desktop now.
-    func addQuestionLive(_ id: String, _ question: DriveQuestion, before: Set<String>, count: Int) async -> (DriveLiveOutcome, DriveDTOForm?) {
+    /// Add one question at the end of the form as it is on the desktop just before sending.
+    func addQuestionLive(_ id: String, _ question: DriveQuestion) async -> (DriveLiveOutcome, DriveDTOForm?) {
         var body: [String: Any] = ["required": false]
         switch question.type {
         case .choice, .checkboxes:
@@ -1107,34 +1154,43 @@ extension DriveStore {
             body["textQuestion"] = ["paragraph": question.type == .paragraph]
         }
         let item: [String: Any] = ["title": question.text, "questionItem": ["question": body]]
-        let create: [String: Any] = ["item": item, "location": ["index": count]]
-        let request: [String: Any] = ["createItem": create]
-        return await formChange(id, what: "The question was not added.", send: { client, google, remote in
-            try await client.driveFormChange(account: google, id: remote, request)
+        var before: Set<String> = []
+        return await formChange(id, what: "The question was not added.", plan: { form in
+            // Every item must be known for the end to be the end.
+            let list = form.items ?? DriveDTOList<DriveDTOFormItem>(items: [])
+            guard list.skipped == 0 else {
+                return .stop(.failed("This form has an item your phone cannot read, so nothing was sent. Add the question in Google Forms."))
+            }
+            let items = list.items
+            before = Set(items.compactMap(\.itemId))
+            let request: [String: Any] = ["createItem": ["item": item, "location": ["index": items.count]] as [String: Any]]
+            return .send({ client, google, remote in try await client.driveFormChange(account: google, id: remote, request) })
         }, check: { form in
             (form.items?.items ?? []).contains { !before.contains($0.itemId ?? "") && $0.title == question.text }
         })
     }
 
-    /// Remove one item, found by its id in the form as the desktop has it just before sending.
-    func removeQuestionLive(_ id: String, itemID: String) async -> (DriveLiveOutcome, DriveDTOForm?) {
-        let fresh: DriveDTOForm
-        do {
-            fresh = try await formLive(id)
-        } catch {
-            return (.failed("The question was not removed: the form could not be read first. " + error.plainWords), nil)
-        }
-        guard let index = (fresh.items?.items ?? []).firstIndex(where: { $0.itemId == itemID }) else {
-            return (.done, fresh)
-        }
-        return await formChange(id, what: "The question was not removed.", send: { client, google, remote in
-            try await client.driveFormChange(account: google, id: remote, ["deleteItem": ["location": ["index": index]]])
+    /// Remove one item by its position, but only if, in the form as read just before sending, the item at that
+    /// position is still the one the person chose (same item id and title). Otherwise nothing is sent.
+    func removeQuestionLive(_ id: String, itemID: String, title: String) async -> (DriveLiveOutcome, DriveDTOForm?) {
+        await formChange(id, what: "The question was not removed.", plan: { form in
+            let list = form.items ?? DriveDTOList<DriveDTOFormItem>(items: [])
+            guard list.skipped == 0 else {
+                return .stop(.failed("This form has an item your phone cannot read, so nothing was sent. Remove the question in Google Forms."))
+            }
+            guard let index = list.items.firstIndex(where: { $0.itemId == itemID }) else {
+                return .stop(.failed("That question is not in the form any more. The form now shows what Google has."))
+            }
+            guard (list.items[index].title ?? "Untitled item") == title else { return .stop(.failed(Self.formChanged)) }
+            return .send({ client, google, remote in
+                try await client.driveFormChange(account: google, id: remote, ["deleteItem": ["location": ["index": index]]])
+            })
         }, check: { form in !(form.items?.items ?? []).contains { $0.itemId == itemID } })
     }
 
     func publishLive(_ id: String, _ on: Bool) async -> (DriveLiveOutcome, DriveDTOForm?) {
-        await formChange(id, what: on ? "The form was not published." : "The form was not unpublished.", send: { client, google, remote in
-            try await client.driveFormPublish(account: google, id: remote, published: on)
+        await formChange(id, what: on ? "The form was not published." : "The form was not unpublished.", plan: { _ in
+            .send({ client, google, remote in try await client.driveFormPublish(account: google, id: remote, published: on) })
         }, check: { ($0.publishSettings?.publishState?.isPublished ?? false) == on })
     }
 }

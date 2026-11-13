@@ -384,19 +384,34 @@ final class DriveUI {
 
 extension DriveUI {
 
-    /// Trash asks first while paired, naming the file or the count. Unpaired it works as it always did.
-    func askTrash(_ ids: [String]) {
+    /// Trash asks first while paired, naming the files when there are a few, and the count and the place when
+    /// there are many. Exactly these ids are sent. Unpaired it works as it always did.
+    func askTrash(_ ids: [String], place: String? = nil) {
         guard !ids.isEmpty else { return }
         guard live else {
             trash(ids)
             return
         }
-        let label = count(ids)
-        sheet = .confirm(DriveLiveConfirm(
-            title: ids.count == 1 ? "Move \(label) to trash?" : "Move \(ids.count) files to trash?",
-            detail: "They go to the trash in Google Drive. You can restore them from Trash.",
-            confirm: "Move to trash"
-        ) { [weak self] in self?.trash(ids) })
+        let names = ids.compactMap { store.file($0)?.name }
+        let title: String
+        if ids.count == 1 {
+            title = "Move \(count(ids)) to trash?"
+        } else if ids.count <= 3, names.count == ids.count {
+            title = "Move \(names.dropLast().joined(separator: ", ")) and \(names[names.count - 1]) to trash?"
+        } else {
+            title = "Move \(ids.count) files in \(place ?? "this list") to trash?"
+        }
+        let folders = ids.contains { store.file($0)?.isFolder == true }
+        let detail = (folders ? "A folder goes to the trash with everything in it. " : "")
+            + (ids.count == 1 ? "It goes" : "They go") + " to the trash in Google Drive. You can restore "
+            + (ids.count == 1 ? "it" : "them") + " from Trash."
+        sheet = .confirm(DriveLiveConfirm(title: title, detail: detail, confirm: "Move to trash") { [weak self] in self?.trash(ids) })
+    }
+
+    /// Paired: drop the selection when what is on screen changes, so nothing unseen is ever acted on.
+    func dropSelectionLive() {
+        guard live, !selected.isEmpty else { return }
+        selected = []
     }
 
     /// Run one change per file, one after another, and say how it went. It stops at the first file whose
@@ -417,12 +432,15 @@ extension DriveUI {
                 case .done:
                     finished += 1
                 case .busy:
-                    toaster.say("Wait for the last change to finish")
+                    Haptics.thud()
+                    store.liveNote = "\(finished) of \(ids.count) done. The rest were not sent: a change to one of them is still on its way."
+                    store.refreshShownLive()
                     return
                 case .failed(let why), .unconfirmed(let why):
                     Haptics.thud()
-                    let start = finished > 0 ? "\(finished) of \(ids.count) done. " : ""
+                    let start = ids.count > 1 ? "\(finished) of \(ids.count) done, the rest not sent. " : ""
                     store.liveNote = start + why
+                    store.refreshShownLive()
                     return
                 }
             }
@@ -456,11 +474,14 @@ extension DriveUI {
             case .done:
                 finished += 1
             case .busy:
-                toaster.say("Wait for the last change to finish")
+                Haptics.thud()
+                store.liveNote = "\(finished) of \(ids.count) moved. The rest were not sent: a change to one of them is still on its way."
+                store.refreshShownLive()
                 return
             case .failed(let why), .unconfirmed(let why):
                 Haptics.thud()
-                store.liveNote = (finished > 0 ? "\(finished) of \(ids.count) moved. " : "") + why
+                store.liveNote = (ids.count > 1 ? "\(finished) of \(ids.count) moved, the rest not sent. " : "") + why
+                store.refreshShownLive()
                 return
             }
         }
@@ -485,35 +506,34 @@ extension DriveUI {
         }
     }
 
+    /// Paired: each file's size is read from its attributes, and anything over 25 MB or of unknown size is refused
+    /// here, before any file is read. The files are then read and sent one at a time, off the main actor.
     fileprivate func receiveLive(_ urls: [URL]) {
-        var outgoing: [OutgoingFile] = []
+        var outgoing: [DriveUploadItem] = []
         var tooBig: [String] = []
-        var unreadable: [String] = []
+        var unknown: [String] = []
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileSizeKey, .isDirectoryKey])
+            if scoped { url.stopAccessingSecurityScopedResource() }
             let name = url.lastPathComponent
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard values?.isDirectory != true, let size = values?.fileSize ?? values?.totalFileSize else {
+                unknown.append(name)
+                continue
+            }
             if size > DriveWire.maxUpload {
                 tooBig.append(name)
                 continue
             }
-            guard let data = try? Data(contentsOf: url) else {
-                unreadable.append(name)
-                continue
-            }
-            if data.count > DriveWire.maxUpload {
-                tooBig.append(name)
-                continue
-            }
             let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            outgoing.append(OutgoingFile(name: name, mimeType: mime, data: data))
+            outgoing.append(DriveUploadItem(url: url, name: name, size: size, mimeType: mime))
         }
         if let first = tooBig.first {
             Haptics.thud()
-            toaster.say(tooBig.count == 1 ? "\(first) is over 25 MB" : "\(tooBig.count) files are over 25 MB")
-        } else if let first = unreadable.first {
-            toaster.say("Could not read \(first)")
+            store.liveNote = tooBig.count == 1 ? "\(first) is over 25 MB, so it was not sent." : "\(tooBig.count) files are over 25 MB, so they were not sent."
+        } else if let first = unknown.first {
+            Haptics.thud()
+            store.liveNote = "The size of \(first) could not be read, so it was not sent."
         }
         guard !outgoing.isEmpty else { return }
         guard !store.busy.contains("new") else {
@@ -536,7 +556,7 @@ extension DriveUI {
                 toaster.say("Wait for the upload on its way to finish")
             case .failed(let why), .unconfirmed(let why):
                 Haptics.thud()
-                store.liveNote = (result.sent > 0 ? "\(result.sent) of \(outgoing.count) uploaded. " : "") + why
+                store.liveNote = (outgoing.count > 1 ? "\(result.sent) of \(outgoing.count) uploaded, the rest not sent. " : "") + why
             }
         }
     }
@@ -565,8 +585,10 @@ struct DriveScreen: View {
         .task(id: DriveStore.connectionKey) {
             let store = ui.store
             let wasSample = store.isSample
+            let wasAccount = store.liveAccount
             store.followConnection()
-            if wasSample != store.isSample {
+            // A change of desktop or Kairos account leaves no folder or selection from the one before.
+            if wasSample != store.isSample || (!store.isSample && wasAccount != store.liveAccount) {
                 ui.path = []
                 ui.selected = []
                 ui.selecting = false
@@ -577,6 +599,12 @@ struct DriveScreen: View {
             case .loading, .loaded: break
             }
         }
+        .onChange(of: ui.query) { ui.dropSelectionLive() }
+        .onChange(of: ui.filter) { ui.dropSelectionLive() }
+        .onChange(of: ui.section) { ui.dropSelectionLive() }
+        .onChange(of: ui.grid) { ui.dropSelectionLive() }
+        .onChange(of: ui.path) { ui.dropSelectionLive() }
+        .onChange(of: ui.store.currentAccountID) { ui.dropSelectionLive() }
         .filesToasts(toaster)
         .sheet(item: $ui.sheet, onDismiss: { ui.runPending() }) { sheet in
             sheetContent(sheet)
