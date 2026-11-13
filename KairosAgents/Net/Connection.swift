@@ -383,6 +383,11 @@ final class Connection {
             let store = ChatStore.shared
             return store.isSample ? nil : store.bots.first(where: { $0.id == botID })
         }
+        // A call's voice (Native/CallSession.swift). Not paired, it does nothing and the call stays the pretend one.
+        CallAudioBridge.start = { call in await CallSession.shared.start(call) }
+        CallAudioBridge.stop = { CallSession.shared.stop() }
+        CallAudioBridge.paused = { CallSession.shared.audioPaused() }
+        CallAudioBridge.muted = { muted in CallSession.shared.setMuted(muted) }
     }
 
     private func rememberPushTokens(apns: String, voip: String?) async {
@@ -465,19 +470,19 @@ final class Connection {
             do {
                 if answer {
                     let reply = try await client.ringAnswer(ringID, viaLink: true)
-                    return .sent(botID: reply.agentId, botName: reply.botName)
+                    return .sent(botID: reply.agentId, botName: reply.botName, chatID: reply.target?.sessionId)
                 }
                 try await client.ringDecline(ringID)
-                return .sent(botID: nil, botName: nil)
+                return .sent(botID: nil, botName: nil, chatID: nil)
             } catch APIError.unreadable {
                 // The desktop said yes (a 2xx) in a shape this phone cannot read: it counted.
-                return .sent(botID: nil, botName: nil)
+                return .sent(botID: nil, botName: nil, chatID: nil)
             } catch APIError.server(let code, _) where code == 404 || code == 409 {
                 // The ring is over on the desktop.
                 let now = try? await client.phoneRingState(ringID)
                 let outcome = now?.status ?? "expired"
                 if tried, outcome == (answer ? "answered" : "declined") {
-                    return .sent(botID: now?.agentId, botName: now?.botName)
+                    return .sent(botID: now?.agentId, botName: now?.botName, chatID: nil)
                 }
                 return .ended(outcome)
             } catch APIError.unauthorized {
