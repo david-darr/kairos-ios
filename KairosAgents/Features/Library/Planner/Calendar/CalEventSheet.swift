@@ -81,6 +81,7 @@ struct CalDetailSheet: View {
     }
 
     private func sourceNote(_ event: CalEvent) -> String? {
+        if let reason = event.live?.readOnlyReason { return reason }
         switch event.source {
         case .notes: "This is a note with a due time. Change it in Notes."
         case .tab: "This deadline comes from the \(event.tabName ?? "tab") tab."
@@ -155,6 +156,10 @@ struct CalEventEditor: View {
     @State private var draft: CalDraft
     @State private var scope: CalScope
     @State private var error: String?
+    /// Paired: the save is on its way to the desktop, so Save sends nothing more.
+    @State private var saving = false
+    /// Paired: the whole series is being read, or could not be, so Save waits.
+    @State private var seriesPending = false
     @Environment(\.dismiss) private var dismiss
 
     init(store: CalStore, newOn day: Date, onSaved: @escaping (String) -> Void) {
@@ -201,7 +206,8 @@ struct CalEventEditor: View {
                         .foregroundStyle(Palette.inkDim)
                         .frame(minHeight: 44)
                 } trailing: {
-                    PlannerPill(title: editing ? "Save" : "Add", style: .gold, action: save)
+                    PlannerPill(title: saving ? "Saving..." : (editing ? "Save" : "Add"), style: .gold, action: save)
+                        .disabled(saving || seriesPending)
                 }
 
                 PlannerTextField(label: "Title", placeholder: "e.g. Bike shop stock check", text: $draft.title,
@@ -267,8 +273,17 @@ struct CalEventEditor: View {
         .tint(Palette.gold)
         .animation(Motion.snappy, value: draft)
         .animation(Motion.snappy, value: error)
+        .interactiveDismissDisabled(saving)
         .onChange(of: scope) { _, newScope in
-            if let item { draft = CalEventEditor.draft(for: item, scope: newScope, store: store) }
+            guard let item else { return }
+            if store.isSample {
+                draft = CalEventEditor.draft(for: item, scope: newScope, store: store)
+            } else if newScope == .series && item.isSeries {
+                loadSeries(item)
+            } else {
+                seriesPending = false
+                draft = CalEventEditor.draft(for: item, scope: .this, store: store)
+            }
         }
         .onChange(of: draft.allDay) { _, allDay in
             if allDay {
@@ -280,6 +295,27 @@ struct CalEventEditor: View {
             }
         }
         .onChange(of: draft.title) { if error != nil { error = nil } }
+        .task {
+            if !store.isSample, let item, item.isSeries, scope == .series { loadSeries(item) }
+        }
+    }
+
+    /// Paired: read the whole series before "All events in this series" can be saved, as the desktop does.
+    /// If it cannot be read, Save stays off: the fields of one event must never be saved over the series.
+    private func loadSeries(_ item: CalOccurrence) {
+        seriesPending = true
+        error = nil
+        Task {
+            do {
+                let series = try await store.liveSeries(of: item)
+                guard scope == .series else { return }
+                draft = CalDraft(series, start: series.start, end: series.end)
+                seriesPending = false
+            } catch let failure {
+                guard scope == .series else { return }
+                withAnimation(Motion.snappy) { error = "The series could not be read. " + failure.plainWords }
+            }
+        }
     }
 
     // Rows
@@ -434,6 +470,11 @@ struct CalEventEditor: View {
         let end = draft.allDay ? CalDates.day(draft.end) : draft.end
         let google = draft.calendarID != "kairos"
 
+        if !store.isSample {
+            saveLive(title: title, start: start, end: end)
+            return
+        }
+
         if let item {
             if item.isSeries && scope == .this {
                 let single = CalEvent(id: UUID().uuidString, title: title, start: start, end: end, allDay: draft.allDay,
@@ -463,6 +504,30 @@ struct CalEventEditor: View {
         }
         dismiss()
     }
+
+    /// Paired: Save is the confirmation. It is sent once; the sheet closes only when the desktop has it,
+    /// and if it fails everything typed stays here with what went wrong.
+    private func saveLive(title: String, start: Date, end: Date) {
+        guard !saving, !seriesPending else { return }
+        let live = CalLiveDraft(title: title, allDay: draft.allDay, start: start, end: end, timeZone: draft.timeZone,
+                                location: draft.location, notes: draft.notes,
+                                rule: showsRepeat ? draft.rule : CalRepeat(), calendarID: draft.calendarID)
+        saving = true
+        error = nil
+        Task {
+            let problem = await store.saveLive(live, editing: item, scope: scope)
+            saving = false
+            if let problem {
+                Haptics.thud()
+                withAnimation(Motion.snappy) { error = problem }
+                return
+            }
+            if item == nil { store.selected = CalDates.day(start) }
+            Haptics.success()
+            onSaved(item == nil ? "Event created" : "Event saved")
+            dismiss()
+        }
+    }
 }
 
 // MARK: - Delete
@@ -475,6 +540,8 @@ struct CalDeleteSheet: View {
 
     @State private var scope: CalScope = .this
     @State private var deleting = false
+    /// Paired: why the desktop did not delete it.
+    @State private var problem: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -498,6 +565,14 @@ struct CalDeleteSheet: View {
                     PlannerMenuRow(title: "Delete", options: CalScope.allCases, selection: $scope, label: \.title, last: true)
                         .kCard(radius: 18)
                 }
+                if let problem {
+                    Text(problem)
+                        .font(KFont.ui(14.5, .medium, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.danger)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .transition(.opacity)
+                }
                 VStack(spacing: 4) {
                     PlannerPill(title: deleting ? "Deleting..." : "Delete event", symbol: "trash", style: .danger, expand: true, action: delete)
                         .disabled(deleting)
@@ -507,10 +582,28 @@ struct CalDeleteSheet: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
         }
+        .interactiveDismissDisabled(deleting && !store.isSample)
     }
 
     private func delete() {
+        guard !deleting else { return }
         deleting = true
+        if !store.isSample {
+            // Paired: this sheet is the confirmation. Sent once; the sheet closes only when the desktop has deleted it.
+            problem = nil
+            Task {
+                if let why = await store.deleteLive(item, scope: scope) {
+                    Haptics.thud()
+                    withAnimation(Motion.snappy) { problem = why }
+                    deleting = false
+                    return
+                }
+                Haptics.success()
+                onDeleted("Event deleted")
+                dismiss()
+            }
+            return
+        }
         Task {
             try? await Task.sleep(for: .milliseconds(350))
             withAnimation(Motion.snappy) {

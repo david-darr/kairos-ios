@@ -36,7 +36,13 @@ struct CalSourcesSheet: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     SectionLabel(text: "Google")
-                    if store.googleConnected { googleCard } else { disconnected }
+                    if store.googleConnected {
+                        googleCard
+                    } else if !store.isSample, let note = store.liveGoogleNote {
+                        CalLiveLine(text: note)
+                    } else {
+                        disconnected
+                    }
                 }
 
                 VStack(spacing: 0) {
@@ -107,7 +113,13 @@ struct CalSourcesSheet: View {
             ForEach(Array(store.calendars.enumerated()), id: \.element.id) { index, calendar in
                 swatchToggle(calendar.name, detail: calendar.writable ? nil : "Read-only", color: Color(hex: calendar.colorHex),
                              last: index == store.calendars.count - 1,
-                             isOn: Binding(get: { calendar.visible }, set: { store.setVisible(calendar.id, $0) }))
+                             isOn: Binding(get: { calendar.visible }, set: { value in
+                                 if store.isSample {
+                                     store.setVisible(calendar.id, value)
+                                 } else {
+                                     store.setVisibleLive(calendar.id, value) { notice = $0 }
+                                 }
+                             }))
             }
 
             Text("New events go to \(store.calendar(store.defaultCalendarID)?.name ?? "Kairos") · Google by default.")
@@ -173,8 +185,12 @@ struct CalArchiveSheet: View {
                                 }
                                 Spacer(minLength: 6)
                                 PlannerPill(title: "Reopen", style: .quiet) {
-                                    withAnimation(Motion.snappy) { store.reopen(event.id) }
-                                    notice = "Back on your calendar"
+                                    if store.isSample {
+                                        withAnimation(Motion.snappy) { store.reopen(event.id) }
+                                        notice = "Back on your calendar"
+                                    } else {
+                                        Task { notice = await store.reopenLive(event) ?? "Back on your calendar" }
+                                    }
                                 }
                             }
                             .padding(.horizontal, 16)
@@ -192,5 +208,6 @@ struct CalArchiveSheet: View {
             .padding(.bottom, 24)
         }
         .plannerNotice($notice)
+        .task { await store.loadArchiveLive() }
     }
 }

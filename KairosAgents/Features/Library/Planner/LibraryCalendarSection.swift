@@ -12,6 +12,7 @@ struct LibraryCalendarSection: View {
         VStack(alignment: .leading, spacing: 14) {
             CalModeBar(store: store)
             CalNavRow(store: store, onSources: { sheet = .sources }, onNew: { sheet = .new(store.selected) })
+            liveLine
 
             Group {
                 switch store.mode {
@@ -66,9 +67,27 @@ struct LibraryCalendarSection: View {
         .onChange(of: chrome.addTick) {
             if router.tab == .library { sheet = .new(store.selected) }
         }
+        .task(id: store.liveRangeKey) {
+            store.followConnection()
+            await store.loadLive()
+        }
     }
 
     // Pieces
+
+    /// Paired: reading, or what failed with Try again. Unpaired, nothing.
+    @ViewBuilder private var liveLine: some View {
+        if !store.isSample {
+            switch store.liveLoad {
+            case .loading where store.events.isEmpty:
+                CalLiveLine(text: "Reading your calendar.")
+            case .failed(let text):
+                CalLiveLine(text: text) { Task { await store.loadLive() } }
+            default:
+                EmptyView()
+            }
+        }
+    }
 
     private var dayHeading: some View {
         let count = store.items(on: store.selected).count
@@ -77,7 +96,7 @@ struct LibraryCalendarSection: View {
                 .font(KFont.ui(18, .semibold, relativeTo: .headline))
                 .foregroundStyle(Palette.ink)
             Spacer()
-            Text(CalDates.countHeading(count))
+            Text(store.showsEmpty || count > 0 ? CalDates.countHeading(count) : "")
                 .font(KFont.ui(14, relativeTo: .footnote))
                 .foregroundStyle(Palette.inkFaint)
                 .contentTransition(.numericText())
@@ -106,6 +125,10 @@ struct LibraryCalendarSection: View {
     }
 
     private func complete(_ item: CalOccurrence) {
+        guard store.isSample else {
+            store.completeLive(item) { chrome.say($0) }
+            return
+        }
         withAnimation(Motion.snappy) { store.complete(item.event.id) }
         chrome.say("Done. It is in the Archive now.")
     }

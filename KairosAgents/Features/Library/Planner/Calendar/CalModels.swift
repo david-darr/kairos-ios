@@ -95,6 +95,30 @@ nonisolated struct CalEvent: Identifiable, Hashable, Sendable {
     var completedAt: Date? = nil
     /// Day keys of occurrences removed from a series ("this event" deletes and edits).
     var skips: Set<String> = []
+    /// Set only for an item read from the paired desktop. The desktop already expanded repeats,
+    /// so a live item is never expanded again here.
+    var live: CalLiveRef? = nil
+}
+
+/// What the phone needs to change one item on the desktop, kept beside the item it was read with.
+nonisolated struct CalLiveRef: Hashable, Sendable {
+    /// The desktop's own id: "abc123" for a single event, "abc123~2026-11-12" for one event of a local series,
+    /// a Google event id, a note id or a tab item id.
+    var id: String
+    /// The local series id, or the Google series id for one event of a repeating Google event.
+    var seriesID: String? = nil
+    /// The calendar a Google event is in.
+    var calendarID: String? = nil
+    var calendarName: String? = nil
+    var colorHex: UInt32? = nil
+    /// Google: the calendar lets this account write. Always true for Kairos events.
+    var editable = true
+    /// Guests other than you who have not declined (Google).
+    var guests = 0
+    /// Where a tab item is ticked off (a desktop path under /api/).
+    var toggleURL: String? = nil
+    /// Why the phone shows this item without Edit and Delete, in one plain line. nil when it can be changed.
+    var readOnlyReason: String? = nil
 }
 
 /// One appearance of an event on the calendar (a repeating event has many).
@@ -203,7 +227,7 @@ final class CalStore {
     /// One store for the session, so the view, the day and the hidden sources survive leaving Calendar.
     static let shared = CalStore(provider: CalSampleProvider())
 
-    let accountEmail: String
+    var accountEmail: String
     var events: [CalEvent]
     var calendars: [CalCalendar]
     var hiddenSources: Set<CalSourceKind> = []
@@ -212,6 +236,23 @@ final class CalStore {
     var selected: Date
     var showEarly = false
     var debugApplied = false
+
+    // The paired desktop (CalLive.swift). Unpaired, none of these change and the sample shows.
+    /// Showing the sample. False while the phone shows the paired desktop's calendar.
+    var isSample = true
+    /// Which desktop and account the live items belong to.
+    var liveAccount = "sample"
+    var liveLoad: CalLiveLoad = .idle
+    /// The range the live items were last read for.
+    var liveLoadedKey = ""
+    var liveGeneration = 0
+    /// Checked-off events and notes on the desktop.
+    var liveArchived: [CalEvent] = []
+    /// Why Google calendars are not shown while paired, in one plain line. nil when they are, or not connected at all.
+    var liveGoogleNote: String?
+    /// Items whose change is on its way to the desktop, so a second tap sends nothing.
+    var liveBusy: Set<String> = []
+    var sampleStash: CalSampleStash?
 
     init(provider: CalendarProviding) {
         accountEmail = provider.accountEmail
@@ -229,7 +270,7 @@ final class CalStore {
     func tint(_ event: CalEvent) -> Color {
         switch event.source {
         case .kairos: Palette.gold
-        case .google: Color(hex: calendar(event.calendarID)?.colorHex ?? 0x5B8DB8)
+        case .google: Color(hex: calendar(event.calendarID)?.colorHex ?? event.live?.colorHex ?? 0x5B8DB8)
         case .notes: Color(hex: CalSampleProvider.notesHex)
         case .tab: Color(hex: CalSampleProvider.tabHex)
         }
@@ -238,21 +279,31 @@ final class CalStore {
     func sourceName(_ event: CalEvent) -> String {
         switch event.source {
         case .kairos: "Kairos"
-        case .google: calendar(event.calendarID)?.name ?? "Google"
+        case .google: calendar(event.calendarID)?.name ?? event.live?.calendarName ?? "Google"
         case .notes: "Notes"
         case .tab: event.tabName ?? "Tab"
         }
     }
 
     func canEdit(_ event: CalEvent) -> Bool {
+        if let live = event.live, live.readOnlyReason != nil || !live.editable { return false }
         switch event.source {
-        case .kairos: true
-        case .google: googleConnected && (calendar(event.calendarID)?.writable ?? false)
-        case .notes, .tab: false
+        case .kairos: return true
+        case .google: return googleConnected && (calendar(event.calendarID)?.writable ?? false)
+        case .notes, .tab: return false
         }
     }
 
-    func canComplete(_ event: CalEvent) -> Bool { event.source != .google && !event.repeatRule.repeats }
+    func canComplete(_ event: CalEvent) -> Bool {
+        guard event.source != .google && !event.repeatRule.repeats else { return false }
+        if let live = event.live {
+            return live.seriesID == nil && (event.source != .tab || live.toggleURL != nil)
+        }
+        return true
+    }
+
+    /// An empty day can say "Nothing on this day." Paired, only once the desktop has answered.
+    var showsEmpty: Bool { isSample || liveLoad == .loaded }
 
     var writableCalendars: [CalCalendar] { googleConnected ? calendars.filter(\.writable) : [] }
 
@@ -290,7 +341,7 @@ final class CalStore {
             (end > rangeStart || start >= rangeStart) && start < rangeEnd
         }
         let rule = event.repeatRule
-        guard rule.repeats else {
+        guard rule.repeats, event.live == nil else {
             return overlaps(event.start, event.end) ? [CalOccurrence(event: event, start: event.start, end: event.end)] : []
         }
         let length = event.end.timeIntervalSince(event.start)
@@ -332,7 +383,8 @@ final class CalStore {
     }
 
     var archived: [CalEvent] {
-        events.filter(\.completed).sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
+        if !isSample { return liveArchived }
+        return events.filter(\.completed).sorted { ($0.completedAt ?? .distantPast) > ($1.completedAt ?? .distantPast) }
     }
 
     // Periods
