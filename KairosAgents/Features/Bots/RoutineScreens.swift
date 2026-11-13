@@ -3,7 +3,7 @@ import UIKit
 
 // Routines and triggers for one bot, their editors, and the next-run wording.
 
-enum RoutineTiming {
+nonisolated enum RoutineTiming {
     static func weekday(of date: Date) -> Weekday {
         Weekday(rawValue: (Calendar.current.component(.weekday, from: date) + 5) % 7) ?? .mon
     }
@@ -61,28 +61,35 @@ enum RoutineTiming {
 struct RoutinesScreen: View {
     let botID: String
     let store = BotsStore.shared
+    let live = BotsRoutinesLive.shared
     @State private var deleting: Routine?
     @State private var removed: Routine?
+    @State private var running: Routine?
     @State private var watching = true
     @State private var morningBrief = true
     @State private var briefHour = 8
     @State private var briefMinute = 0
     @State private var goto: BotsRoute?
 
+    /// Paired: every routine and trigger here is the desktop's, never a sample.
+    private var isLive: Bool { !Connection.shared.usesSampleData }
+
     var body: some View {
-        let routines = store.routines(for: botID).sorted { ($0.on ? 0 : 1, $0.hour) < ($1.on ? 0 : 1, $1.hour) }
-        let triggers = store.triggers.filter { $0.botID == botID }
-        BotsPage("Routines and triggers", subtitle: store.bot(botID).name, trailing: {
+        let routines = (isLive ? live.routines(for: botID) : store.routines(for: botID)).sorted { ($0.on ? 0 : 1, $0.hour) < ($1.on ? 0 : 1, $1.hour) }
+        let triggers = (isLive ? live.shownTriggers : store.triggers).filter { $0.botID == botID }
+        BotsPage("Routines and triggers", subtitle: store.bot(botID).name, live: isLive, trailing: {
             Menu {
                 Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
-                Button { goto = .triggerEditor(botID, nil, webhook: false) } label: { Label("When something happens in an app", systemImage: "app.badge") }
-                Button { goto = .triggerEditor(botID, nil, webhook: true) } label: { Label("When another app calls", systemImage: "arrow.down.left.circle") }
+                if !isLive {
+                    Button { goto = .triggerEditor(botID, nil, webhook: false) } label: { Label("When something happens in an app", systemImage: "app.badge") }
+                    Button { goto = .triggerEditor(botID, nil, webhook: true) } label: { Label("When another app calls", systemImage: "arrow.down.left.circle") }
+                }
             } label: {
                 Image(systemName: "plus").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
                     .frame(width: 44, height: 44).contentShape(Circle())
             }
             .kGlass(Circle(), interactive: true)
-            .accessibilityLabel("New routine or trigger")
+            .accessibilityLabel(isLive ? "New routine" : "New routine or trigger")
         }) {
             if store.bot(botID).isKip { watchCard }
 
@@ -91,11 +98,18 @@ struct RoutinesScreen: View {
                     Text("Deleted \"\(removed.name)\".").font(KFont.ui(15)).foregroundStyle(Palette.ink)
                     Spacer()
                     PillButton(title: "Bring it back", look: .filled) {
+                        if isLive {
+                            live.restore(removed, done: { _ in
+                                withAnimation(Motion.snappy) { if self.removed?.id == removed.id { self.removed = nil } }
+                            }, say: store.say)
+                            return
+                        }
                         withAnimation(Motion.snappy) {
                             store.routines.append(removed)
                             self.removed = nil
                         }
                     }
+                    .disabled(isLive && live.waits(removed))
                 }
                 .padding(12)
                 .kCard(radius: 18, raised: true)
@@ -104,28 +118,48 @@ struct RoutinesScreen: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel(text: "Routines").padding(.horizontal, 4)
-                if routines.isEmpty {
+                if isLive {
+                    BotsLoadNote(state: live.shown(live.routinesLoad), waiting: "Reading routines from your desktop.") {
+                        Task { await live.refreshRoutines(force: false) }
+                    }
+                }
+                if routines.isEmpty && (!isLive || (live.isCurrent && live.routinesLoad == .loaded)) {
                     EmptyNote(text: "No routines yet. Add one and this bot works on its own, on a schedule.", symbol: "clock").kCard(radius: 20)
                 }
                 ForEach(Array(routines.enumerated()), id: \.element.id) { index, routine in
-                    RoutineRow(routine: routine, showFace: false) { deleting = routine }
+                    RoutineRow(routine: routine, showFace: false, onDelete: { deleting = routine }, onRun: { running = routine })
                         .arrives(index)
+                }
+                if isLive && live.skippedRoutines > 0 {
+                    HintLine(text: live.skippedRoutines == 1 ? "1 routine could not be read by this app." : "\(live.skippedRoutines) routines could not be read by this app.", symbol: "info.circle")
+                        .padding(.horizontal, 4)
                 }
                 PillButton(title: "Add a routine", symbol: "plus", wide: true) { goto = .routineEditor(botID, nil) }
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel(text: "Triggers").padding(.horizontal, 4)
-                VStack(spacing: 0) {
-                    if triggers.isEmpty {
-                        EmptyNote(text: "No triggers. A trigger starts the bot when an app sends something.", symbol: "bolt")
-                    }
-                    ForEach(Array(triggers.enumerated()), id: \.element.id) { index, trigger in
-                        if index > 0 { RowLine(inset: 54) }
-                        TriggerRow(trigger: trigger)
+                if isLive {
+                    BotsLoadNote(state: live.shown(live.triggersLoad), waiting: "Reading triggers from your desktop.") {
+                        Task { await live.loadTriggers() }
                     }
                 }
-                .kCard(radius: 20)
+                if !isLive || live.triggersReady {
+                    VStack(spacing: 0) {
+                        if triggers.isEmpty {
+                            EmptyNote(text: "No triggers. A trigger starts the bot when an app sends something.", symbol: "bolt")
+                        }
+                        ForEach(Array(triggers.enumerated()), id: \.element.id) { index, trigger in
+                            if index > 0 { RowLine(inset: 54) }
+                            TriggerRow(trigger: trigger)
+                        }
+                    }
+                    .kCard(radius: 20)
+                }
+                if isLive {
+                    HintLine(text: "Make or change a trigger in Kairos on your desktop. A webhook address carries a secret, so it stays there.", symbol: "info.circle")
+                        .padding(.horizontal, 4)
+                }
             }
 
             VStack(spacing: 0) {
@@ -143,19 +177,121 @@ struct RoutinesScreen: View {
         .navigationDestination(item: $goto) { BotsDestination(route: $0) }
         .sheet(item: $deleting) { routine in
             ConfirmSheet(title: "Delete this routine?", detail: "\"\(routine.name)\" will stop. You can bring it back for a little while.", confirm: "Delete routine") {
+                if isLive {
+                    live.delete(routine, onDeleted: { gone in showRemoved(gone) }, say: store.say)
+                    return
+                }
                 withAnimation(Motion.snappy) {
                     store.routines.removeAll { $0.id == routine.id }
-                    removed = routine
                 }
-                Task {
-                    try? await Task.sleep(for: .seconds(8))
-                    withAnimation(Motion.gentle) { if removed?.id == routine.id { removed = nil } }
-                }
+                showRemoved(routine)
+            }
+        }
+        .sheet(item: $running) { routine in
+            ConfirmSheet(title: "Run \"\(routine.name)\" now?", detail: "It starts a run on your desktop now, outside its schedule.", confirm: "Run now", danger: false) {
+                live.runNow(routine, say: store.say)
+            }
+        }
+        .task(id: BotsRoutinesLive.connectionKey) {
+            live.followConnection()
+            guard isLive else { return }
+            await live.loadIfNeeded()
+            if store.bot(botID).isKip { await live.loadWatch() }
+        }
+        .onChange(of: live.shownWatch?.morning?.time) { syncMorning() }
+        .task(id: briefHour * 60 + briefMinute) {
+            // The time chip sets the hour and the minute one after the other: send once it settles,
+            // and only a time the person picked (never the one just read from the desktop).
+            guard isLive, let stored = TasksWire.clock(live.shownWatch?.morning?.time),
+                  stored.hour != briefHour || stored.minute != briefMinute else { return }
+            try? await Task.sleep(for: .seconds(0.8))
+            guard !Task.isCancelled else { return }
+            if !live.setMorning(time: String(format: "%02d:%02d", briefHour, briefMinute), say: store.say) {
+                // Another change was on its way: the chip goes back to the desktop's time, never shows one unsent.
+                syncMorning()
+                store.say("The morning time was not sent while another change was on its way. Pick it again.")
             }
         }
     }
 
+    private func showRemoved(_ routine: Routine) {
+        withAnimation(Motion.snappy) { removed = routine }
+        Task {
+            try? await Task.sleep(for: .seconds(8))
+            withAnimation(Motion.gentle) { if removed?.id == routine.id { removed = nil } }
+        }
+    }
+
+    private func syncMorning() {
+        guard let clock = TasksWire.clock(live.shownWatch?.morning?.time) else { return }
+        briefHour = clock.hour
+        briefMinute = clock.minute
+    }
+
+    @ViewBuilder
     private var watchCard: some View {
+        if isLive { liveWatchCard } else { sampleWatchCard }
+    }
+
+    /// Kip's watch on the desktop: a routine of Kip's, plus the morning brief setting.
+    @ViewBuilder
+    private var liveWatchCard: some View {
+        if let watch = live.shownWatch {
+            let on = watch.enabled ?? false
+            let hasRoutine = watch.routineId != nil && (watch.state == "working" || watch.state == "paused")
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    StateTag(text: on ? "Watching your day" : (hasRoutine ? "Paused" : "Not watching"), color: on ? Palette.success : Palette.inkFaint, pulsing: on)
+                    Spacer()
+                    if hasRoutine {
+                        PillButton(title: on ? "Pause" : "Resume") {
+                            Haptics.tap()
+                            live.setWatchOn(!on, say: store.say)
+                        }
+                        .disabled(live.watchBusy)
+                    }
+                }
+                Text("Keep an eye on my day").font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
+                Text("Kip watches Calendar and Mail and tells you what matters.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+                if watch.state == "not_connected" {
+                    HintLine(text: "Kip starts watching once Mail or Calendar is connected on your desktop.", symbol: "info.circle")
+                } else if !hasRoutine {
+                    HintLine(text: "Kip is not watching your day yet.", symbol: "info.circle")
+                }
+                if watch.morning != nil {
+                    Toggle(isOn: Binding(get: { live.shownWatch?.morning?.on ?? false }, set: { value in
+                        Haptics.select()
+                        live.setMorning(on: value, say: store.say)
+                    })) {
+                        Text("Morning brief").font(KFont.ui(16)).foregroundStyle(Palette.ink)
+                    }
+                    .tint(Palette.gold)
+                    .frame(minHeight: 44)
+                    .disabled(live.watchBusy)
+                    if watch.morning?.on == true {
+                        HStack {
+                            Text("Morning time").font(KFont.ui(15)).foregroundStyle(Palette.inkDim)
+                            Spacer()
+                            TimeChip(hour: $briefHour, minute: $briefMinute, label: "Morning time")
+                                .disabled(live.watchBusy)
+                        }
+                        if let zone = watch.morning?.zone, !zone.isEmpty, zone != TimeZone.current.identifier {
+                            HintLine(text: "This time is in \(zone), as your desktop keeps it.")
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .kCard(radius: 20, raised: true)
+            .onAppear(perform: syncMorning)
+        } else {
+            BotsLoadNote(state: live.shown(live.watchLoad), waiting: "Reading Kip's watch from your desktop.") {
+                Task { await live.loadWatch() }
+            }
+        }
+    }
+
+    private var sampleWatchCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 StateTag(text: watching ? "Watching your day" : "Paused", color: watching ? Palette.success : Palette.inkFaint, pulsing: watching)
@@ -190,17 +326,23 @@ struct RoutineRow: View {
     let routine: Routine
     var showFace = false
     var onDelete: () -> Void = {}
+    /// Paired: Run now asks first through this.
+    var onRun: () -> Void = {}
     let store = BotsStore.shared
+    let live = BotsRoutinesLive.shared
+
+    private var isLive: Bool { !Connection.shared.usesSampleData }
 
     var body: some View {
-        let next = RoutineTiming.nextTimes(routine, count: 1).first
+        let next = isLive ? live.nextLabel(routine) : RoutineTiming.nextTimes(routine, count: 1).first
+        let sentence = isLive ? live.sentence(routine) : routine.sentence
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
                 if showFace { BotFace(bot: store.bot(routine.botID), size: 40) }
                 NavigationLink(value: BotsRoute.routineEditor(routine.botID, routine.id)) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(routine.name).font(KFont.ui(16.5, .medium)).foregroundStyle(routine.on ? Palette.ink : Palette.inkFaint)
-                        Text(routine.on ? "\(routine.sentence)\(next.map { " · next \($0)" } ?? "")" : "\(routine.sentence) · paused")
+                        Text(routine.on ? "\(sentence)\(next.map { " · next \($0)" } ?? "")" : "\(sentence) · paused")
                             .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                         Text(routine.failedInARow > 0 ? "\(routine.lastRun) · failed \(routine.failedInARow) in a row" : routine.lastRun)
                             .font(KFont.ui(12.5, relativeTo: .caption))
@@ -212,11 +354,13 @@ struct RoutineRow: View {
                 .buttonStyle(PressStyle(scale: 0.98))
                 Toggle("", isOn: Binding(get: { routine.on }, set: { value in
                     Haptics.select()
+                    if isLive { live.setOn(routine, value, say: store.say); return }
                     update { $0.on = value }
                 }))
                 .labelsHidden()
                 .tint(Palette.gold)
                 .accessibilityLabel("\(routine.name) on")
+                .disabled(isLive && live.waits(routine))
                 menu
             }
             if let needs = routine.needsYou {
@@ -224,9 +368,14 @@ struct RoutineRow: View {
                     Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Palette.goldText)
                     Text(needs).font(KFont.ui(14)).foregroundStyle(Palette.ink)
                     Spacer()
-                    PillButton(title: "Fix", look: .filled) {
-                        update { $0.needsYou = nil; $0.failedInARow = 0; $0.lastRun = "Ready to run again" }
-                        store.say("Signed in again. It will run next time.")
+                    if !isLive {
+                        PillButton(title: "Fix", look: .filled) {
+                            update { $0.needsYou = nil; $0.failedInARow = 0; $0.lastRun = "Ready to run again" }
+                            store.say("Signed in again. It will run next time.")
+                        }
+                    } else if live.seenRunID(routine) != nil {
+                        PillButton(title: "Mark seen", look: .filled) { live.markSeen(routine, say: store.say) }
+                            .disabled(live.waits(routine))
                     }
                 }
                 .padding(10)
@@ -248,14 +397,25 @@ struct RoutineRow: View {
 
     @ViewBuilder
     private var menuItems: some View {
-        Button {
-            update { $0.lastRun = "Running now" }
-            store.say("Started")
-        } label: { Label("Run now", systemImage: "play") }
-        Button {
-            update { $0.on.toggle() }
-        } label: { Label(routine.on ? "Pause" : "Resume", systemImage: routine.on ? "pause" : "play.circle") }
-        Button(role: .destructive) { onDelete() } label: { Label("Delete", systemImage: "trash") }
+        if isLive {
+            // Run now starts real work, so it asks first (onRun). Nothing here while a write for it is on its way.
+            if !live.waits(routine) {
+                Button { onRun() } label: { Label("Run now", systemImage: "play") }
+                Button { live.setOn(routine, !routine.on, say: store.say) } label: {
+                    Label(routine.on ? "Pause" : "Resume", systemImage: routine.on ? "pause" : "play.circle")
+                }
+                Button(role: .destructive) { onDelete() } label: { Label("Delete", systemImage: "trash") }
+            }
+        } else {
+            Button {
+                update { $0.lastRun = "Running now" }
+                store.say("Started")
+            } label: { Label("Run now", systemImage: "play") }
+            Button {
+                update { $0.on.toggle() }
+            } label: { Label(routine.on ? "Pause" : "Resume", systemImage: routine.on ? "pause" : "play.circle") }
+            Button(role: .destructive) { onDelete() } label: { Label("Delete", systemImage: "trash") }
+        }
     }
 
     private func update(_ change: (inout Routine) -> Void) {
@@ -267,24 +427,27 @@ struct RoutineRow: View {
 struct TriggerRow: View {
     let trigger: BotTrigger
     let store = BotsStore.shared
+    let live = BotsRoutinesLive.shared
+
+    private var isLive: Bool { !Connection.shared.usesSampleData }
 
     var body: some View {
         HStack(spacing: 12) {
-            NavigationLink(value: BotsRoute.triggerEditor(trigger.botID, trigger.id, webhook: trigger.kind == .webhook)) {
-                HStack(spacing: 12) {
-                    Image(systemName: trigger.kind == .webhook ? "arrow.down.left.circle" : "app.badge")
-                        .font(.system(size: 17)).foregroundStyle(Palette.goldText).frame(width: 26)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(trigger.name).font(KFont.ui(16, .medium)).foregroundStyle(trigger.on ? Palette.ink : Palette.inkFaint)
-                        Text("\(trigger.app): \(trigger.event) · \(trigger.on ? trigger.lastEvent : "Paused")")
-                            .font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).lineLimit(2)
-                    }
-                    Spacer(minLength: 0)
+            if isLive {
+                // Paired: a trigger is made and changed on the desktop (a webhook's address carries a secret).
+                label
+            } else {
+                NavigationLink(value: BotsRoute.triggerEditor(trigger.botID, trigger.id, webhook: trigger.kind == .webhook)) {
+                    label
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(PressStyle(scale: 0.98))
             }
-            .buttonStyle(PressStyle(scale: 0.98))
             Toggle("", isOn: Binding(get: { trigger.on }, set: { value in
+                if isLive {
+                    Haptics.select()
+                    live.setOn(trigger, value, say: store.say)
+                    return
+                }
                 guard let index = store.triggers.firstIndex(where: { $0.id == trigger.id }) else { return }
                 Haptics.select()
                 withAnimation(Motion.snappy) { store.triggers[index].on = value }
@@ -292,10 +455,25 @@ struct TriggerRow: View {
             .labelsHidden()
             .tint(Palette.gold)
             .accessibilityLabel("\(trigger.name) on")
+            .disabled(isLive && live.waits(trigger))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(minHeight: 60)
+    }
+
+    private var label: some View {
+        HStack(spacing: 12) {
+            Image(systemName: trigger.kind == .webhook ? "arrow.down.left.circle" : "app.badge")
+                .font(.system(size: 17)).foregroundStyle(Palette.goldText).frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(trigger.name).font(KFont.ui(16, .medium)).foregroundStyle(trigger.on ? Palette.ink : Palette.inkFaint)
+                Text("\(trigger.app): \(trigger.event) · \(trigger.on ? trigger.lastEvent : "Paused")")
+                    .font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
     }
 }
 
@@ -313,30 +491,200 @@ struct RoutineEditorScreen: View {
     @State private var onceDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
     @State private var stopAfter = false
     @State private var stopDate = Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+    // Paired only.
+    let live = BotsRoutinesLive.shared
+    @State private var base: BotRoutineForm?
+    @State private var endpointID = ""
+    @State private var limitSet = false
+    @State private var saving = false
+    @State private var outcome: String?
+    /// Parts changed both here and on the desktop since this was opened, with both values.
+    @State private var conflict: String?
+    @State private var missing = false
+    @State private var check: BotRoutinePreview = .checking
+    @State private var startMinute = 0
+    @State private var endMinute = 0
+
+    private var isLive: Bool { !Connection.shared.usesSampleData }
+
+    /// The desktop allows 8,000 characters of instructions.
+    private var instructionLimit: Int { isLive ? 8_000 : 20_000 }
+
+    /// What is on screen, over the desktop's routine it was read from (`base`).
+    private var form: BotRoutineForm {
+        var out = BotRoutineForm(draft: draft, onceDate: onceDate, stopAfter: stopAfter, stopDate: stopDate, endpointID: endpointID,
+                                 zone: base?.zone, limitSet: limitSet, revision: base?.revision)
+        out.account = base?.account ?? ""
+        out.startMinute = startMinute
+        out.endMinute = endMinute
+        out.stored = base?.stored
+        out.exact = base?.exact ?? true
+        out.sentence = base?.sentence
+        return out
+    }
+
+    /// Paired, a stored schedule this editor cannot show exactly is changed on the desktop only.
+    private var scheduleLocked: Bool { isLive && base?.exact == false }
+
+    /// The schedule's time zone in one quiet line, when the phone's differs or it is new.
+    private var zoneLine: String? {
+        guard isLive, let base, base.exact, draft.mode != .once, draft.mode != .limitReset, draft.mode != .custom else { return nil }
+        let phone = TimeZone.current.identifier
+        if routineID == nil { return "Times are in this iPhone's time zone, \(phone)." }
+        if let zone = base.zone { return zone == phone ? nil : "Times are in \(zone), the time zone this routine keeps." }
+        // No zone stored: the desktop uses its own. Quiet when its offset is known to match this iPhone's.
+        if case .shown(_, _, let shown?) = check, shown.secondsFromGMT() == TimeZone.current.secondsFromGMT() { return nil }
+        return "Times are in your desktop's own time zone."
+    }
+
+    /// The calendar a stop date is picked in: the schedule's own zone.
+    private var stopZone: TimeZone { BotRoutineMap.calendar(form).timeZone }
 
     var body: some View {
-        BotsPage(routineID == nil ? "New routine" : "Edit routine", subtitle: store.bot(draft.botID).name) {
-            preview
-            FieldCard(title: "Name", text: $draft.name, placeholder: "Morning summary", limit: 80)
-            if tried && draft.name.trimmingCharacters(in: .whitespaces).isEmpty { problem("Give it a name.") }
+        BotsPage(routineID == nil ? "New routine" : "Edit routine", subtitle: store.bot(draft.botID).name, live: isLive) {
+            if isLive && missing {
+                HintLine(text: "This routine is not on your desktop any more.", symbol: "info.circle").padding(.horizontal, 4)
+            } else if isLive && base == nil {
+                BotsLoadNote(state: live.routinesLoad == .loaded ? .loading : live.routinesLoad, waiting: "Reading this routine from your desktop.") {
+                    Task { await live.refreshRoutines(force: false); loadLive() }
+                }
+            } else {
+                editor
+            }
+        }
+        .disabled(saving)
+        .onAppear(perform: load)
+        .task(id: BotsRoutinesLive.connectionKey) {
+            live.followConnection()
+            guard isLive else { return }
+            if let formAccount = base?.account, formAccount != BotsRoutinesLive.accountKey {
+                // Another desktop or account: nothing read for the last one stays in the form.
+                base = nil
+                missing = false
+                outcome = nil
+                conflict = nil
+            }
+            await live.loadIfNeeded()
+            loadLive()
+            await live.loadLimits()
+            if base != nil && endpointID.isEmpty, let first = live.shownLimits.first { endpointID = first.endpointId }
+        }
+        .onChange(of: live.routinesLoad) {
+            // A read another screen started has landed: the routine can be shown now.
+            if isLive && base == nil { loadLive() }
+        }
+        .task(id: isLive && base != nil ? BotRoutineMap.signature(form) : "") {
+            guard isLive, let base else { return }
+            let untouched = !BotRoutineMap.scheduleTouched(form, from: base)
+            if base.stored == nil && routineID != nil {
+                // Nothing this iPhone can read: the desktop's own words, and no preview.
+                check = .unknown("This schedule can only be changed in Kairos on your desktop.")
+                return
+            }
+            if untouched && draft.mode == .once, base.stored != nil, onceHasPassed(base) {
+                // A one-time routine that has had its time: nothing to check, nothing will run.
+                check = .shown(sentence: base.sentence ?? draft.sentence, next: [], zone: nil)
+                return
+            }
+            check = .checking
+            try? await Task.sleep(for: .seconds(0.4))
+            guard !Task.isCancelled, let answer = await live.preview(form, base: base), !Task.isCancelled else { return }
+            check = answer
+        }
+    }
+
+    /// Whether a stored one-time schedule's time has passed.
+    private func onceHasPassed(_ base: BotRoutineForm) -> Bool {
+        guard let at = TasksWire.date(BotRoutineWire.field(base.stored, "at")?.string) else { return false }
+        return at <= Date()
+    }
+
+    @ViewBuilder
+    private var editor: some View {
+        preview
+        FieldCard(title: "Name", text: $draft.name, placeholder: "Morning summary", limit: 80)
+        if tried && draft.name.trimmingCharacters(in: .whitespaces).isEmpty { problem("Give it a name.") }
+        if !(isLive && routineID != nil) {
+            // Paired, a routine stays with its bot: the desktop does not move one.
             BotsSection {
                 MenuRow(title: "Bot", symbol: "person.crop.circle", options: store.bots.map(\.name), selection: Binding(
                     get: { store.bot(draft.botID).name },
                     set: { name in draft.botID = store.bots.first { $0.name == name }?.id ?? draft.botID }
                 ))
             }
-            repeatSection
-            whenSection
-            FieldCard(title: "Instructions", text: $draft.instructions, placeholder: "What should the bot do each time?", limit: 20_000, lines: 3...10)
-            if tried && draft.instructions.trimmingCharacters(in: .whitespaces).isEmpty { problem("Say what the bot should do.") }
-            runSection
-            GoldButton(title: routineID == nil ? "Schedule" : "Save") { save() }
-                .padding(.top, 4)
         }
-        .onAppear(perform: load)
+        if scheduleLocked {
+            // The stored schedule has a shape this editor cannot show exactly: sending anything back could change it.
+            HintLine(text: "Change this schedule in Kairos on your desktop. Everything else can be changed here.", symbol: "desktopcomputer")
+                .padding(.horizontal, 4)
+        } else {
+            repeatSection
+            if let zoneLine {
+                HintLine(text: zoneLine, symbol: "globe").padding(.horizontal, 4)
+            }
+            whenSection
+        }
+        FieldCard(title: "Instructions", text: $draft.instructions, placeholder: "What should the bot do each time?", limit: instructionLimit, lines: 3...10)
+        if tried && draft.instructions.trimmingCharacters(in: .whitespaces).isEmpty { problem("Say what the bot should do.") }
+        runSection
+        if let outcome {
+            HintLine(text: outcome, symbol: "exclamationmark.circle", color: Palette.goldText)
+                .padding(.horizontal, 4)
+        }
+        if let conflict {
+            HintLine(text: conflict, symbol: "arrow.triangle.2.circlepath", color: Palette.goldText)
+                .padding(.horizontal, 4)
+        }
+        GoldButton(title: saving ? "Saving" : (routineID == nil ? "Schedule" : "Save")) { save() }
+            .padding(.top, 4)
     }
 
+    @ViewBuilder
     private var preview: some View {
+        if isLive { livePreview } else { samplePreview }
+    }
+
+    /// Paired: the sentence and next times are the desktop's own, so the phone never shows a time it would not run.
+    private var livePreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch check {
+            case .checking:
+                Text(base?.sentence ?? draft.sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
+                Text("Checking the schedule with your desktop.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+            case .shown(let sentence, let next, let zone):
+                Text(sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
+                    .contentTransition(.opacity)
+                Text(next.isEmpty ? (draft.mode == .limitReset ? "It runs once your desktop knows when the limit resets." : "Nothing is scheduled.")
+                     : "Next: " + next.map { label($0, in: zone) }.joined(separator: ", "))
+                    .font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+            case .refused(let text):
+                Text("Your desktop cannot use this schedule").font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
+                Text(text).font(KFont.ui(14)).foregroundStyle(Palette.danger)
+            case .unknown(let text):
+                Text(base?.sentence ?? draft.sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
+                Text(text).font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .kCard(radius: 20, raised: true)
+        .animation(Motion.snappy, value: check)
+    }
+
+    /// "Today 9:00 AM" in the schedule's own zone (nil: this iPhone's).
+    private func label(_ time: Date, in zone: TimeZone?) -> String {
+        guard let zone else { return RoutineTiming.label(time, now: Date()) }
+        var calendar = Calendar.current
+        calendar.timeZone = zone
+        let now = Date()
+        let clock = clockText(calendar.component(.hour, from: time), calendar.component(.minute, from: time))
+        if calendar.isDate(time, inSameDayAs: now) { return "Today \(clock)" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(time, inSameDayAs: tomorrow) { return "Tomorrow \(clock)" }
+        let weekday = Weekday(rawValue: (calendar.component(.weekday, from: time) + 5) % 7) ?? .mon
+        return "\(weekday.short) \(clock)"
+    }
+
+    private var samplePreview: some View {
         let times = RoutineTiming.nextTimes(draft)
         return VStack(alignment: .leading, spacing: 6) {
             Text(draft.sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
@@ -400,9 +748,10 @@ struct RoutineEditorScreen: View {
                 ToggleRow(title: "Only between certain hours", isOn: $draft.onlyBetween)
                 if draft.onlyBetween {
                     HStack(spacing: 10) {
-                        TimeChip(hour: $draft.startHour, minute: .constant(0), label: "Start")
+                        // Paired, the window keeps its minutes (a 09:30 start stays 09:30).
+                        TimeChip(hour: $draft.startHour, minute: isLive ? $startMinute : .constant(0), label: "Start")
                         Text("to").font(KFont.ui(15)).foregroundStyle(Palette.inkFaint)
-                        TimeChip(hour: $draft.endHour, minute: .constant(0), label: "End")
+                        TimeChip(hour: $draft.endHour, minute: isLive ? $endMinute : .constant(0), label: "End")
                         Spacer()
                     }
                     .padding(.horizontal, 16)
@@ -414,6 +763,8 @@ struct RoutineEditorScreen: View {
                     DatePicker("Stop after", selection: $stopDate, in: Date()..., displayedComponents: .date)
                         .font(KFont.ui(16)).foregroundStyle(Palette.ink).tint(Palette.gold)
                         .padding(.horizontal, 16).frame(minHeight: 56)
+                        // The day is the schedule's own (its zone), as the desktop reads it.
+                        .environment(\.timeZone, isLive ? stopZone : .current)
                 }
             }
             if tried && draft.days.isEmpty { problem("Pick the days.") }
@@ -429,11 +780,34 @@ struct RoutineEditorScreen: View {
                 ChipPicker(items: ["0 * * * *", "0 9 * * 1-5", "0 9 1 * *", "0 9 L * *"], isOn: { $0 == draft.cron }, title: presetName) { draft.cron = $0 }
                     .padding(12)
                 RowLine()
-                MenuRow(title: "Time zone", options: ["Your time zone", "UTC", "Eastern Time", "Central European Time"], selection: .constant("Your time zone"))
+                if isLive {
+                    HintLine(text: customZoneLine, symbol: "globe")
+                        .padding(.horizontal, 16).frame(minHeight: 52)
+                } else {
+                    MenuRow(title: "Time zone", options: ["Your time zone", "UTC", "Eastern Time", "Central European Time"], selection: .constant("Your time zone"))
+                }
             }
         case .limitReset:
             BotsSection(title: "After a limit reset") {
-                MenuRow(title: "Which limit", options: ["Claude", "Codex"], selection: $draft.limitName)
+                if isLive {
+                    if live.shownLimits.isEmpty {
+                        HintLine(text: live.limitsLoad == .loaded ? "Your desktop has no usage limit to follow right now." : "Reading usage limits from your desktop.", symbol: "info.circle")
+                            .padding(.horizontal, 16).frame(minHeight: 52)
+                    } else {
+                        // Matched by the connection's id: two connections can share a name, or have none.
+                        let labels = limitLabels
+                        MenuRow(title: "Which limit", options: labels.map(\.label), selection: Binding(
+                            get: { labels.first { $0.id == endpointID }?.label ?? "Pick one" },
+                            set: { picked in
+                                guard let found = labels.first(where: { $0.label == picked }) else { return }
+                                endpointID = found.id
+                                draft.limitName = found.name
+                            }
+                        ))
+                    }
+                } else {
+                    MenuRow(title: "Which limit", options: ["Claude", "Codex"], selection: $draft.limitName)
+                }
                 RowLine()
                 GoldSegmented(items: [false, true], selection: $draft.afterEveryReset) { $0 ? "After every reset" : "Once, after the next" }
                     .padding(8)
@@ -441,17 +815,43 @@ struct RoutineEditorScreen: View {
         }
     }
 
+    /// The zone a custom schedule runs in: the routine's own, or this iPhone's when it needs one and has none.
+    private var customZoneLine: String {
+        let zone = BotRoutineMap.sendZone(form) ?? TimeZone.current.identifier
+        if routineID != nil, base?.zone == nil {
+            return "A custom schedule needs a named time zone, so it uses this iPhone's, \(zone)."
+        }
+        return zone == TimeZone.current.identifier ? "It uses this iPhone's time zone, \(zone)." : "It runs in \(zone), the time zone this routine keeps."
+    }
+
+    /// One unique label per usage limit the desktop reads.
+    private var limitLabels: [(id: String, name: String, label: String)] {
+        let limits = live.shownLimits
+        return limits.map { limit in
+            let name = (limit.name ?? "").trimmingCharacters(in: .whitespaces)
+            let shared = name.isEmpty || limits.filter { ($0.name ?? "").trimmingCharacters(in: .whitespaces) == name }.count > 1
+            return (limit.endpointId, name.isEmpty ? limit.endpointId : name, shared ? (name.isEmpty ? limit.endpointId : "\(name) (\(limit.endpointId))") : name)
+        }
+    }
+
     private var runSection: some View {
-        BotsSection(title: "Each run") {
-            StepperRow(title: "Run limit", detail: "Time spent waiting for you does not count.", value: $draft.runLimit, range: 5...240, step: 5, unit: "min")
+        BotsSection(title: "Each run", footer: isLive ? "Where results are posted is set in Kairos on your desktop." : nil) {
+            StepperRow(title: "Run limit",
+                       detail: isLive && !limitSet ? "Not set. Your desktop uses its own limit." : "Time spent waiting for you does not count.",
+                       value: Binding(get: { draft.runLimit }, set: { value in
+                           draft.runLimit = value
+                           limitSet = true
+                       }), range: 5...240, step: 5, unit: "min")
             RowLine()
             MenuRow(title: "If the last run is still going", options: ["Skip the new run", "Queue one for after"], selection: Binding(
                 get: { draft.queueIfRunning ? "Queue one for after" : "Skip the new run" },
                 set: { draft.queueIfRunning = $0 == "Queue one for after" }
             ))
             RowLine()
-            MenuRow(title: "Post results to", options: ["Its own conversation each time", "Main", "Friday report"], selection: $draft.postTo)
-            RowLine()
+            if !isLive {
+                MenuRow(title: "Post results to", options: ["Its own conversation each time", "Main", "Friday report"], selection: $draft.postTo)
+                RowLine()
+            }
             ToggleRow(title: "Also run when Kairos starts", isOn: $draft.runOnStart)
             RowLine()
             ToggleRow(title: "Remember the last report", isOn: $draft.rememberLast)
@@ -516,11 +916,46 @@ struct RoutineEditorScreen: View {
     private func load() {
         guard !loaded else { return }
         loaded = true
+        if isLive {
+            loadLive()
+            return
+        }
         if let routineID, let existing = store.routines.first(where: { $0.id == routineID }) {
             draft = existing
         } else {
             draft = Routine(botID: botID, name: "", instructions: "", mode: .weekdays)
         }
+    }
+
+    /// Paired: the form starts from the desktop's routine, or from the desktop's defaults for a new one.
+    private func loadLive() {
+        guard isLive, base == nil else { return }
+        let start: BotRoutineForm
+        if let routineID {
+            guard let found = live.form(for: routineID) else {
+                if live.routinesLoad == .loaded { missing = true }
+                return
+            }
+            start = found
+        } else {
+            start = live.newForm(botID: botID)
+        }
+        missing = false
+        show(start)
+        base = start
+        if RepeatMode.more.contains(draft.mode) { moreOptions = true }
+    }
+
+    /// Put a form on screen.
+    private func show(_ shown: BotRoutineForm) {
+        draft = shown.draft
+        onceDate = shown.onceDate
+        stopAfter = shown.stopAfter
+        stopDate = shown.stopDate
+        endpointID = shown.endpointID
+        limitSet = shown.limitSet
+        startMinute = shown.startMinute
+        endMinute = shown.endMinute
     }
 
     private func save() {
@@ -530,6 +965,10 @@ struct RoutineEditorScreen: View {
               !draft.instructions.trimmingCharacters(in: .whitespaces).isEmpty,
               !(needsDays && draft.days.isEmpty) else {
             Haptics.thud()
+            return
+        }
+        if isLive {
+            saveLive()
             return
         }
         if let index = store.routines.firstIndex(where: { $0.id == draft.id }) {
@@ -542,6 +981,55 @@ struct RoutineEditorScreen: View {
         }
         Haptics.success()
         dismiss()
+    }
+
+    /// Paired: send only what changed. The page waits for the answer; a lost answer is looked for, never sent again blind.
+    private func saveLive() {
+        guard let start = base, !saving else { return }
+        if draft.name.count > 80 || draft.instructions.count > instructionLimit {
+            outcome = "Make it shorter: a name of up to 80 characters and instructions of up to 8,000."
+            Haptics.thud()
+            return
+        }
+        if draft.mode == .limitReset && endpointID.isEmpty {
+            outcome = "Pick which usage limit it follows."
+            Haptics.thud()
+            return
+        }
+        saving = true
+        outcome = nil
+        conflict = nil
+        let sent = form
+        Task {
+            let result: BotRoutineOutcome
+            if let routineID {
+                let (answer, fresh) = await live.update(routineID, sent, base: start)
+                if let fresh {
+                    // The desktop's current version, with only what the person changed here kept on top: everything
+                    // they did not touch shows the desktop's value, and the next save sends only their changes.
+                    let (merged, conflicts) = BotRoutineMap.rebase(sent, from: start, onto: fresh)
+                    show(merged)
+                    base = fresh
+                    conflict = BotRoutineMap.conflictLine(conflicts, mine: sent, desktop: fresh)
+                    if RepeatMode.more.contains(draft.mode) { moreOptions = true }
+                }
+                result = answer
+            } else {
+                result = await live.create(sent, base: start)
+            }
+            saving = false
+            switch result {
+            case .done(let text):
+                Haptics.success()
+                store.say(text)
+                dismiss()
+            case .refused(let text):
+                Haptics.thud()
+                outcome = text
+            case .unsure(let text):
+                outcome = text
+            }
+        }
     }
 }
 
@@ -582,6 +1070,19 @@ struct TriggerEditorScreen: View {
     ]
 
     var body: some View {
+        if !Connection.shared.usesSampleData {
+            // Paired: triggers are made and changed on the desktop. A webhook's address carries a secret,
+            // so this iPhone never shows, copies or keeps one.
+            BotsPage(webhook ? "Webhook" : "App trigger", subtitle: store.bot(botID).name, live: true) {
+                EmptyNote(text: "Make or change triggers in Kairos on your desktop. A webhook address carries a secret, so it stays there.", symbol: "desktopcomputer")
+                    .kCard(radius: 20)
+            }
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         BotsPage(webhook ? (triggerID == nil ? "When another app calls" : "Webhook") : (triggerID == nil ? "When something happens" : "App trigger"), subtitle: store.bot(bot).name) {
             if saved && webhook {
                 connectStep
