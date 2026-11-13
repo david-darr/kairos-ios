@@ -177,8 +177,15 @@ final class APIClient {
             throw APIError.offline("Your desktop could not be reached. Try again in a moment.")
         }
         guard !(200..<300).contains(http.statusCode) else { return }
-        if http.statusCode == 401 { throw APIError.unauthorized }
         let detail = (try? KJSON.decode(APIErrorBody.self, from: body))?.text ?? ""
+        if http.statusCode == 401 {
+            // Only the desktop's own sign-in check means this iPhone is no longer paired. The desktop also
+            // answers 401 for other things (a Google sign-in that expired, for one): that is the feature's
+            // error to show, and must never delete the pairing.
+            let words = detail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if words.isEmpty || words == "authentication required" { throw APIError.unauthorized }
+            throw APIError.server(status: 401, detail: detail)
+        }
         if detail.isEmpty {
             switch http.statusCode {
             case 403: throw APIError.server(status: 403, detail: "Your account on the desktop is not allowed to do that.")
