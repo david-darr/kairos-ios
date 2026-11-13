@@ -67,24 +67,37 @@ struct MailMessageSheet: View {
                 .background(Palette.gold.opacity(0.1), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Palette.gold.opacity(0.3), lineWidth: 1))
 
-                Text(item.preview)
-                    .font(KFont.ui(15.5))
-                    .foregroundStyle(Palette.inkDim)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .kCard(radius: 18)
+                if store.isSample {
+                    Text(item.preview)
+                        .font(KFont.ui(15.5))
+                        .foregroundStyle(Palette.inkDim)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .kCard(radius: 18)
+                } else {
+                    // Triage keeps headers only; nothing from the message body is fetched or shown.
+                    MailLiveLine(text: liveLine)
+                }
 
                 VStack(spacing: 6) {
-                    GoldButton(title: store.drafts[item.id] == nil ? "Draft a reply" : "Open the draft", action: onDraft)
-                    QuietButton(title: "Mark as handled", action: onHandled)
+                    GoldButton(title: store.drafts[item.id] == nil ? (store.isSample ? "Draft a reply" : "Write a reply") : "Open the draft",
+                               action: onDraft)
+                    if store.isSample {
+                        QuietButton(title: "Mark as handled", action: onHandled)
+                    }
                 }
                 .padding(.top, 4)
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 24)
         }
+    }
+
+    private var liveLine: String {
+        let to = item.account.map { "It came to \($0). " } ?? ""
+        return to + "Kairos keeps only the sender, subject and date for triage. Read the whole message in your mail app."
     }
 }
 
@@ -105,12 +118,23 @@ struct MailDraftSheet: View {
     @State private var writing = true
     @State private var sentFrom: String?
     @State private var notice: String?
+    /// Paired: the plain confirm that names the recipients and the sending address is showing.
+    @State private var confirming = false
+    /// Paired: a new value puts the swipe back, after a confirm was cancelled or a send did not go.
+    @State private var swipeKey = 0
+    /// Paired: why the last send did not go, or that it could not be confirmed.
+    @State private var problem: String?
+    /// Paired: set the moment Send is tapped, cleared when the answer is known.
+    @State private var inFlight = false
+
+    /// Paired: this reply is on its way. The sheet holds still and every control is off until it is known.
+    private var sending: Bool { inFlight || store.sendingIDs.contains(item.id) }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 PlannerSheetTitle(title: sentFrom == nil ? "Reply" : "Sent", subtitle: item.subjectLine) {
-                    if sentFrom == nil {
+                    if sentFrom == nil && !sending {
                         PlannerRoundButton(symbol: "xmark", label: "Close", size: 40) { dismiss() }
                     }
                 }
@@ -134,7 +158,9 @@ struct MailDraftSheet: View {
                     .kCard(radius: 20)
                     .transition(.opacity)
                 } else {
-                    form.transition(.opacity)
+                    form
+                        .disabled(sending)
+                        .transition(.opacity)
                 }
             }
             .padding(.horizontal, 18)
@@ -145,22 +171,39 @@ struct MailDraftSheet: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if sentFrom == nil && !writing {
                 VStack(spacing: 2) {
-                    if canSend {
-                        SwipeUpToConfirm(title: "Swipe up to send", doneTitle: "Sent", symbol: "paperplane.fill") {
-                            send()
+                    if sending {
+                        HStack(spacing: 10) {
+                            ProgressView().tint(Palette.gold)
+                            Text("Sending from \(draft.from)...")
+                                .font(KFont.ui(15, .medium, relativeTo: .subheadline))
+                                .foregroundStyle(Palette.inkDim)
+                                .lineLimit(2)
                         }
+                        .frame(maxWidth: .infinity, minHeight: 60)
+                        .padding(.top, 14)
+                    } else if canSend {
+                        SwipeUpToConfirm(title: "Swipe up to send", doneTitle: store.isSample ? "Sent" : "Check and send",
+                                         symbol: "paperplane.fill") {
+                            if store.isSample { send() } else { askToSend() }
+                        }
+                        .id(swipeKey)
                     } else {
-                        Text("Add an address and a reply to send it.")
+                        Text(!store.isSample && store.defaultSender.isEmpty
+                             ? "Replies send from an Email tab account. Connect one in Email accounts."
+                             : "Add an address and a reply to send it.")
                             .font(KFont.ui(14, relativeTo: .footnote))
                             .foregroundStyle(Palette.inkFaint)
+                            .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity, minHeight: 60)
                             .padding(.top, 14)
                     }
-                    QuietButton(title: "Save as draft") {
-                        store.saveDraft(draft)
-                        Haptics.success()
-                        onSaved()
-                        dismiss()
+                    if !sending {
+                        QuietButton(title: "Save as draft") {
+                            store.saveDraft(draft)
+                            Haptics.success()
+                            onSaved()
+                            dismiss()
+                        }
                     }
                 }
                 .padding(.horizontal, 18)
@@ -174,9 +217,84 @@ struct MailDraftSheet: View {
         }
         .animation(Motion.sheet, value: writing)
         .animation(Motion.bouncy, value: sentFrom)
+        .animation(Motion.snappy, value: problem)
+        .animation(Motion.snappy, value: sending)
         .plannerNotice($notice)
+        .interactiveDismissDisabled(sending)
+        .onChange(of: confirming) {
+            // Closed without Send (a tap outside): the swipe comes back.
+            if !confirming && !sending && sentFrom == nil { swipeKey += 1 }
+        }
+        .confirmationDialog(confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
+            Button("Send") { sendLive() }
+            Button("Cancel", role: .cancel) { swipeKey += 1 }
+        } message: {
+            Text(confirmMessage)
+        }
         .kSheet()
         .task { await start() }
+    }
+
+    // MARK: Paired sending
+
+    private var recipients: [String] { MailWire.recipients(draft.to) ?? [] }
+
+    private var confirmTitle: String {
+        let count = recipients.count
+        let who = count == 1 ? "1 person" : "\(count) people"
+        return "Send to \(who) from \(draft.from)?"
+    }
+
+    private var confirmMessage: String {
+        var text = recipients.joined(separator: ", ")
+        if store.unconfirmedSends[item.id] != nil {
+            text += "\n\nAn earlier send of this reply could not be confirmed. Check Sent in your mail app first, or it may arrive twice."
+        }
+        return text
+    }
+
+    /// The swipe only asks; the confirm that names who and from where sends.
+    private func askToSend() {
+        problem = nil
+        if let why = store.sendProblem(draft) {
+            Haptics.thud()
+            problem = why
+            swipeKey += 1
+            return
+        }
+        confirming = true
+    }
+
+    /// Exactly one send per confirm. The answer always shows; nothing is sent again by itself.
+    private func sendLive() {
+        guard !sending else { return }
+        let approved = draft
+        inFlight = true
+        Task {
+            let outcome = await store.sendLive(approved)
+            inFlight = false
+            switch outcome {
+            case .sent(let from):
+                Haptics.success()
+                problem = nil
+                sentFrom = from
+                onSent("Sent from \(from)")
+            case .notSent(let why):
+                Haptics.thud()
+                problem = "Not sent. " + why
+                swipeKey += 1
+            case .unknown(let text):
+                Haptics.thud()
+                problem = text
+                swipeKey += 1
+            }
+        }
+    }
+
+    private var unconfirmedLine: String? {
+        guard problem == nil, let when = store.unconfirmedSends[item.id] else { return nil }
+        let time = when.formatted(date: .omitted, time: .shortened)
+        return "A send of this reply at \(time) could not be confirmed. Check Sent in your mail app before sending it again."
     }
 
     private var canSend: Bool {
@@ -197,6 +315,29 @@ struct MailDraftSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if let warning = problem ?? unconfirmedLine {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.top, 2)
+                    Text(warning)
+                        .font(KFont.ui(14, relativeTo: .footnote))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(Palette.danger)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Palette.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .transition(.opacity)
+            }
+
+            if !store.isSample {
+                Text("Kip does not draft replies on the phone yet. Write yours here.")
+                    .font(KFont.ui(14, relativeTo: .footnote))
+                    .foregroundStyle(Palette.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 SectionLabel(text: "From")
                 fromMenu
@@ -213,19 +354,22 @@ struct MailDraftSheet: View {
     private var fromMenu: some View {
         Menu {
             ForEach(store.senders) { sender in
+                let usable = store.isSample ? sender.canSend : sender.sendsFromPhone
                 Button {
                     Haptics.select()
                     draft.from = sender.email
                 } label: {
                     if sender.email == draft.from {
                         Label(sender.email, systemImage: "checkmark")
-                    } else if sender.canSend {
+                    } else if usable {
                         Text(sender.email)
+                    } else if !store.isSample && sender.via == .google {
+                        Text("\(sender.email), sends only from your desktop")
                     } else {
                         Text("\(sender.email), needs permission to send")
                     }
                 }
-                .disabled(!sender.canSend)
+                .disabled(!usable)
             }
         } label: {
             HStack(spacing: 10) {
@@ -260,7 +404,7 @@ struct MailDraftSheet: View {
                 .font(KFont.ui(18, .semibold))
                 .foregroundStyle(Palette.ink)
                 .multilineTextAlignment(.center)
-            Text("To \(item.address). It is off the Needs a reply list.")
+            Text(store.isSample ? "To \(item.address). It is off the Needs a reply list." : "To \(draft.to).")
                 .font(KFont.ui(14.5, relativeTo: .subheadline))
                 .foregroundStyle(Palette.inkDim)
                 .multilineTextAlignment(.center)
@@ -287,7 +431,8 @@ struct MailDraftSheet: View {
             return
         }
         draft = store.newDraft(for: item)
-        if !instant { try? await Task.sleep(for: .seconds(1.3)) }
+        // Paired, nothing is drafted by Kip, so there is no writing pause.
+        if !instant && store.isSample { try? await Task.sleep(for: .seconds(1.3)) }
         writing = false
     }
 
@@ -322,13 +467,17 @@ struct MailAccountsSheet: View {
     @State private var removing: MailAccount?
     @State private var notice: String?
     @State private var phoneNote: String?
+    /// Paired: a removal that was refused or could not be confirmed.
+    @State private var accountProblem: String?
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     PlannerSheetTitle(title: "Email accounts") {
-                        PlannerRoundButton(symbol: "xmark", label: "Close", size: 40) { dismiss() }
+                        if !store.accountBusy {
+                            PlannerRoundButton(symbol: "xmark", label: "Close", size: 40) { dismiss() }
+                        }
                     }
 
                     sendingCard(proxy)
@@ -354,19 +503,28 @@ struct MailAccountsSheet: View {
         .animation(Motion.snappy, value: connecting)
         .animation(Motion.snappy, value: store.accounts)
         .animation(Motion.snappy, value: phoneNote)
+        .animation(Motion.snappy, value: accountProblem)
+        .animation(Motion.snappy, value: store.accountBusy)
         .plannerNotice($notice)
+        .interactiveDismissDisabled(store.accountBusy)
         .confirmationDialog("Remove this account?", isPresented: Binding(
             get: { removing != nil },
             set: { if !$0 { removing = nil } }
         ), titleVisibility: .visible, presenting: removing) { account in
             Button("Remove account", role: .destructive) {
-                withAnimation(Motion.snappy) { store.remove(account) }
-                Haptics.thud()
-                notice = "Account removed"
+                if store.isSample {
+                    withAnimation(Motion.snappy) { store.remove(account) }
+                    Haptics.thud()
+                    notice = "Account removed"
+                } else {
+                    removeLive(account)
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: { account in
-            Text("Kairos stops reading \(account.email). Your mail stays where it is.")
+            Text(store.isSample
+                 ? "Kairos stops reading \(account.email). Your mail stays where it is."
+                 : "Kairos on your desktop stops reading \(account.email) and deletes the password it saved. Your mail stays where it is.")
         }
         .kSheet()
     }
@@ -435,7 +593,9 @@ struct MailAccountsSheet: View {
 
             HStack(spacing: 8) {
                 PlannerPill(title: "Add Google account", symbol: "plus", style: .quiet) {
-                    phoneNote = "Google sign-in happens on the computer running Kairos. Add the account there and it shows up here."
+                    phoneNote = !store.isSample && !store.googleConfigured
+                        ? "Google needs a one-time setup in Library on the computer running Kairos. Then add the account there and it shows up here."
+                        : "Google sign-in happens on the computer running Kairos. Add the account there and it shows up here."
                 }
                 PlannerPill(title: "Other provider", style: .quiet) {
                     connecting = true
@@ -453,6 +613,13 @@ struct MailAccountsSheet: View {
     private var accountsList: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionLabel(text: "Connected accounts")
+            if let accountProblem {
+                Text(accountProblem)
+                    .font(KFont.ui(14, .medium, relativeTo: .footnote))
+                    .foregroundStyle(Palette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
             if store.accounts.isEmpty {
                 PlannerEmpty(title: "No accounts connected",
                              hint: "Connect an account so Kairos can read your mail and flag what matters.",
@@ -483,6 +650,7 @@ struct MailAccountsSheet: View {
                 PlannerRoundButton(symbol: "trash", label: "Remove account", size: 40, tint: Palette.danger) {
                     removing = account
                 }
+                .disabled(store.accountBusy)
             }
             HStack(spacing: 10) {
                 if store.testing.contains(account.id) {
@@ -572,8 +740,19 @@ struct MailAccountsSheet: View {
                             .foregroundStyle(Palette.danger)
                             .transition(.opacity)
                     }
-                    GoldButton(title: "Add Account", action: add)
+                    if store.accountBusy {
+                        HStack(spacing: 10) {
+                            ProgressView().tint(Palette.gold)
+                            Text("Waiting for your desktop...")
+                                .font(KFont.ui(15, .medium, relativeTo: .subheadline))
+                                .foregroundStyle(Palette.inkDim)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 50)
                         .padding(.top, 4)
+                    } else {
+                        GoldButton(title: "Add Account", action: add)
+                            .padding(.top, 4)
+                    }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -608,6 +787,10 @@ struct MailAccountsSheet: View {
             withAnimation(Motion.snappy) { formError = "Fill in email, password, and both host fields first" }
             return
         }
+        guard store.isSample else {
+            addLive(address: address, imap: imap, smtp: smtp)
+            return
+        }
         let account = MailAccount(email: address, imapHost: imap, imapPort: Int(imapPort) ?? 993,
                                   smtpHost: smtp, smtpPort: Int(smtpPort) ?? 465)
         withAnimation(Motion.snappy) { store.addAccount(account) }
@@ -619,5 +802,59 @@ struct MailAccountsSheet: View {
         formError = nil
         Haptics.success()
         notice = "Account added"
+    }
+
+    // Paired
+
+    /// Add the account on the desktop. What was typed stays until the desktop confirms it.
+    private func addLive(address: String, imap: String, smtp: String) {
+        guard !store.accountBusy else { return }
+        let typedPassword = password
+        let imapNumber = Int(imapPort) ?? 993
+        let smtpNumber = Int(smtpPort) ?? 465
+        formError = nil
+        Task {
+            let outcome = await store.addAccountLive(email: address, password: typedPassword, imapHost: imap, imapPort: imapNumber,
+                                                     smtpHost: smtp, smtpPort: smtpNumber)
+            switch outcome {
+            case .done(let text):
+                if email.trimmingCharacters(in: .whitespaces) == address {
+                    // Clear the address, password and hosts; keep the ports.
+                    email = ""
+                    password = ""
+                    imapHost = ""
+                    smtpHost = ""
+                }
+                formError = nil
+                Haptics.success()
+                notice = text
+            case .failed(let why):
+                Haptics.thud()
+                withAnimation(Motion.snappy) { formError = "Not added. " + why }
+            case .unknown(let text):
+                Haptics.thud()
+                withAnimation(Motion.snappy) { formError = text }
+            }
+        }
+    }
+
+    /// Remove the account on the desktop, after the confirm above.
+    private func removeLive(_ account: MailAccount) {
+        guard !store.accountBusy else { return }
+        accountProblem = nil
+        Task {
+            let outcome = await store.removeAccountLive(account)
+            switch outcome {
+            case .done(let text):
+                Haptics.thud()
+                notice = text
+            case .failed(let why):
+                Haptics.thud()
+                accountProblem = "Not removed. " + why
+            case .unknown(let text):
+                Haptics.thud()
+                accountProblem = text
+            }
+        }
     }
 }
