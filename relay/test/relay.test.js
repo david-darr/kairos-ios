@@ -249,7 +249,7 @@ test("alert with notice: who, kind line, chat title, category, thread, custom ke
   assert.equal(init.headers["apns-collapse-id"], "kairos-run1");
   assert.deepEqual(JSON.parse(init.body), {
     aps: {
-      alert: { title: "Kip", subtitle: "Plan the launch", body: "Kip wants your approval" },
+      alert: { title: "Kip", subtitle: "Plan the launch", body: "Wants your approval" },
       sound: "default", category: "kairos.approval", "thread-id": "bot-kip", "interruption-level": "time-sensitive",
     },
     kind: "approval", link: "kairos-agents://approval/perm_1?bot=kip", request_id: "perm_1",
@@ -261,8 +261,8 @@ test("alert with notice: each kind's line, thread from the chat link, retry ids"
   const world = makeWorld();
   const { env } = await makeEnv();
   const inst = await register(world, env);
-  const lines = { approval: "Ada wants your approval", question: "Ada is waiting for your answer", replyReady: "Your reply is ready",
-    workDone: "Ada finished a task", workFailed: "A task couldn't finish" };
+  const lines = { approval: "Wants your approval", question: "Is waiting for your answer", replyReady: "Your reply is ready",
+    workDone: "Finished a task", workFailed: "Couldn't finish" };
   for (const [notice, line] of Object.entries(lines)) {
     assert.equal((await push(world, env, inst, { kind: "alert", notice, who: "Ada", link: "kairos-agents://chat/abc123" })).status, 200);
     const payload = JSON.parse(world.calls.at(-1).init.body);

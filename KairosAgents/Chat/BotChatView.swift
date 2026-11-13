@@ -87,6 +87,7 @@ private struct BotChatScreen: View {
             }
         }
         .task { await chat.load() }
+        .readsWhileOpen(chat)
         .onChange(of: chat.phase) {
             // Debug screenshots: open the model drawer once the conversation is read.
             if modelAfterLoad && chat.phase == .loaded {

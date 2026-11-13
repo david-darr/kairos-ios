@@ -48,6 +48,9 @@ enum ConnectionSeam {
     static var homeChanged: (HomeNumbers) -> Void = { _ in }
     /// This phone was just paired: a good moment to ask for notifications (`NotificationAskCard`).
     static var paired: () -> Void = {}
+    /// A chat came on screen, by any route: its Live Activity leaves at once. A model chat passes its id,
+    /// a bot's chat passes the bot's id.
+    static var chatOpened: (_ chatID: String?, _ botID: String?) -> Void = { _, _ in }
 
     /// Stop a turn by its id, for `NativeBridge.stop`.
     static func stop(turnID: String) async {

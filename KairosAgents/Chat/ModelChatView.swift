@@ -103,6 +103,7 @@ private struct ModelChatScreen: View {
             }
         }
         .task { await chat.load() }
+        .readsWhileOpen(chat)
         .onAppear {
             switch router.debugScreen {
             case "modelsheet": router.debugScreen = nil; showModel = true
