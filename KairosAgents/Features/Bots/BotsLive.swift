@@ -590,7 +590,8 @@ extension BotsStore {
             try? await Task.sleep(for: .seconds(6))
             guard stillLive(account), case .desktopHas? = checks.checks[id] else { return }
             checks.clear(id)
-            withAnimation(Motion.snappy) { needs.removeAll { $0.live?.id == id } }
+            // A card that came back with its buttons in the meantime is a fresh request: it stays.
+            withAnimation(Motion.snappy) { needs.removeAll { $0.live?.id == id && $0.settled != nil } }
         }
     }
 
