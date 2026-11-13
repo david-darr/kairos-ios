@@ -181,6 +181,8 @@ nonisolated enum VaultSaveOutcome: Equatable, Sendable {
     /// The note on disk is not the one that was opened (409 version_conflict).
     case conflict
     case failed(String)
+    /// A save for this note is already on its way, so this one was not sent.
+    case busy
 }
 
 nonisolated enum VaultWire {

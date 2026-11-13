@@ -21,50 +21,110 @@ nonisolated struct VaultMapEdge: Hashable, Sendable {
 }
 
 nonisolated enum VaultMapLayout {
-    /// A small force layout: nodes push apart, edges pull together. Deterministic for the same input.
+    /// Above this many nodes the pairwise force layout costs too much, so the map uses `clusters`.
+    static let forceLimit = 400
+
+    /// The whole-vault layout. Small vaults get the force layout; large ones the grouped rings,
+    /// which are linear in the number of nodes. Deterministic for the same input. Never call it on the main actor.
     static func compute(nodes: [VaultMapNode], edges: [VaultMapEdge], iterations: Int = 260) -> [String: CGPoint] {
         guard !nodes.isEmpty else { return [:] }
-        var points: [String: CGPoint] = [:]
-        for (index, node) in nodes.enumerated() {
-            let angle = Double(index) * 2.399963
-            let radius = 30 + 14 * sqrt(Double(index))
-            points[node.id] = CGPoint(x: radius * cos(angle), y: radius * sin(angle))
+        if nodes.count > forceLimit { return clusters(nodes: nodes) }
+        return force(nodes: nodes, edges: edges, iterations: iterations)
+    }
+
+    /// A small force layout: nodes push apart, edges pull together.
+    static func force(nodes: [VaultMapNode], edges: [VaultMapEdge], iterations: Int) -> [String: CGPoint] {
+        let count = nodes.count
+        var index: [String: Int] = [:]
+        index.reserveCapacity(count)
+        var xs = [Double](repeating: 0, count: count)
+        var ys = [Double](repeating: 0, count: count)
+        for (i, node) in nodes.enumerated() {
+            index[node.id] = i
+            let angle = Double(i) * 2.399963
+            let radius = 30 + 14 * sqrt(Double(i))
+            xs[i] = radius * cos(angle)
+            ys[i] = radius * sin(angle)
         }
-        let ids = nodes.map(\.id)
+        let links: [(a: Int, b: Int, rest: Double, strength: Double)] = edges.compactMap { edge in
+            guard let a = index[edge.from], let b = index[edge.to] else { return nil }
+            return (a, b, edge.spoke ? 70 : 90, edge.spoke ? 0.03 : 0.05)
+        }
+        var fxs = [Double](repeating: 0, count: count)
+        var fys = [Double](repeating: 0, count: count)
         for step in 0..<iterations {
             let cooling = 1 - Double(step) / Double(iterations)
-            var forces: [String: CGVector] = Dictionary(uniqueKeysWithValues: ids.map { ($0, CGVector.zero) })
-            for i in 0..<ids.count {
-                for j in (i + 1)..<ids.count {
-                    guard let a = points[ids[i]], let b = points[ids[j]] else { continue }
-                    var dx = a.x - b.x, dy = a.y - b.y
+            for i in 0..<count { fxs[i] = 0; fys[i] = 0 }
+            for i in 0..<count {
+                for j in (i + 1)..<count {
+                    var dx = xs[i] - xs[j], dy = ys[i] - ys[j]
                     var distance = sqrt(dx * dx + dy * dy)
                     if distance < 0.5 { dx = 0.5; dy = 0.3; distance = 0.6 }
                     let push = 2400 / (distance * distance)
                     let fx = dx / distance * push, fy = dy / distance * push
-                    forces[ids[i]]!.dx += fx; forces[ids[i]]!.dy += fy
-                    forces[ids[j]]!.dx -= fx; forces[ids[j]]!.dy -= fy
+                    fxs[i] += fx; fys[i] += fy
+                    fxs[j] -= fx; fys[j] -= fy
                 }
             }
-            for edge in edges {
-                guard let a = points[edge.from], let b = points[edge.to] else { continue }
-                let dx = b.x - a.x, dy = b.y - a.y
+            for link in links {
+                let dx = xs[link.b] - xs[link.a], dy = ys[link.b] - ys[link.a]
                 let distance = max(1, sqrt(dx * dx + dy * dy))
-                let rest: CGFloat = edge.spoke ? 70 : 90
-                let pull = (distance - rest) * (edge.spoke ? 0.03 : 0.05)
+                let pull = (distance - link.rest) * link.strength
                 let fx = dx / distance * pull, fy = dy / distance * pull
-                forces[edge.from]!.dx += fx; forces[edge.from]!.dy += fy
-                forces[edge.to]!.dx -= fx; forces[edge.to]!.dy -= fy
+                fxs[link.a] += fx; fys[link.a] += fy
+                fxs[link.b] -= fx; fys[link.b] -= fy
             }
-            for id in ids {
-                guard var point = points[id], let force = forces[id] else { continue }
-                let fx = force.dx - point.x * 0.01, fy = force.dy - point.y * 0.01
+            let limit = 12 * cooling + 0.5
+            for i in 0..<count {
+                let fx = fxs[i] - xs[i] * 0.01, fy = fys[i] - ys[i] * 0.01
                 let length = sqrt(fx * fx + fy * fy)
-                let limit = 12 * cooling + 0.5
                 let scale = length > limit ? limit / length : 1
-                point.x += fx * scale
-                point.y += fy * scale
-                points[id] = point
+                xs[i] += fx * scale
+                ys[i] += fy * scale
+            }
+        }
+        var points: [String: CGPoint] = [:]
+        points.reserveCapacity(count)
+        for (i, node) in nodes.enumerated() { points[node.id] = CGPoint(x: xs[i], y: ys[i]) }
+        return points
+    }
+
+    /// A large vault: each group (the one the map colours by) is a disc on a ring around the centre,
+    /// sized by its number of nodes, with its nodes in a tight spiral inside it. No pairwise pass.
+    static func clusters(nodes: [VaultMapNode]) -> [String: CGPoint] {
+        let spacing = 11.0
+        let gap = 40.0
+        var members: [String: [Int]] = [:]
+        for (i, node) in nodes.enumerated() { members[node.group, default: []].append(i) }
+        // Biggest groups first, then by name, so the same vault always lands the same way.
+        let order = members.keys.sorted { a, b in
+            let x = members[a]!.count, y = members[b]!.count
+            return x == y ? a < b : x > y
+        }
+        let radii = order.map { spacing * sqrt(Double(members[$0]!.count)) + 10 }
+        var centres: [CGPoint] = []
+        if order.count == 1 {
+            centres = [.zero]
+        } else {
+            let around = radii.reduce(0) { $0 + 2 * $1 + gap }
+            let ring = max(around / (2 * .pi), (radii.max() ?? 0) + gap)
+            var angle = 0.0
+            for radius in radii {
+                let share = (2 * radius + gap) / around * 2 * .pi
+                let middle = angle + share / 2
+                centres.append(CGPoint(x: ring * cos(middle), y: ring * sin(middle)))
+                angle += share
+            }
+        }
+        var points: [String: CGPoint] = [:]
+        points.reserveCapacity(nodes.count)
+        for (g, group) in order.enumerated() {
+            let centre = centres[g]
+            // Input order puts folders first, so they sit in the middle of their group.
+            for (k, i) in members[group]!.enumerated() {
+                let radius = spacing * sqrt(Double(k) + 0.5)
+                let angle = Double(k) * 2.399963
+                points[nodes[i].id] = CGPoint(x: centre.x + radius * cos(angle), y: centre.y + radius * sin(angle))
             }
         }
         return points
@@ -123,6 +183,12 @@ struct VaultMapView: View {
     @State private var focusDepth = 1
     @State private var viewSize: CGSize = .zero
     @State private var didStart = false
+    /// Counts layout runs, so a layout that finishes after the notes changed is thrown away.
+    @State private var layoutRun = 0
+    @State private var laying = false
+    /// Waiting for the layout: centre on the opened note, or fit the whole vault, once it lands.
+    @State private var centerWhenLaid: String?
+    @State private var fitWhenLaid = false
 
     private static let tints: [UInt32] = [Palette.botGold, Palette.botPowder, Palette.botSage, Palette.botRose, Palette.botLilac, Palette.botSand, 0x9FB8A0, 0xC9A27A, 0x8FA6C9, 0xD4B483]
 
@@ -135,7 +201,8 @@ struct VaultMapView: View {
     private func buildGraph() -> VaultMapGraph {
         let nodes = buildNodes()
         var seen: [String] = []
-        for node in nodes where node.kind == .note && !seen.contains(node.group) { seen.append(node.group) }
+        var known: Set<String> = []
+        for node in nodes where node.kind == .note && known.insert(node.group).inserted { seen.append(node.group) }
         return VaultMapGraph(nodes: nodes, edges: buildEdges(), groups: Array(seen.prefix(10)), orphans: Set(store.orphans.map(\.id)))
     }
 
@@ -231,10 +298,24 @@ struct VaultMapView: View {
             }
             .environment(nav)
         }
+        .overlay {
+            if laying {
+                VaultLiveLine(text: "Laying out the map")
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 16)
+                    .allowsHitTesting(false)
+            }
+        }
         .onAppear(perform: start)
         .onChange(of: store.notes) {
             guard didStart else { return }
-            graph = buildGraph()
+            let fresh = buildGraph()
+            graph = fresh
+            // Opened before the list arrived, or new notes since: lay it out again. A run still going
+            // was for the old notes, so it is replaced too.
+            if laying || layout.isEmpty || fresh.nodes.contains(where: { layout[$0.id] == nil }) {
+                relayout(fresh)
+            }
         }
         .animation(Motion.snappy, value: focusID)
         .animation(Motion.snappy, value: orphansOnly)
@@ -268,14 +349,24 @@ struct VaultMapView: View {
     }
 
     private func draw(context: inout GraphicsContext, size: CGSize, nodes: [VaultMapNode], edges: [VaultMapEdge], time: Date) {
+        // Everything here is one pass over the nodes or the edges per frame, never a pass inside a pass.
+        // Nodes not laid out yet are not drawn, so a vault being laid out never stacks in the middle.
         var points: [String: CGPoint] = [:]
-        for node in nodes { points[node.id] = screen(position(node, time: time), size: size) }
+        points.reserveCapacity(nodes.count)
+        for node in nodes where layout[node.id] != nil { points[node.id] = screen(position(node, time: time), size: size) }
         let around: Set<String> = selected.map { id in
-            Set(edges.filter { $0.from == id || $0.to == id }.flatMap { [$0.from, $0.to] })
+            var set: Set<String> = []
+            for edge in edges where edge.from == id || edge.to == id { set.insert(edge.from); set.insert(edge.to) }
+            return set
         } ?? []
+        let bounds = CGRect(origin: .zero, size: size).insetBy(dx: -40, dy: -40)
+        // A large vault: labels only for the selected note, its neighbours and well-linked notes.
+        let large = graph.nodes.count > VaultMapLayout.forceLimit
 
         for edge in edges {
             guard let a = points[edge.from], let b = points[edge.to] else { continue }
+            let box = CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x) + 1, height: abs(a.y - b.y) + 1)
+            guard box.intersects(bounds) else { continue }
             let lit = selected != nil && (edge.from == selected || edge.to == selected)
             let dim = selected != nil && !lit
             var path = Path()
@@ -298,7 +389,7 @@ struct VaultMapView: View {
         }
 
         for node in nodes {
-            guard let point = points[node.id] else { continue }
+            guard let point = points[node.id], bounds.contains(point) else { continue }
             let r = radius(node) * min(1.6, max(0.7, scale))
             let isSelected = node.id == selected
             let dim = selected != nil && !isSelected && !around.contains(node.id)
@@ -321,7 +412,9 @@ struct VaultMapView: View {
             if node.kind == .folder {
                 context.stroke(shape, with: .color(Palette.ground), lineWidth: 1.5)
             }
-            let showLabel = isSelected || around.contains(node.id) || scale > 1.15 || (scale > 0.75 && node.weight >= 3) || focusID != nil
+            let showLabel = large
+                ? isSelected || around.contains(node.id) || (scale > 0.75 && node.weight >= 3)
+                : isSelected || around.contains(node.id) || scale > 1.15 || (scale > 0.75 && node.weight >= 3) || focusID != nil
             if showLabel && !dim {
                 let label = Text(node.title)
                     .font(KFont.ui(isSelected ? 13.5 : 12, isSelected ? .semibold : .regular, relativeTo: .caption))
@@ -337,7 +430,8 @@ struct VaultMapView: View {
         let size = viewSize
         var best: (VaultMapNode, CGFloat)?
         for node in nodes {
-            let point = screen(layout[node.id] ?? .zero, size: size)
+            guard let base = layout[node.id] else { continue }
+            let point = screen(base, size: size)
             let distance = hypot(point.x - location.x, point.y - location.y)
             if distance < max(24, radius(node) * scale + 10), distance < (best?.1 ?? .infinity) { best = (node, distance) }
         }
@@ -404,7 +498,7 @@ struct VaultMapView: View {
         }
         let fresh = buildGraph()
         graph = fresh
-        layout = VaultMapLayout.compute(nodes: fresh.nodes, edges: fresh.edges)
+        relayout(fresh)
         if nav.debug == .focus, let focus {
             nav.debug = .none
             setFocus(focus)
@@ -414,8 +508,41 @@ struct VaultMapView: View {
             selected = "n:" + id
             peek = fresh.nodes.first { $0.id == "n:" + id }
         } else if let focus {
-            center(on: "n:" + focus)
+            centerWhenLaid = "n:" + focus
         }
+    }
+
+    /// Lay the graph out off the main actor, from plain values. Only the newest run's result is used.
+    private func relayout(_ fresh: VaultMapGraph) {
+        layoutRun += 1
+        let run = layoutRun
+        let nodes = fresh.nodes
+        let edges = fresh.edges
+        laying = true
+        Task {
+            let points = await Task.detached(priority: .userInitiated) {
+                VaultMapLayout.compute(nodes: nodes, edges: edges)
+            }.value
+            guard run == layoutRun else { return }
+            layout = points
+            laying = false
+            started = reduceMotion ? .distantPast : .now
+            if let focusID { placeRings(around: focusID) }
+            if let id = centerWhenLaid, layout[id] != nil {
+                centerWhenLaid = nil
+                center(on: id)
+            }
+            if fitWhenLaid {
+                fitWhenLaid = false
+                fit()
+            }
+        }
+    }
+
+    /// Focus mode: the note in the middle and its neighbours on rings, over whatever layout is there.
+    private func placeRings(around id: String) {
+        let steps = store.neighbourhood(id, depth: focusDepth)
+        for (note, point) in VaultMapLayout.rings(center: id, steps: steps) { layout["n:" + note] = point }
     }
 
     private func setFocus(_ id: String?) {
@@ -423,17 +550,15 @@ struct VaultMapView: View {
         withAnimation(Motion.sheet) {
             focusID = id
             if let id {
-                let steps = store.neighbourhood(id, depth: focusDepth)
-                let rings = VaultMapLayout.rings(center: id, steps: steps)
-                for (note, point) in rings { layout["n:" + note] = point }
+                placeRings(around: id)
                 selected = "n:" + id
                 scale = 0.85
                 baseScale = scale
                 offset = .zero
                 baseOffset = .zero
             } else {
-                layout = VaultMapLayout.compute(nodes: allNodes, edges: allEdges)
-                fit()
+                fitWhenLaid = true
+                relayout(graph)
             }
         }
         started = reduceMotion ? .distantPast : .now

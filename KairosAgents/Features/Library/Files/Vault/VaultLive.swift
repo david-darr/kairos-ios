@@ -31,25 +31,37 @@ nonisolated struct VaultLiveIndex: Hashable, Sendable {
 /// Unpaired, nothing here runs and the Vault shows its sample notes.
 extension VaultStore {
 
-    /// A key that changes when the phone is paired or unpaired, or the desktop comes back.
+    /// A key that changes when the phone is paired or unpaired, the desktop comes back,
+    /// or a different desktop or account is paired.
     static var connectionKey: String {
         let connection = Connection.shared
-        return "\(connection.usesSampleData)-\(connection.isConnected)"
+        return "\(connection.usesSampleData)-\(connection.isConnected)-\(accountKey)"
+    }
+
+    /// Which desktop and which account the vault belongs to. Live notes are only ever shown under this key.
+    static var accountKey: String {
+        let connection = Connection.shared
+        guard !connection.usesSampleData, let desktop = connection.desktop else { return "sample" }
+        return desktop.address + "|" + desktop.username
+    }
+
+    /// Still showing the live vault a request was sent for. Checked after every await before writing a result.
+    private func stillLive(_ account: String) -> Bool {
+        !isSample && liveAccount == account && Self.accountKey == account
     }
 
     /// Move between sample notes and the paired desktop to match the connection.
     func followConnection() {
         let wantLive = !Connection.shared.usesSampleData
+        if wantLive && !isSample && liveAccount != Self.accountKey {
+            // Another desktop or account: nothing read from the last one may stay on screen.
+            resetLive()
+        }
         guard wantLive == isSample else { return }
         if wantLive {
             sampleStash = VaultSampleStash(notes: notes, pins: pins, recent: recent, history: history, expanded: expanded,
                                            dailyFolder: dailyFolder, templatePath: templatePath)
-            notes = [:]
-            pins = []
-            recent = []
-            history = [:]
-            expanded = []
-            clearLive()
+            resetLive()
             isSample = false
         } else {
             clearLive()
@@ -69,7 +81,19 @@ extension VaultStore {
         }
     }
 
+    /// Every live note, pin, recent list and load state goes, ready to read the current account's vault.
+    private func resetLive() {
+        notes = [:]
+        pins = []
+        recent = []
+        history = [:]
+        expanded = []
+        clearLive()
+        liveAccount = Self.accountKey
+    }
+
     private func clearLive() {
+        savingNotes = []
         liveLoad = .idle
         noteLoad = [:]
         linksOut = [:]
@@ -93,21 +117,25 @@ extension VaultStore {
     /// Read the vault's notes, folders and links (no note text), pins, recent changes and today's note.
     func loadLive() async {
         guard !isSample else { return }
+        let account = liveAccount
         if liveLoad != .loaded { liveLoad = .loading }
         do {
             let client = try liveClient()
             let graph = try await client.vaultGraph()
+            guard stillLive(account) else { return }
             let pinned = try? await client.vaultPins()
+            guard stillLive(account) else { return }
             let daily = try? await client.vaultDaily()
+            guard stillLive(account) else { return }
             let activity = try? await client.vaultActivity()
-            guard !isSample else { return }
+            guard stillLive(account) else { return }
             showGraph(graph, activity: activity)
             if let pinned { pins = (pinned.pins ?? []).map(VaultWire.id(forPath:)) }
             if let daily { showDaily(daily) }
             liveLoad = .loaded
         } catch {
             Connection.shared.note(error)
-            guard !isSample else { return }
+            guard stillLive(account) else { return }
             liveLoad = .failed("Your vault could not be read. " + error.plainWords)
         }
     }
@@ -148,6 +176,9 @@ extension VaultStore {
             fresh[id] = VaultNote(id: id, body: "", edited: edited, editedBy: "", loaded: false,
                                   listed: VaultListedFacts(properties: ordered, words: node.words ?? 0),
                                   changeLabel: labels[id])
+            // Changed on the desktop (or never read): its text must be read again, so an open reader
+            // sees an unread note and asks for it instead of waiting on a load that already ended.
+            if let state = noteLoad[id], state != .loading { noteLoad[id] = nil }
         }
         var out: [String: [String]] = [:]
         var into: [String: [String]] = [:]
@@ -180,19 +211,21 @@ extension VaultStore {
     /// Read one note's text, its links both ways and related notes. Already read, it refreshes quietly.
     func open(_ id: String) async {
         guard !isSample else { return }
+        let account = liveAccount
         if notes[id]?.loaded != true { noteLoad[id] = .loading }
         do {
             let client = try liveClient()
             let read = try await client.vaultNote(path: VaultWire.path(forID: id))
-            guard !isSample else { return }
+            guard stillLive(account) else { return }
             show(read, as: id)
-            noteLoad[id] = .loaded
-            if let near = try? await client.vaultRelated(path: VaultWire.path(forID: id)), !isSample {
+            noteLoad[id] = notes[id]?.loaded == true ? .loaded : .failed("This note could not be read. Your desktop sent no text for it.")
+            let near = try? await client.vaultRelated(path: VaultWire.path(forID: id))
+            if let near, stillLive(account) {
                 relatedLive[id] = (near.results ?? []).map { VaultWire.id(forPath: $0.path) }.filter { notes[$0] != nil }
             }
         } catch {
             Connection.shared.note(error)
-            guard !isSample else { return }
+            guard stillLive(account) else { return }
             if notes[id]?.loaded == true {
                 noteLoad[id] = .loaded
             } else if case .server(status: 404, _) = error as? APIError {
@@ -256,15 +289,22 @@ extension VaultStore {
     /// into the store, so "Reload their version" shows it.
     func saveLive(_ id: String, body: String, version: String, allowRemoveProperties: Bool = false) async -> VaultSaveOutcome {
         guard !isSample else { return .failed("This note is a sample.") }
+        // One save per note at a time: a second one would send the same version and come back as a false conflict.
+        guard !savingNotes.contains(id) else { return .busy }
+        let account = liveAccount
+        savingNotes.insert(id)
+        defer { if liveAccount == account { savingNotes.remove(id) } }
         do {
             let saved = try await liveClient().vaultSave(path: VaultWire.path(forID: id), content: body, version: version,
                                                          allowRemoveProperties: allowRemoveProperties)
-            guard !isSample else { return .saved }
+            // The desktop has it; only the store moved on, so nothing is written here.
+            guard stillLive(account) else { return .saved }
             show(saved, as: id)
             Task { await open(id) }
             return .saved
         } catch {
             Connection.shared.note(error)
+            guard stillLive(account) else { return .failed("Your vault changed while this note was saving.") }
             if case .server(status: 409, let detail) = error as? APIError, detail == VaultWire.conflictDetail {
                 await open(id)
                 return .conflict
@@ -284,18 +324,24 @@ extension VaultStore {
             problem = "Wait a moment for the last change to save."
             return
         }
+        guard !isSample else { return }
+        let account = liveAccount
         var changed = before
         changed.body = body
         notes[id] = changed
         noteLoad[id] = .loading
         Task {
             let outcome = await saveLive(id, body: body, version: version)
+            guard stillLive(account) else { return }
             if noteLoad[id] == .loading { noteLoad[id] = .loaded }
             switch outcome {
             case .saved:
                 break
             case .conflict:
                 problem = "This note changed on your desktop, so your change was not saved. It now shows the latest version."
+            case .busy:
+                if notes[id]?.body == body { notes[id] = before }
+                problem = "Wait a moment for the last change to save."
             case .failed(let why):
                 if notes[id]?.body == body { notes[id] = before }
                 problem = "Your change was not saved. " + why
@@ -304,15 +350,19 @@ extension VaultStore {
     }
 
     func togglePinLive(_ id: String) {
+        guard !isSample else { return }
+        let account = liveAccount
         let before = pins
         if pins.contains(id) { pins.removeAll { $0 == id } } else { pins.append(id) }
         let wanted = pins
         Task {
             do {
                 let stored = try await liveClient().vaultSetPins(wanted.map(VaultWire.path(forID:)))
+                guard stillLive(account) else { return }
                 if pins == wanted, let list = stored.pins { pins = list.map(VaultWire.id(forPath:)) }
             } catch {
                 Connection.shared.note(error)
+                guard stillLive(account) else { return }
                 if pins == wanted { pins = before }
                 problem = "Your pins could not be saved. " + error.plainWords
             }
@@ -324,7 +374,9 @@ extension VaultStore {
     /// Notes whose text matches, with a snippet. Paired, the desktop searches; unpaired, the samples.
     func searchText(_ query: String) async throws -> [(note: VaultNote, snippet: String)] {
         guard !isSample else { return textMatches(query) }
+        let account = liveAccount
         let found = try await liveClient().vaultSearch(query)
+        guard stillLive(account) else { return [] }
         let marks = (found.mark ?? []).filter { !$0.isEmpty }
         return (found.results ?? []).map { hit in
             let id = VaultWire.id(forPath: hit.path)
@@ -339,8 +391,12 @@ extension VaultStore {
 
     /// Make today's note on the desktop (or find it). Returns a plain sentence when it failed.
     func makeTodayLive() async -> (created: Bool, problem: String?) {
+        let changed = "Today's note could not be shown. Your vault changed while it was being made."
+        guard !isSample else { return (false, changed) }
+        let account = liveAccount
         do {
             let made = try await liveClient().vaultMakeDaily()
+            guard stillLive(account) else { return (false, changed) }
             guard let path = made.path, !path.isEmpty else { return (false, "Today's note could not be made.") }
             let id = VaultWire.id(forPath: path)
             liveTodayID = id
@@ -353,16 +409,18 @@ extension VaultStore {
             return (made.created ?? false, nil)
         } catch {
             Connection.shared.note(error)
+            guard stillLive(account) else { return (false, changed) }
             return (false, "Today's note could not be made. " + error.plainWords)
         }
     }
 
     /// Add the proposed line to the folder index. False when the index changed since, or the save failed.
     func addToIndexLive(_ id: String) async -> Bool {
-        guard let proposal = liveIndex, proposal.noteID == id else { return false }
+        guard !isSample, let proposal = liveIndex, proposal.noteID == id else { return false }
+        let account = liveAccount
         liveIndex = nil
         let outcome = await saveLive(proposal.indexID, body: proposal.content, version: proposal.version)
-        return outcome == .saved
+        return stillLive(account) && outcome == .saved
     }
 }
 

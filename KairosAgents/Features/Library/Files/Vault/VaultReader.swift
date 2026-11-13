@@ -39,6 +39,20 @@ struct VaultNoteView: View {
             }
         }
         .task(id: noteID) { await store.open(noteID) }
+        .onChange(of: needsRead) {
+            // The note's text went away under the reader (changed on the desktop, or the vault was read again):
+            // read it again so the wait always ends in the text or a failure with Try again.
+            if needsRead { Task { await store.open(noteID) } }
+        }
+    }
+
+    /// Paired, the note has no text and nothing is reading it or has failed to.
+    private var needsRead: Bool {
+        guard !store.isSample, store.note(noteID)?.loaded != true else { return false }
+        switch store.noteLoad[noteID] {
+        case .loading, .failed: return false
+        case .idle, .loaded, nil: return true
+        }
     }
 
     /// Paired, before the note's text arrives: its title and one plain sentence, or what failed with a Try again.
@@ -344,6 +358,7 @@ struct VaultEditor: View {
     @State private var confirmProperties = false
     @State private var conflict = false
     @State private var loaded = false
+    @State private var saving = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -383,14 +398,14 @@ struct VaultEditor: View {
                     Haptics.tap()
                     trySave()
                 } label: {
-                    Text("Save")
+                    Text(saving ? "Saving" : "Save")
                         .font(KFont.ui(16, .semibold))
-                        .foregroundStyle(dirty ? Palette.onGold : Palette.inkFaint)
+                        .foregroundStyle(dirty && !saving ? Palette.onGold : Palette.inkFaint)
                         .frame(maxWidth: .infinity, minHeight: 50)
-                        .background(dirty ? AnyShapeStyle(Palette.gold) : AnyShapeStyle(Palette.ink.opacity(0.06)), in: Capsule())
+                        .background(dirty && !saving ? AnyShapeStyle(Palette.gold) : AnyShapeStyle(Palette.ink.opacity(0.06)), in: Capsule())
                 }
                 .buttonStyle(PressStyle())
-                .disabled(!dirty)
+                .disabled(!dirty || saving)
             }
         }
         .onAppear(perform: load)
@@ -519,6 +534,7 @@ struct VaultEditor: View {
     }
 
     private func trySave() {
+        guard !saving else { return }
         if store.isSample, let current = store.note(noteID), current.edited > openedAt {
             conflict = true
             return
@@ -531,11 +547,19 @@ struct VaultEditor: View {
     }
 
     private func commit(allowRemoveProperties: Bool = false) {
+        guard !saving else { return }
         status = "Saving..."
         if !store.isSample {
             let text = draft
+            saving = true
             Task {
-                switch await store.saveLive(noteID, body: text, version: openedVersion, allowRemoveProperties: allowRemoveProperties) {
+                let outcome = await store.saveLive(noteID, body: text, version: openedVersion, allowRemoveProperties: allowRemoveProperties)
+                saving = false
+                switch outcome {
+                case .busy:
+                    // Another save of this note (a ticked box) was still on its way, so nothing was sent.
+                    status = "Unsaved changes"
+                    toaster.say("Wait a moment for the last change to save, then save again.")
                 case .saved:
                     original = text
                     openedVersion = store.note(noteID)?.version ?? openedVersion

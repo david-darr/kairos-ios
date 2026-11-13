@@ -150,6 +150,10 @@ final class VaultStore: VaultProviding {
     /// A plain sentence when a quiet save (a ticked box, a pin) did not reach the desktop.
     var problem: String?
     @ObservationIgnored var sampleStash: VaultSampleStash?
+    /// The desktop and account the live notes came from (VaultStore.accountKey when they were read).
+    @ObservationIgnored var liveAccount = ""
+    /// Notes with a save on its way to the desktop, so a second tap does not send the same version again.
+    @ObservationIgnored var savingNotes: Set<String> = []
 
     init() { reload() }
 
