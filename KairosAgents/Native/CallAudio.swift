@@ -571,6 +571,10 @@ nonisolated final class CallAudio: @unchecked Sendable {
         do {
             try startOnQueue()
             restarting = false
+            if interrupted {
+                interrupted = false
+                continuation.yield(.resumed)
+            }
         } catch {
             guard attempt < 3 else {
                 restarting = false
@@ -602,7 +606,7 @@ nonisolated final class CallAudio: @unchecked Sendable {
         }
     }
 
-    /// Another app or a phone call took the audio. When it gives it back with "should resume", the engine starts
+    /// Another app or a phone call took the audio. When it gives it back, the engine starts
     /// again, for a CallKit call too (CallKit did not take the session, so no didActivate follows; the engine never
     /// activates a CallKit session itself). A session CallKit deactivated waits for its didActivate instead.
     private func interruption(_ type: AVAudioSession.InterruptionType?, resume: Bool) {
@@ -615,14 +619,11 @@ nonisolated final class CallAudio: @unchecked Sendable {
             interrupted = true
             continuation.yield(.interrupted)
         case .ended?:
-            guard interrupted, resume, !suspended, !running else { return }
-            interrupted = false
-            do {
-                try startOnQueue()
-                continuation.yield(.resumed)
-            } catch {
-                continuation.yield(.failed("The call audio could not come back. End the call and try again."))
-            }
+            // For a call the audio comes back whenever the other sound is done, with or without "should resume".
+            // A few tries a little apart: right at the end of an interruption a start can fail for a moment.
+            guard interrupted, !suspended, !running, !restarting else { return }
+            restarting = true
+            restart(attempt: 1, token: restartToken)
         default:
             break
         }
