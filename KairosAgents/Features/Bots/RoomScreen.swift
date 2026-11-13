@@ -1085,7 +1085,6 @@ struct BotRoomLiveSheet: View {
     /// The room changed on the desktop and could not be read again: read it before the next save.
     @State private var needsRead = false
     /// The form the desktop refused: the same save would be refused again, so Save waits for a change.
-    @State private var refusedForm: BotRoomLiveForm?
     @State private var note: String?
     @State private var newTitle = ""
     @State private var creating = false
@@ -1173,7 +1172,6 @@ struct BotRoomLiveSheet: View {
         guard let form, let base, !saving, !mustCheck, !needsRead else { return }
         saving = true
         note = nil
-        refusedForm = nil
         sent = form
         sentBase = base
         Task {
@@ -1185,8 +1183,7 @@ struct BotRoomLiveSheet: View {
                 store.say(text)
                 dismiss()
             case .refused(let text):
-                // The desktop's own reason. Sending the same again gets the same answer, so Save waits for a change.
-                refusedForm = form
+                // The desktop's own reason. Save stays on: a refusal can be temporary (no signal, a busy room).
                 note = text
             case .busy(let text):
                 // Nothing saved; the members stay locked until the room is idle, then the same save can go.
@@ -1262,7 +1259,7 @@ struct BotRoomLiveSheet: View {
             GoldButton(title: saving ? "Reading" : "Read the room again") { readAgain() }
                 .disabled(saving)
         } else {
-            let blocked = disabled || (refusedForm != nil && refusedForm == form)
+            let blocked = disabled
             GoldButton(title: saving ? "Saving" : title) { save() }
                 .disabled(saving || blocked)
                 .opacity(blocked ? 0.5 : 1)
