@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 
 /// The one data store in front of Home and the chats. Screens read it and call it; it talks to
 /// whichever backend is in use (the sample one until a desktop is paired, the live one after).
@@ -32,6 +33,9 @@ final class ChatStore {
     @ObservationIgnored private var botChats: [String: BotChatState] = [:]
     @ObservationIgnored private var threadOwners: [String: String] = [:]
     @ObservationIgnored private var homeRefresh: Task<Void, Never>?
+    /// Chats on screen now (model chat ids, and bot ids): they read as read whatever the list says.
+    @ObservationIgnored private var openChats: Set<String> = []
+    @ObservationIgnored private var openBots: Set<String> = []
     @ObservationIgnored private var polls = 0
     @ObservationIgnored private var loadingHome = false
 
@@ -245,6 +249,29 @@ final class ChatStore {
             if case .bot(let botID) = conversation.kind { threadOwners[conversation.id] = botID }
         }
         for chat in botChats.values { chat.botChanged() }
+        clearOpenUnread()
+    }
+
+    /// A chat came on screen (`on`) or left it. Opening one ends its Live Activity and clears its unread mark
+    /// here at once; the backend keeps it read (the desktop for a bot, this phone's seen times for a model chat).
+    func chatOnScreen(chatID: String?, botID: String?, _ on: Bool) {
+        if let botID {
+            if on { openBots.insert(botID) } else { openBots.remove(botID) }
+        } else if let chatID {
+            if on { openChats.insert(chatID) } else { openChats.remove(chatID) }
+            backend.markChatSeen(chatID)
+        }
+        if on { ConnectionSeam.chatOpened(chatID, botID) }
+        clearOpenUnread()
+    }
+
+    private func clearOpenUnread() {
+        for index in conversations.indices where conversations[index].unread {
+            switch conversations[index].kind {
+            case .model: if openChats.contains(conversations[index].id) { conversations[index].unread = false }
+            case .bot(let botID): if openBots.contains(botID) { conversations[index].unread = false }
+            }
+        }
     }
 
     private func refreshHomeSoon() {
@@ -1243,5 +1270,19 @@ final class BotChatState {
 
     func removeStaged(_ item: StagedAttachment) {
         staged.removeAll { $0.id == item.id }
+    }
+}
+
+extension View {
+    /// While this chat is on screen it reads as read, and opening it ends its Live Activity.
+    func readsWhileOpen(_ chat: ModelChatState) -> some View {
+        onAppear { ChatStore.shared.chatOnScreen(chatID: chat.id, botID: nil, true) }
+            .onDisappear { ChatStore.shared.chatOnScreen(chatID: chat.id, botID: nil, false) }
+    }
+
+    /// While this bot's chat is on screen it reads as read, and opening it ends its Live Activity.
+    func readsWhileOpen(_ chat: BotChatState) -> some View {
+        onAppear { ChatStore.shared.chatOnScreen(chatID: nil, botID: chat.botID, true) }
+            .onDisappear { ChatStore.shared.chatOnScreen(chatID: nil, botID: chat.botID, false) }
     }
 }

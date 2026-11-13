@@ -626,4 +626,8 @@ final class SampleBackend: ChatBackend {
         let botID = self.botID(ofThread: threadID)
         if let index = conversations.firstIndex(where: { $0.kind == .bot(botID) }) { conversations[index].unread = false }
     }
+
+    func markChatSeen(_ chatID: String) {
+        if let index = conversations.firstIndex(where: { $0.id == chatID }) { conversations[index].unread = false }
+    }
 }

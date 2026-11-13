@@ -78,13 +78,13 @@ export const ALERT_KINDS = Object.keys(ALERT_TEXT);
 
 // The phone's notification kinds the desktop sends (kairos-ios KairosAgents/Native/Notifications.swift,
 // NoticeKind). Each line is exactly the phone's own `headline` (test/wording.test.js checks it);
-// the title of the notification is who it is from.
+// the title of the notification is who it is from, so the line never repeats the name.
 const NOTICE_TEXT = {
-  approval: (who) => `${who} wants your approval`,
-  question: (who) => `${who} is waiting for your answer`,
+  approval: () => "Wants your approval",
+  question: () => "Is waiting for your answer",
   replyReady: () => "Your reply is ready",
-  workDone: (who) => `${who} finished a task`,
-  workFailed: () => "A task couldn't finish",
+  workDone: () => "Finished a task",
+  workFailed: () => "Couldn't finish",
 };
 export const NOTICE_KINDS = Object.keys(NOTICE_TEXT);
 export function noticeLine(notice, who) {

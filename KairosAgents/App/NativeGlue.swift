@@ -12,6 +12,8 @@ enum NativeGlue {
     /// Which model chat each turn belongs to, kept after it ends so Retry can find it.
     private static var chats: [String: String] = [:]
     private static var publishQueued = false
+    /// Turns whose chat the person opened: their Live Activity was ended and does not come back.
+    private static var opened: Set<String> = []
 
     /// Called once at launch, before any screen is up.
     static func join() {
@@ -22,9 +24,11 @@ enum NativeGlue {
         ConnectionSeam.runChanged = { run in follow(run) }
         ConnectionSeam.runEnded = { run in
             live[run.turnID] = nil
+            opened.remove(run.turnID)
             LiveActivities.shared.finish(run.turnID, state(run))
             publishSoon()
         }
+        ConnectionSeam.chatOpened = { chatID, botID in chatOpened(chatID: chatID, botID: botID) }
         ConnectionSeam.homeChanged = { _ in publishSoon() }
         ConnectionSeam.paired = { PairedAsk.shared.offer() }
 
@@ -54,8 +58,25 @@ enum NativeGlue {
     private static func follow(_ run: ConnectionSeam.RunInfo) {
         live[run.turnID] = run
         if run.botID == nil { chats[run.turnID] = run.chatID }
-        LiveActivities.shared.begin(attributes(run), state(run))
+        if !opened.contains(run.turnID) { LiveActivities.shared.begin(attributes(run), state(run)) }
         publishSoon()
+    }
+
+    /// A chat is on screen: end its Live Activities now, with no card left behind, including one for a
+    /// turn still running there (the person is watching it).
+    private static func chatOpened(chatID: String?, botID: String?) {
+        let link: String
+        if let botID {
+            link = NativeLink.bot(botID).url.absoluteString
+        } else if let chatID {
+            link = NativeLink.chat(chatID).url.absoluteString
+        } else {
+            return
+        }
+        opened.formUnion(LiveActivities.shared.dismiss(link: link))
+        for run in live.values where run.botID == botID && (botID != nil || run.chatID == chatID) {
+            opened.insert(run.turnID)
+        }
     }
 
     private static func attributes(_ run: ConnectionSeam.RunInfo) -> KairosActivityAttributes {

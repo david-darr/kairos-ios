@@ -777,6 +777,16 @@ final class LiveBackend: ChatBackend {
     }
 
     func markRead(threadID: String, messageID: String?) async throws {
-        try await desk { client in _ = try await client.botChatMarkRead(threadID, messageId: messageID) }
+        let botID = threadBots[threadID]
+        try await desk { client in
+            _ = try await client.botChatMarkRead(threadID, messageId: messageID)
+            // Home and All bots read the bot's conversation list, which keeps its own read mark apart from the thread's.
+            if let botID { _ = try await client.agentOrganize(botID, action: "read") }
+        }
+        if let botID, let index = botConversations.firstIndex(where: { $0.id == botID }) { botConversations[index].unread = 0 }
+    }
+
+    func markChatSeen(_ chatID: String) {
+        markSeen(chatID, updated: nil)
     }
 }
