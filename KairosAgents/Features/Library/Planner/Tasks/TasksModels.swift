@@ -47,6 +47,10 @@ nonisolated struct RunRecord: Identifiable, Hashable, Sendable {
     var delivery: RunDelivery = .none
     /// nil when the run has no run ID (no Steps button); empty when nothing was recorded.
     var steps: [RunStep]? = nil
+    /// Paired: the delivery row Send again retries (core/outbox.py).
+    var deliveryID: String? = nil
+    /// Paired: the model run whose steps are read on a tap (GET /api/runs/{id}).
+    var runID: String? = nil
 
     var outcomeLabel: String {
         switch outcome {
@@ -54,6 +58,9 @@ nonisolated struct RunRecord: Identifiable, Hashable, Sendable {
         case "failed": "Failed"
         case "incomplete": "Didn't finish"
         case "stopped": "Stopped"
+        case "running": "Running"
+        case "queued": "Waiting to start"
+        case "missed": "Missed"
         default: outcome
         }
     }
@@ -62,7 +69,8 @@ nonisolated struct RunRecord: Identifiable, Hashable, Sendable {
         switch outcome {
         case "succeeded": .success
         case "failed": .danger
-        case "incomplete", "stopped": .gold
+        case "incomplete", "stopped", "missed": .gold
+        case "running", "queued": .working
         default: .muted
         }
     }
@@ -116,6 +124,8 @@ nonisolated struct WorkCard: Identifiable, Hashable, Sendable {
     var startedAt: Date? = nil
     var created: Date
     var runs: [RunRecord] = []
+    /// Paired: the model it runs on (nil is Claude).
+    var endpointID: String? = nil
 }
 
 // MARK: - Scheduled tasks
@@ -150,15 +160,27 @@ nonisolated struct ScheduledJob: Identifiable, Hashable, Sendable {
     var runningSince: Date? = nil
     /// Newest first.
     var runs: [RunRecord] = []
+    /// Paired: read from the desktop, whose own next time is used instead of working one out here.
+    var fromDesktop = false
+    var desktopNext: Date? = nil
+    /// Paired: the model id (nil or "" is Claude) and the channel id (nil or "" is the Tasks tab only).
+    var endpointID: String? = nil
+    var channelID: String? = nil
+    /// Paired: a schedule the phone cannot draw (a bot's routine), in words.
+    var scheduleNote: String? = nil
 
     var builtin: Bool { builtinKey != nil }
     /// A plain schedule: no agent, routine, trigger or built-in action. Only these can be shared.
     var plain: Bool { builtinKey == nil && agentID == nil && !fromTrigger }
     var displayName: String { builtin ? "\(name) · built-in" : name }
-    var ended: Bool { kind == .once && runAt < Date() }
+    var ended: Bool {
+        if fromDesktop { return kind == .once && scheduleNote == nil && (desktopNext.map { $0 <= Date() } ?? true) }
+        return kind == .once && runAt < Date()
+    }
 
     var nextRun: Date? {
         guard enabled else { return nil }
+        if fromDesktop { return desktopNext }
         let calendar = Calendar.current
         let now = Date()
         switch kind {
@@ -179,6 +201,10 @@ nonisolated struct ScheduledJob: Identifiable, Hashable, Sendable {
     }
 
     var scheduleSummary: String {
+        if let scheduleNote {
+            if let next = nextRun { return "\(scheduleNote) - next \(TasksDates.short(next))" }
+            return scheduleNote
+        }
         switch kind {
         case .once:
             let at = runAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
@@ -210,6 +236,9 @@ nonisolated struct JobDraft: Hashable, Sendable {
     var minutes = "30"
     var model = TasksOptions.defaultModel
     var deliver = TasksOptions.tabOnly
+    /// Paired: the model id and channel id ("" is the default).
+    var endpointID = ""
+    var channelID = ""
 
     var hasText: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty || !prompt.trimmingCharacters(in: .whitespaces).isEmpty
@@ -240,6 +269,9 @@ nonisolated struct JobRoutine: Identifiable, Hashable, Sendable {
     var everyHours: Int? = nil
     var deliver = TasksOptions.tabOnly
     var enabled = false
+    /// Paired: the channel id it delivers to ("" is the Tasks tab only), and the task it made when turned on.
+    var channelID = ""
+    var taskID: String? = nil
 
     var cadence: String {
         if let hour { return "every day at \(TasksDates.clock(hour: hour, minute: 0))" }

@@ -13,12 +13,15 @@ struct TrigListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PlannerHeading(title: "Triggers", link: "Add a trigger", action: onAdd)
+            PlannerHeading(title: "Triggers", link: store.isLive ? nil : "Add a trigger", action: store.isLive ? nil : onAdd)
             Text("Outside events, like a GitHub push or a form on your site, can start work. Each one asks you first unless Run straight away is on.")
                 .font(KFont.ui(14, relativeTo: .footnote))
                 .foregroundStyle(Palette.inkDim)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if store.isLive {
+                TasksNotLiveNote(text: "Triggers are not connected to your desktop yet. Set them up and answer them in Kairos on your desktop.")
+            } else {
             if !store.requests.isEmpty {
                 SectionLabel(text: "Waiting for you").padding(.top, 4)
                 ForEach(store.requests) { request in
@@ -37,6 +40,7 @@ struct TrigListView: View {
                     }
                 }
                 .kCard(radius: 20)
+            }
             }
         }
         .animation(Motion.snappy, value: store.requests)

@@ -9,8 +9,12 @@ struct RunHistoryList: View {
     let onSendAgain: (String) -> Void
     @State var expanded: Set<String> = []
     @State var stepsOpen: Set<String> = []
+    /// Paired: reads one run's steps from the desktop when its Steps button is tapped.
+    var loadSteps: ((String) async throws -> [RunStep])? = nil
     @State private var showAll = false
     @State private var sending: Set<String> = []
+    @State private var readSteps: [String: [RunStep]] = [:]
+    @State private var stepsProblem: [String: String] = [:]
 
     var body: some View {
         if runs.isEmpty {
@@ -41,6 +45,8 @@ struct RunHistoryList: View {
                 }
             }
             .kCard(radius: 18)
+            // A Send again that came back (sent, or refused and put back) is ready for another tap.
+            .onChange(of: runs) { sending.removeAll() }
         }
     }
 
@@ -170,7 +176,9 @@ struct RunHistoryList: View {
 
     @ViewBuilder
     private func stepsBlock(_ run: RunRecord) -> some View {
-        if let steps = run.steps {
+        if let runID = run.runID, run.steps == nil, let loadSteps {
+            liveStepsBlock(run, runID: runID, load: loadSteps)
+        } else if let steps = run.steps {
             let open = stepsOpen.contains(run.id)
             VStack(alignment: .leading, spacing: 8) {
                 PlannerPill(title: open ? "Hide steps" : "Steps", symbol: "list.bullet", style: .quiet) {
@@ -187,6 +195,51 @@ struct RunHistoryList: View {
                     } else {
                         RunStepTimeline(steps: steps)
                     }
+                }
+            }
+        }
+    }
+
+    /// Paired: the steps are read from the desktop the first time they are opened.
+    private func liveStepsBlock(_ run: RunRecord, runID: String,
+                                load: @escaping (String) async throws -> [RunStep]) -> some View {
+        let open = stepsOpen.contains(run.id)
+        return VStack(alignment: .leading, spacing: 8) {
+            PlannerPill(title: open ? "Hide steps" : "Steps", symbol: "list.bullet", style: .quiet) {
+                withAnimation(Motion.snappy) {
+                    if open { stepsOpen.remove(run.id) } else { stepsOpen.insert(run.id) }
+                }
+                guard !open, readSteps[runID] == nil else { return }
+                stepsProblem[runID] = nil
+                Task {
+                    do {
+                        let steps = try await load(runID)
+                        withAnimation(Motion.snappy) { readSteps[runID] = steps }
+                    } catch {
+                        Connection.shared.note(error)
+                        stepsProblem[runID] = "The steps could not be read. " + error.plainWords
+                    }
+                }
+            }
+            if open {
+                if let steps = readSteps[runID] {
+                    if steps.isEmpty {
+                        Text("No steps recorded for this run (no tools used, or it ran before timelines existed).")
+                            .font(KFont.ui(13.5, relativeTo: .footnote))
+                            .foregroundStyle(Palette.inkFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        RunStepTimeline(steps: steps)
+                    }
+                } else if let problem = stepsProblem[runID] {
+                    Text(problem)
+                        .font(KFont.ui(13.5, relativeTo: .footnote))
+                        .foregroundStyle(Palette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Reading the steps.")
+                        .font(KFont.ui(13.5, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
                 }
             }
         }

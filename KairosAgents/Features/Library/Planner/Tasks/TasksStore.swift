@@ -21,6 +21,27 @@ final class TasksStore {
     var draftError: JobDraftField? = nil
     var debugApplied = false
 
+    // Paired with a desktop (TasksLive.swift). Unpaired, none of this is used and the screens show the samples.
+    var isLive = false
+    var liveAccount = "sample"
+    var sampleStash: TasksSampleStash?
+    var boardLoad: TasksLiveLoad = .idle
+    var jobsLoad: TasksLiveLoad = .idle
+    var libraryLoad: TasksLiveLoad = .idle
+    var jobRunsFailed = false
+    var cardRunsLoad: [String: TasksLiveLoad] = [:]
+    var liveModels: [ModelChoiceDTO] = []
+    var modelsKnown = false
+    var liveChannels: [TaskChannelDTO] = []
+    var agentNames: [String: String] = [:]
+    var agentsKnown = false
+    /// Cards and tasks with a write on its way: their controls wait.
+    var busy: Set<String> = []
+    /// Cards and tasks with a Run now on its way (the desktop answers when the run ends).
+    var starting: Set<String> = []
+    /// One plain sentence for the person, said once and cleared.
+    var problem: String?
+
     init(provider: TasksProviding) {
         cards = provider.loadCards()
         jobs = provider.loadJobs()
@@ -54,13 +75,19 @@ final class TasksStore {
     func agentName(_ id: String?, missing: Bool) -> String {
         if missing { return "a deleted agent" }
         guard let id else { return "Kairos" }
-        return SampleData.bot(id).name
+        return botName(id)
+    }
+
+    /// A bot's name: the paired desktop's, or the sample's.
+    func botName(_ id: String) -> String {
+        guard isLive else { return SampleData.bot(id).name }
+        return agentNames[id] ?? "a bot"
     }
 
     /// "Scout · Claude Opus · waits for Draft the newsletter · attempt 2 of 3 · from trigger GitHub pushes"
     func meta(_ card: WorkCard) -> String {
         var parts: [String] = []
-        if card.agentMissing { parts.append("a deleted agent") } else if let id = card.agentID { parts.append(SampleData.bot(id).name) }
+        if card.agentMissing { parts.append("a deleted agent") } else if let id = card.agentID { parts.append(botName(id)) }
         if card.modelMissing { parts.append("a removed model") } else { parts.append(card.model ?? "Claude") }
         if !card.waitsFor.isEmpty { parts.append("waits for \(waitNames(card))") }
         if card.attempt > 1 { parts.append("attempt \(card.attempt) of 3") }
@@ -406,7 +433,7 @@ final class TasksStore {
         case .task:
             if trigger.jobMissing { return "Runs a removed task" }
             if let id = trigger.jobID, let job = job(id) {
-                if let agent = job.agentID { return "Runs \(job.name) for \(SampleData.bot(agent).name)" }
+                if let agent = job.agentID { return "Runs \(job.name) for \(botName(agent))" }
                 return "Runs \(job.name)"
             }
             return "Runs a removed task"
