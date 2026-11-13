@@ -20,8 +20,10 @@ struct VaultNoteView: View {
 
     var body: some View {
         Group {
-            if let note = store.note(noteID) {
+            if let note = store.note(noteID), note.loaded {
                 content(note)
+            } else if !store.isSample {
+                waiting
             } else {
                 FilesEmpty(symbol: "doc.questionmark", title: "Couldn't open this note", detail: "It may have been moved or deleted on your desktop.", action: "Back to Vault") { nav.home() }
                     .frame(maxHeight: .infinity)
@@ -36,6 +38,36 @@ struct VaultNoteView: View {
             default: break
             }
         }
+        .task(id: noteID) { await store.open(noteID) }
+    }
+
+    /// Paired, before the note's text arrives: its title and one plain sentence, or what failed with a Try again.
+    private var waiting: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(store.note(noteID)?.title ?? noteID.split(separator: "/").last.map(String.init) ?? noteID)
+                .font(KFont.display(36))
+                .foregroundStyle(Palette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            if case .failed(let why) = store.noteLoad[noteID] {
+                VaultLiveLine(text: why) { Task { await store.open(noteID) } }
+            } else {
+                VaultLiveLine(text: "Reading this note from your desktop.")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                GlassIconButton(symbol: "chevron.left", label: "Back to Vault") { dismiss() }
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
+            .background { HeaderFade() }
+        }
+        .kScreen()
     }
 
     private func content(_ note: VaultNote) -> some View {
@@ -203,6 +235,11 @@ struct VaultNoteView: View {
     }
 
     private func meta(_ note: VaultNote) -> String {
+        if !store.isSample {
+            let ago = FilesDates.ago(note.edited)
+            let label = note.changeLabel.map { $0 + " · " } ?? ""
+            return "\(label)\(ago == "Just now" ? "Edited just now" : "Edited \(ago)") · \(note.words) words"
+        }
         let by: String
         switch note.editedBy {
         case "you": by = "by you"
@@ -300,6 +337,7 @@ struct VaultEditor: View {
     @State private var draft = ""
     @State private var original = ""
     @State private var openedAt = Date.distantPast
+    @State private var openedVersion = ""
     @State private var mode: Mode = .write
     @State private var status = ""
     @State private var confirmDiscard = false
@@ -369,7 +407,7 @@ struct VaultEditor: View {
             Text("Your unsaved changes to this Vault note will be lost.")
         }
         .confirmationDialog("Remove the properties block?", isPresented: $confirmProperties, titleVisibility: .visible) {
-            Button("Remove and save", role: .destructive) { commit() }
+            Button("Remove and save", role: .destructive) { commit(allowRemoveProperties: true) }
         } message: {
             Text("This note will lose its status, project and type.")
         }
@@ -383,6 +421,7 @@ struct VaultEditor: View {
                 original = latest
                 draft = latest
                 openedAt = store.note(noteID)?.edited ?? .now
+                openedVersion = store.note(noteID)?.version ?? openedVersion
                 toaster.say("Loaded the latest version")
             }
             Button("Cancel", role: .cancel) {}
@@ -462,6 +501,7 @@ struct VaultEditor: View {
         draft = note.body
         original = note.body
         openedAt = note.edited
+        openedVersion = note.version ?? ""
         switch nav.debug {
         case .preview:
             nav.debug = .none
@@ -479,7 +519,7 @@ struct VaultEditor: View {
     }
 
     private func trySave() {
-        if let current = store.note(noteID), current.edited > openedAt {
+        if store.isSample, let current = store.note(noteID), current.edited > openedAt {
             conflict = true
             return
         }
@@ -490,8 +530,31 @@ struct VaultEditor: View {
         commit()
     }
 
-    private func commit() {
+    private func commit(allowRemoveProperties: Bool = false) {
         status = "Saving..."
+        if !store.isSample {
+            let text = draft
+            Task {
+                switch await store.saveLive(noteID, body: text, version: openedVersion, allowRemoveProperties: allowRemoveProperties) {
+                case .saved:
+                    original = text
+                    openedVersion = store.note(noteID)?.version ?? openedVersion
+                    openedAt = store.note(noteID)?.edited ?? .now
+                    dirty = draft != original
+                    status = "Saved"
+                    Haptics.success()
+                    toaster.say("Vault note saved")
+                    done()
+                case .conflict:
+                    status = "Not saved"
+                    conflict = true
+                case .failed(let why):
+                    status = "Not saved"
+                    toaster.say("The note was not saved. " + why)
+                }
+            }
+            return
+        }
         store.save(noteID, body: draft)
         original = draft
         openedAt = store.note(noteID)?.edited ?? .now
@@ -665,7 +728,9 @@ struct VaultLinksSheet: View {
     private func history(_ note: VaultNote) -> some View {
         let changes = store.history[note.id] ?? []
         return FilesGroup(label: "History") {
-            if changes.isEmpty {
+            if !store.isSample {
+                emptyLine("This note's change history is kept on your desktop and is not shown on the phone yet.")
+            } else if changes.isEmpty {
                 emptyLine("No recorded changes. Edits made outside Kairos before today are not tracked.")
             } else {
                 VStack(spacing: 0) {

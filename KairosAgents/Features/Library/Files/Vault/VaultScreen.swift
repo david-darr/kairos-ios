@@ -41,20 +41,28 @@ final class VaultNav {
 struct VaultScreen: View {
     @State private var nav: VaultNav
     @State private var toaster = FilesToaster()
+    @State private var store = VaultStore.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(AppRouter.self) private var router
     @Environment(ChromeState.self) private var chrome
 
     init(start: VaultStart = .home, debug: VaultDebug = .none, route: VaultRoute? = nil) {
         let store = VaultStore.shared
+        store.followConnection()
         var path: [VaultRoute] = route.map { [$0] } ?? []
+        var debug = debug
         switch start {
         case .home: break
         case .note(let id): path = [.note(id)]
         case .map: path = [.map(nil)]
         case .today:
-            store.createToday()
-            path = [.note(store.todayID)]
+            if store.isSample {
+                store.createToday()
+                path = [.note(store.todayID)]
+            } else {
+                // The desktop makes today's note; Home opens it once the vault is read.
+                debug = .todayPrompt
+            }
         }
         _nav = State(initialValue: VaultNav(path: path, debug: debug))
     }
@@ -73,6 +81,16 @@ struct VaultScreen: View {
         }
         .filesToasts(toaster)
         .environment(nav)
+        .task(id: VaultStore.connectionKey) {
+            store.followConnection()
+            await store.loadLiveIfNeeded()
+        }
+        .onChange(of: store.problem) {
+            if let problem = store.problem {
+                toaster.say(problem)
+                store.problem = nil
+            }
+        }
         .onAppear {
             nav.close = {
                 let ask = nav.askAbout
@@ -98,6 +116,8 @@ struct VaultHomeView: View {
     @State private var query = ""
     @State private var textHits: [(note: VaultNote, snippet: String)] = []
     @State private var searching = false
+    @State private var textProblem: String?
+    @State private var searchTry = 0
     @State private var month = Date.now
     @State private var confirmReload = false
     @State private var indexPrompt: VaultIndexPrompt?
@@ -107,6 +127,7 @@ struct VaultHomeView: View {
             VStack(alignment: .leading, spacing: 18) {
                 FilesSearchField(text: $query, prompt: "Search vault") { openFirst() }
                     .accessibilityLabel("Search vault notes")
+                liveStatus
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     cards
                 } else {
@@ -145,13 +166,28 @@ struct VaultHomeView: View {
         } message: {
             Text("This reads every note again from your desktop.")
         }
-        .task(id: query) { await runTextSearch() }
+        .task(id: "\(searchTry)|\(query)") { await runTextSearch() }
         .onAppear {
             if nav.debug == .search {
                 query = "price"
             } else if nav.debug == .todayPrompt {
                 nav.debug = .none
                 openToday()
+            }
+        }
+    }
+
+    /// Paired: one plain sentence while the vault is read, or what failed with a Try again.
+    @ViewBuilder
+    private var liveStatus: some View {
+        if !store.isSample {
+            switch store.liveLoad {
+            case .idle, .loading:
+                VaultLiveLine(text: "Reading your vault from your desktop.")
+            case .failed(let why):
+                VaultLiveLine(text: why) { Task { await store.loadLive() } }
+            case .loaded:
+                EmptyView()
             }
         }
     }
@@ -229,8 +265,15 @@ struct VaultHomeView: View {
                 .buttonStyle(PressStyle())
                 Button {
                     Haptics.success()
-                    let added = store.addToIndex(store.todayID, expecting: edited)
-                    toaster.say(added ? "Added to the index" : "The index changed since; nothing was added. Open it to add the line by hand.")
+                    if store.isSample {
+                        let added = store.addToIndex(store.todayID, expecting: edited)
+                        toaster.say(added ? "Added to the index" : "The index changed since; nothing was added. Open it to add the line by hand.")
+                    } else {
+                        Task {
+                            let added = await store.addToIndexLive(store.todayID)
+                            toaster.say(added ? "Added to the index" : "The index was not changed. Open it to add the line by hand.")
+                        }
+                    }
                     indexPrompt = nil
                 } label: {
                     Text("Add line")
@@ -317,12 +360,25 @@ struct VaultHomeView: View {
                 let items = store.recentlyChanged
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, note in
                     Button { nav.open(note.id) } label: {
-                        VaultNoteRow(note: note, detail: "\(FilesDates.ago(note.edited)) · \(note.editedBy == "you" ? "by you" : note.editedBy == "outside Kairos" ? "outside Kairos" : "by \(note.editedBy)")", last: index == items.count - 1)
+                        VaultNoteRow(note: note, detail: recentDetail(note), last: index == items.count - 1)
                     }
                     .buttonStyle(PressStyle(scale: 0.99))
                 }
             }
             .kCard(radius: 20)
+        }
+    }
+
+    private func recentDetail(_ note: VaultNote) -> String {
+        let ago = FilesDates.ago(note.edited)
+        if !store.isSample {
+            guard let label = note.changeLabel, !label.isEmpty else { return ago }
+            return "\(ago) · \(label)"
+        }
+        switch note.editedBy {
+        case "you": return "\(ago) · by you"
+        case "outside Kairos": return "\(ago) · outside Kairos"
+        default: return "\(ago) · by \(note.editedBy)"
         }
     }
 
@@ -430,6 +486,8 @@ struct VaultHomeView: View {
                         Text("Searching note text...").font(KFont.ui(15)).foregroundStyle(Palette.inkDim)
                     }
                     .padding(.horizontal, 4)
+                } else if let textProblem {
+                    VaultLiveLine(text: textProblem) { searchTry += 1 }
                 } else if textHits.isEmpty {
                     Text("No note text matches.")
                         .font(KFont.ui(15)).foregroundStyle(Palette.inkDim)
@@ -508,9 +566,19 @@ struct VaultHomeView: View {
             return
         }
         searching = true
-        try? await Task.sleep(for: .milliseconds(220))
+        textProblem = nil
+        try? await Task.sleep(for: .milliseconds(store.isSample ? 220 : 350))
         if Task.isCancelled { return }
-        textHits = store.textMatches(q)
+        do {
+            let hits = try await store.searchText(q)
+            if Task.isCancelled { return }
+            textHits = hits
+        } catch {
+            if Task.isCancelled { return }
+            Connection.shared.note(error)
+            textHits = []
+            textProblem = "Note text could not be searched. " + error.plainWords
+        }
         searching = false
     }
 
@@ -524,6 +592,25 @@ struct VaultHomeView: View {
 
     private func openToday() {
         Haptics.tap()
+        guard store.isSample else {
+            Task {
+                await store.loadLiveIfNeeded()
+                let made = await store.makeTodayLive()
+                if let problem = made.problem {
+                    toaster.say(problem)
+                    return
+                }
+                if made.created {
+                    toaster.say("Today's note created")
+                    if let suggestion = store.indexSuggestion(for: store.todayID) {
+                        withAnimation(Motion.snappy) { indexPrompt = VaultIndexPrompt(id: store.todayID, edited: suggestion.index.edited) }
+                        return
+                    }
+                }
+                nav.open(store.todayID)
+            }
+            return
+        }
         if store.note(store.todayID) == nil {
             store.createToday()
             toaster.say("Today's note created")

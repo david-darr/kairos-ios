@@ -80,7 +80,7 @@ struct DecodeChecksView: View {
 
     private static func runAll() -> [Outcome] {
         var result: [Outcome] = []
-        for check in ChatSamples.checks + BotSamples.checks {
+        for check in ChatSamples.checks + BotSamples.checks + VaultSamples.checks {
             do {
                 result.append(Outcome(id: check.id, passed: true, detail: try check.run()))
             } catch {
