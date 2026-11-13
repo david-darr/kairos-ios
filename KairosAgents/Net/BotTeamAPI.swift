@@ -35,6 +35,31 @@ nonisolated struct BotTmDepartmentDTO: Decodable, Sendable {
     }
 }
 
+/// GET /api/bot-departments/{id} (bot_department_routes.py: get): the team record with every member, hidden ones
+/// too (bot_departments.py: members). Read fresh right before a chief write and for the Delete team confirm.
+nonisolated struct BotTmTeamReadDTO: Decodable {
+    var id: String
+    var name: String?
+    var order: Double?
+    var chiefBotId: String?
+    var alsoManages: JSONValue?
+    var revision: Int?
+    var paused: Bool?
+    var handsOff: Bool?
+    var members: [BotLossy<BotTmMemberRefDTO>]?
+
+    var department: BotTmDepartmentDTO {
+        BotTmDepartmentDTO(id: id, name: name, order: order, chiefBotId: chiefBotId, alsoManages: alsoManages,
+                           revision: revision, paused: paused, handsOff: handsOff)
+    }
+}
+
+/// A member in that read: a whole bot record, of which only the id and whether it is hidden are kept.
+nonisolated struct BotTmMemberRefDTO: Decodable, Sendable {
+    var id: String
+    var hidden: Bool?
+}
+
 /// One live hand-off on the team map (core/bot_assignments.py: live_edges, renamed by bot_team_routes.py).
 /// `status` is queued, running, needs_input, waiting or resume (finished ones are left out by the desktop).
 nonisolated struct BotTmHandoffDTO: Decodable, Sendable {
@@ -151,6 +176,11 @@ extension APIClient {
         try await get("/api/bot-team/map")
     }
 
+    /// GET /api/bot-departments/{id}: one team record with all its members.
+    func botTeamRead(_ teamID: String) async throws -> BotTmTeamReadDTO {
+        try await get("/api/bot-departments/\(teamID)")
+    }
+
     /// PATCH /api/bot-departments/{id}: a new name with the team's `expected_revision`. The desktop moves every
     /// member to the new name, and refuses (409) while one of them is working or when the revision is stale.
     func botTeamRename(_ teamID: String, name: String, expectedRevision: Int) async throws -> BotTmDepartmentDTO {
@@ -178,8 +208,9 @@ extension APIClient {
         try await request("PUT", "/api/bot-departments/\(teamID)/instructions", json: ["text": text, "expected_hash": expectedHash])
     }
 
-    /// PUT /api/bot-departments/{id}/chief: a member as chief, or nil for none. `also_manages` is sent as the
-    /// desktop has it, because the route puts back an empty list when it is left out.
+    /// PUT /api/bot-departments/{id}/chief: a member as chief, or nil for none. No revision check: with a bot the
+    /// desktop saves `also_manages` exactly as sent (an empty list when it is left out); with none it saves an empty
+    /// list. Callers send the list from a read made just before this call.
     func botTeamSetChief(_ teamID: String, botID: String?, alsoManages: [String]) async throws -> BotTmDepartmentDTO {
         let body: [String: Any] = ["bot_id": botID.map { $0 as Any } ?? NSNull(), "also_manages": alsoManages]
         return try await request("PUT", "/api/bot-departments/\(teamID)/chief", json: body)
@@ -243,6 +274,15 @@ nonisolated enum BotTeamSamples {
     static let department = #"""
     {"id": "d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5", "name": "Studio", "order": 0, "chief_bot_id": null,
      "also_manages": [], "created_at": 1793300000.0, "revision": 5, "owner_user": "owner1", "paused": false}
+    """#
+
+    static let team = #"""
+    {"id": "d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5", "name": "Content", "order": 0, "chief_bot_id": "c3d4e5f6a7",
+     "also_manages": ["e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"], "created_at": 1793300000.0, "revision": 6,
+     "owner_user": "owner1", "paused": true,
+     "members": [{"id": "c3d4e5f6a7", "name": "Producer", "section": "Content", "hidden": false},
+                 {"id": "a1b2c3d4e5", "name": "Scout", "section": "Content", "hidden": true},
+                 {"name": "No id"}]}
     """#
 
     static let instructions = #"""
@@ -310,6 +350,15 @@ nonisolated enum BotTeamSamples {
                   instructions.hash?.count == 64, instructions.maxBytes == 24000,
                   stale.text.hasPrefix("The team changed") else { throw SampleMismatch("team writes") }
             return "rename, instructions, stale"
+        },
+        DecodeCheck("botteams.team") {
+            let read = try KJSON.decode(BotTmTeamReadDTO.self, from: BotTeamSamples.team)
+            let members = BotLossyList(read.members)
+            guard read.department.chiefBotId == "c3d4e5f6a7", read.department.managed == ["e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"],
+                  read.revision == 6, read.paused == true,
+                  members.items.count == 2, members.skipped == 1, members.items[1].hidden == true
+            else { throw SampleMismatch("team read") }
+            return "\(members.items.count) members, \(members.skipped) left out"
         },
         DecodeCheck("botteams.memory") {
             let list = BotLossyList(try KJSON.decode(BotTmMemoryListDTO.self, from: BotTeamSamples.memory).entries)

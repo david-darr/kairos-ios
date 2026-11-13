@@ -47,6 +47,8 @@ struct TeamScreen: View {
     @State private var sheet: TeamSheet?
     @State private var opened = false
     @State private var askPause = false
+    /// Counts each time this page appears, so the desktop is read again every time, not once.
+    @State private var appearances = 0
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
@@ -54,6 +56,7 @@ struct TeamScreen: View {
     private var isLive: Bool { !Connection.shared.usesSampleData }
 
     var body: some View {
+        let team = store.teams.first { $0.id == teamID }
         Group {
             if let team = store.teams.first(where: { $0.id == teamID }) {
                 content(team)
@@ -69,13 +72,25 @@ struct TeamScreen: View {
                 BotsPage("Team") { EmptyNote(text: "This team was deleted.", symbol: "person.3") }
             }
         }
-        .task(id: BotsStore.connectionKey) {
+        // Here, not on the team's content, so a sheet stays up when a read removes the team mid-write.
+        .sheet(item: $sheet) { which in
+            TeamSheetView(teamID: teamID, which: which, fallback: team) { if which == .delete { dismiss() } }
+        }
+        .sheet(isPresented: $askPause) {
+            if let team {
+                ConfirmSheet(title: "Pause \(team.name)?", detail: BotTmMap.pauseDetail, confirm: "Pause team") {
+                    live.setPaused(team.id, name: team.name, true, say: store.say)
+                }
+            }
+        }
+        .onAppear { appearances += 1 }
+        .task(id: "\(BotsStore.connectionKey)|\(appearances)") {
             store.followConnection()
             live.followConnection()
             routinesLive.followConnection()
-            guard isLive else { return }
-            if store.rosterLoad != .loaded { await store.loadRoster() }
-            await live.loadIfNeeded()
+            guard isLive, appearances > 0 else { return }
+            await store.loadRoster()
+            await live.refreshMap()
             await routinesLive.loadIfNeeded()
         }
     }
@@ -85,18 +100,20 @@ struct TeamScreen: View {
         let routines = store.routines.filter { team.members.contains($0.botID) }
         let handoffs = store.handoffs.filter { team.members.contains($0.from) || team.members.contains($0.to) }
         let paused = isLive ? live.paused(team.id) : team.paused
+        // Paired: the chief is the desktop's team record, read again each time this page appears.
+        let chief = isLive ? live.chief(team.id) : team.chief
         return BotsPage(team.name, subtitle: isLive ? nil : team.department, live: isLive, trailing: { optionsMenu(team, paused: paused) }) {
             VStack(spacing: 10) {
                 FaceStack(ids: team.members, size: 64)
                 Text(team.name).font(KFont.display(36)).foregroundStyle(Palette.ink)
-                Text("\(team.members.count) bots\(isLive ? "" : " · \(team.department)")\(team.chief.map { " · led by \(store.bot($0).name)" } ?? "")")
+                Text("\(team.members.count) bots\(isLive ? "" : " · \(team.department)")\(chief.map { " · led by \(store.bot($0).name)" } ?? "")")
                     .font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
             }
             .frame(maxWidth: .infinity)
 
             if isLive {
-                BotsLoadNote(state: live.mapReady ? .loaded : live.shown(live.mapLoad), waiting: "Reading the team from your desktop.") {
-                    Task { await live.loadMap(force: false) }
+                BotsLoadNote(state: live.mapNote, waiting: "Reading the team from your desktop.") {
+                    Task { await live.loadMap() }
                 }
             }
             if paused {
@@ -119,7 +136,7 @@ struct TeamScreen: View {
                 SectionLabel(text: "Members").padding(.horizontal, 4)
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(Array(team.members.enumerated()), id: \.element) { index, id in
-                        memberFace(id, chief: team.chief == id).arrives(index)
+                        memberFace(id, chief: chief == id).arrives(index)
                     }
                 }
             }
@@ -133,14 +150,6 @@ struct TeamScreen: View {
                     .padding(.horizontal, 4)
             } else {
                 sampleSections(team, rooms: rooms, routines: routines, handoffs: handoffs)
-            }
-        }
-        .sheet(item: $sheet) { which in
-            TeamSheetView(teamID: team.id, which: which) { if which == .delete { dismiss() } }
-        }
-        .sheet(isPresented: $askPause) {
-            ConfirmSheet(title: "Pause \(team.name)?", detail: BotTmMap.pauseDetail, confirm: "Pause team") {
-                live.setPaused(team.id, name: team.name, true, say: store.say)
             }
         }
         .onAppear {
@@ -397,9 +406,13 @@ struct HandoffRow: View {
 struct TeamSheetView: View {
     let teamID: String
     let which: TeamSheet
+    /// The team as the page had it when the sheet opened: kept so a read that removes the team mid-write
+    /// (a delete the desktop already did) never empties the sheet under the person.
+    var fallback: BotTeam? = nil
     var after: () -> Void = {}
     let store = BotsStore.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var opened: BotTeam?
     @State private var members: Set<String> = []
     @State private var text = ""
     @State private var loaded = false
@@ -416,7 +429,7 @@ struct TeamSheetView: View {
     @State private var picks: [String: String] = [:]
 
     var body: some View {
-        let team = store.teams.first { $0.id == teamID }
+        let team = store.teams.first { $0.id == teamID } ?? opened ?? fallback
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if let team { content(team) }
@@ -430,6 +443,7 @@ struct TeamSheetView: View {
         .onAppear {
             guard !loaded, let team else { return }
             loaded = true
+            opened = team
             members = Set(team.members)
             text = which == .rename ? team.name : team.instructions
         }
@@ -1084,6 +1098,8 @@ struct TeamMapScreen: View {
     @State private var moving: (bot: String, team: String?)?
     @State private var goto: BotsRoute?
     @State private var pausing: BotTeam?
+    /// Counts each time the map appears, so the desktop is read again every time, not once.
+    @State private var appearances = 0
     let live = BotsTeamsLive.shared
 
     /// Paired: teams, pause switches and hand-offs are the desktop's. Sending to many bots, new rooms, new teams
@@ -1106,7 +1122,7 @@ struct TeamMapScreen: View {
                 BotsLoadNote(state: mapState, waiting: "Reading your teams from your desktop.") {
                     Task {
                         if store.rosterLoad != .loaded { await store.loadRoster() }
-                        await live.loadMap(force: false)
+                        await live.loadMap()
                     }
                 }
             } else {
@@ -1152,12 +1168,13 @@ struct TeamMapScreen: View {
             .kCard(radius: 20)
             }
         }
-        .task(id: BotsStore.connectionKey) {
+        .onAppear { appearances += 1 }
+        .task(id: "\(BotsStore.connectionKey)|\(appearances)") {
             store.followConnection()
             live.followConnection()
-            guard isLive else { return }
-            if store.rosterLoad != .loaded { await store.loadRoster() }
-            await live.loadIfNeeded()
+            guard isLive, appearances > 0 else { return }
+            await store.loadRoster()
+            await live.refreshMap()
         }
         .sheet(item: $pausing) { team in
             ConfirmSheet(title: "Pause \(team.name)?", detail: BotTmMap.pauseDetail, confirm: "Pause team") {
@@ -1257,7 +1274,7 @@ struct TeamMapScreen: View {
     /// Paired: reading until both the roster (teams and members) and the map (pause switches, hand-offs) are in.
     private var mapState: BotsLiveLoad {
         switch store.rosterLoad {
-        case .loaded: return live.mapReady ? .loaded : live.shown(live.mapLoad)
+        case .loaded: return live.mapNote
         case .idle: return .loading
         default: return store.rosterLoad
         }
@@ -1295,6 +1312,7 @@ struct TeamMapScreen: View {
     private func teamCard(_ team: BotTeam) -> some View {
         let paused = isLive ? live.paused(team.id) : team.paused
         let waits = isLive && live.waits(team.id)
+        let chief = isLive ? live.chief(team.id) : team.chief
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 NavigationLink(value: BotsRoute.team(team.id)) {
@@ -1322,7 +1340,7 @@ struct TeamMapScreen: View {
             .padding(.vertical, 8)
             ForEach(team.members, id: \.self) { id in
                 RowLine(inset: 62)
-                botTile(store.bot(id), chief: team.chief == id)
+                botTile(store.bot(id), chief: chief == id)
             }
         }
         .kCard(radius: 20)
@@ -1484,117 +1502,155 @@ struct DepartmentsScreen: View {
 
 // MARK: - Team sheets while paired
 
-/// Team instructions on the desktop: read with their hash, saved with it. A change on the desktop keeps the typed text.
+/// Team instructions on the desktop. The form opens on its own fresh read, never on text read earlier. It remembers
+/// the text and hash it was filled from and saves with that hash, so newer text on the desktop is never overwritten
+/// unseen. A change on the desktop keeps what was typed and shows what the desktop has.
 struct BotTmInstructionsForm: View {
     let team: BotTeam
     let live = BotsTeamsLive.shared
     let store = BotsStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    /// The desktop's text this form was filled from (or last told about).
-    @State private var base: String?
+    /// The desktop's text and hash this form was filled from. Nil until this sheet's own read lands; changed only
+    /// by a save the desktop confirmed or by the person's own choice below.
+    @State private var filledText: String?
+    @State private var filledHash: String?
+    @State private var phase: BotsLiveLoad = .loading
     @State private var saving = false
     @State private var note: String?
-    @State private var changed = false
-    /// The text sent whose answer was lost: the next tap looks for it instead of sending.
+    /// The text sent whose answer was lost, with the hash it went with: the next tap looks instead of sending.
     @State private var lookFirst: String?
+    @State private var lookHash = ""
 
     var body: some View {
-        let read = live.isCurrent ? live.instructions[team.id] : nil
+        let desk = live.isCurrent ? live.instructions[team.id] : nil
         let tooLong = text.utf8.count > 24_000
+        // A read after the form was filled found other text on the desktop.
+        let moved = filledHash != nil && desk?.hash != nil && desk?.hash != filledHash
         VStack(alignment: .leading, spacing: 14) {
             SheetTitle(title: "Team instructions", detail: "Every bot in \(team.name) reads these.")
-            if read == nil || base == nil {
-                BotsLoadNote(state: live.shown(live.instructionsLoad[team.id]), waiting: "Reading the instructions from your desktop.") {
-                    Task { await live.loadInstructions(team.id) }
+            if filledText == nil {
+                BotsLoadNote(state: phase, waiting: "Reading the instructions from your desktop.") {
+                    Task { await read() }
                 }
             } else {
                 FieldCard(title: "Instructions", text: $text, placeholder: "How this team works", lines: 6...14)
                 Text("\(text.utf8.count) / 24,000 bytes").font(KFont.ui(12.5)).foregroundStyle(tooLong ? Palette.danger : Palette.inkFaint)
                 if let note { HintLine(text: note, symbol: "info.circle", color: Palette.goldText) }
-                if changed, let desk = read?.text, desk != text, lookFirst == nil {
-                    PillButton(title: "Use the text on your desktop", symbol: "arrow.down.doc", wide: true) {
-                        text = desk
-                        changed = false
-                        note = nil
-                    }
-                    .disabled(saving)
-                }
-                GoldButton(title: lookFirst != nil ? "Look again" : (saving ? "Saving" : "Save instructions")) { save() }
-                    .disabled(saving || (tooLong && lookFirst == nil))
-                    .opacity(saving || (tooLong && lookFirst == nil) ? 0.5 : 1)
+                if moved, let desk, lookFirst == nil { deskChanged(desk) }
+                GoldButton(title: lookFirst != nil ? (saving ? "Looking" : "Look again") : (saving ? "Saving" : "Save instructions")) { save() }
+                    .disabled(saving || (lookFirst == nil && (tooLong || moved)))
+                    .opacity(saving || (lookFirst == nil && (tooLong || moved)) ? 0.5 : 1)
             }
         }
         .interactiveDismissDisabled(saving)
         .task(id: BotsStore.connectionKey) {
             live.followConnection()
             guard !Connection.shared.usesSampleData else { return }
-            await live.loadInstructions(team.id)
+            await read()
         }
-        .onAppear(perform: fill)
-        .onChange(of: read) { fill() }
     }
 
-    private func fill() {
-        guard live.isCurrent, let read = live.instructions[team.id] else { return }
-        let desk = read.text ?? ""
-        guard let base else {
-            text = desk
-            self.base = desk
-            return
-        }
-        // A later read found other text on the desktop: say so, keep what was typed.
-        if desk != base && !saving && lookFirst == nil {
-            self.base = desk
-            if desk != text {
-                changed = true
-                note = "The instructions changed on your desktop. Your text is kept here. Saving now replaces what your desktop has."
+    /// The desktop's text now, and the person's two ways on: take it, or keep theirs to save over it.
+    private func deskChanged(_ desk: BotTmInstructionsDTO) -> some View {
+        let now = desk.text ?? ""
+        return VStack(alignment: .leading, spacing: 10) {
+            HintLine(text: "The instructions changed on your desktop after this form was filled. Your text is kept here and was not saved.",
+                     symbol: "exclamationmark.circle", color: Palette.goldText)
+            VStack(alignment: .leading, spacing: 4) {
+                SectionLabel(text: "On your desktop now")
+                Text(now.isEmpty ? "No instructions." : now).font(KFont.ui(14)).foregroundStyle(Palette.inkDim).lineLimit(8)
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .kCard(radius: 20)
+            PillButton(title: "Use the desktop's text", symbol: "arrow.down.doc", wide: true) { adopt(desk, keepTyped: false) }
+                .disabled(saving)
+            PillButton(title: "Keep mine to save over it", symbol: "pencil", wide: true) { adopt(desk, keepTyped: true) }
+                .disabled(saving)
+        }
+    }
+
+    /// The person chose: the form is now filled from the desktop's newer text and hash.
+    private func adopt(_ desk: BotTmInstructionsDTO, keepTyped: Bool) {
+        guard let hash = desk.hash else { return }
+        Haptics.select()
+        filledText = desk.text ?? ""
+        filledHash = hash
+        if keepTyped {
+            note = "Saving now replaces your desktop's instructions with yours."
+        } else {
+            text = desk.text ?? ""
+            note = nil
+        }
+    }
+
+    /// This sheet's own read. The form is filled once, from the first read that lands; later reads only show
+    /// whether the desktop moved on.
+    private func read() async {
+        if filledText == nil { phase = .loading }
+        let result = await live.loadInstructions(team.id)
+        guard filledText == nil else { return }
+        switch result {
+        case .loaded:
+            guard let answer = live.isCurrent ? live.instructions[team.id] : nil, let hash = answer.hash else {
+                phase = .failed("Your desktop's answer had no way to tell later changes apart, so the instructions are not edited from here.")
+                return
+            }
+            text = answer.text ?? ""
+            filledText = answer.text ?? ""
+            filledHash = hash
+            phase = .loaded
+        case .failed(let words):
+            phase = .failed(words)
+        default:
+            if !Task.isCancelled { phase = .failed("The instructions were not read. Try again.") }
         }
     }
 
     private func save() {
         if let sent = lookFirst {
+            let hash = lookHash
             saving = true
-            Task { finish(await live.confirmInstructions(team.id, sent: sent), sent: sent) }
+            Task { finish(await live.confirmInstructions(team.id, sent: sent, expectedHash: hash), sent: sent, hash: hash) }
             return
         }
-        guard text.utf8.count <= 24_000 else { return }
-        if text == base && !changed { dismiss(); return }
+        guard let base = filledText, let hash = filledHash, text.utf8.count <= 24_000 else { return }
+        if text == base { dismiss(); return }
         let sent = text
         saving = true
-        Task { finish(await live.saveInstructions(team.id, text: sent), sent: sent) }
+        Task { finish(await live.saveInstructions(team.id, text: sent, expectedHash: hash), sent: sent, hash: hash) }
     }
 
-    private func finish(_ outcome: BotTmOutcome, sent: String) {
+    private func finish(_ outcome: BotTmOutcome, sent: String, hash: String) {
         saving = false
         switch outcome {
         case .done(let words):
             lookFirst = nil
-            base = sent
-            changed = false
-            if sent == text {
+            // What the desktop holds now is the text that was sent, with its own hash.
+            if let saved = live.instructions[team.id], let savedHash = saved.hash {
+                filledText = saved.text ?? sent
+                filledHash = savedHash
+            }
+            if text == sent {
                 store.say(words)
                 dismiss()
             } else {
                 note = "Your earlier text was saved. What you changed after that is not saved yet."
             }
-        case .refused(let words):
+        case .refused(let words), .changed(let words):
             lookFirst = nil
-            note = words
-        case .changed(let words):
-            lookFirst = nil
-            changed = true
-            base = live.instructions[team.id]?.text ?? base
             note = words
         case .unsure(let words):
             lookFirst = sent
+            lookHash = hash
             note = words
         }
     }
 }
 
-/// Team memory on the desktop: entries grouped by kind, add (accepted at once), delete after a confirm.
+/// Team memory on the desktop: entries grouped by kind, add (accepted at once), delete after a confirm. The list
+/// shows once this sheet's own read has landed, never a list read earlier.
 struct BotTmMemoryForm: View {
     let team: BotTeam
     let live = BotsTeamsLive.shared
@@ -1605,9 +1661,11 @@ struct BotTmMemoryForm: View {
     @State private var saving = false
     @State private var note: String?
     @State private var removing: BotTmMemoryEntryDTO?
+    @State private var ready = false
+    @State private var phase: BotsLiveLoad = .loading
 
     var body: some View {
-        let entries = live.isCurrent ? live.memory[team.id] : nil
+        let entries = ready && live.isCurrent ? live.memory[team.id] : nil
         let looking = live.addChecks[team.id] != nil
         VStack(alignment: .leading, spacing: 14) {
             SheetTitle(title: "Team memory", detail: "What the whole team remembers.")
@@ -1636,8 +1694,8 @@ struct BotTmMemoryForm: View {
                     .disabled(saving)
                     .opacity(saving ? 0.5 : 1)
             } else {
-                BotsLoadNote(state: live.shown(live.memoryLoad[team.id]), waiting: "Reading the team's memory from your desktop.") {
-                    Task { await live.loadMemory(team.id) }
+                BotsLoadNote(state: ready ? live.shown(live.memoryLoad[team.id]) : phase, waiting: "Reading the team's memory from your desktop.") {
+                    Task { await read() }
                 }
             }
         }
@@ -1645,12 +1703,27 @@ struct BotTmMemoryForm: View {
         .task(id: BotsStore.connectionKey) {
             live.followConnection()
             guard !Connection.shared.usesSampleData else { return }
-            await live.loadMemory(team.id)
+            await read()
         }
         .sheet(item: $removing) { entry in
             ConfirmSheet(title: "Delete this memory?", detail: "\"\(entry.name ?? "This entry")\" is removed from what \(team.name) remembers.", confirm: "Delete") {
                 live.deleteMemory(team.id, entry, say: store.say)
             }
+        }
+    }
+
+    private func read() async {
+        if !ready { phase = .loading }
+        let result = await live.loadMemory(team.id)
+        guard !ready else { return }
+        switch result {
+        case .loaded:
+            ready = true
+            phase = .loaded
+        case .failed(let words):
+            phase = .failed(words)
+        default:
+            if !Task.isCancelled { phase = .failed("The team's memory was not read. Try again.") }
         }
     }
 
@@ -1711,7 +1784,19 @@ struct BotTmMemoryForm: View {
     }
 }
 
-/// Pick the team's Chief of Staff on the desktop, or none.
+/// One chief change the person is asked to confirm, with the team record the sheet was built from.
+struct BotTmChiefAsk: Identifiable {
+    let botID: String?
+    let shownChief: String?
+    let shownManaged: [String]
+    let title: String
+    let detail: String
+    let confirm: String
+    var id: String { botID ?? "none" }
+}
+
+/// Pick the team's Chief of Staff on the desktop, or none. Each change is confirmed first, saying what the desktop
+/// does to the other teams the chief manages; the write reads the team fresh and sends that list.
 struct BotTmChiefForm: View {
     let team: BotTeam
     let live = BotsTeamsLive.shared
@@ -1722,17 +1807,19 @@ struct BotTmChiefForm: View {
     /// A choice whose answer was lost: the next tap looks for it instead of sending.
     @State private var unsure = false
     @State private var sent: String?
+    @State private var asking: BotTmChiefAsk?
 
     var body: some View {
         let record = live.department(team.id)
         VStack(alignment: .leading, spacing: 14) {
             SheetTitle(title: "Chief of Staff", detail: "One Chief of Staff can coordinate this team. It needs a model that can use tools.")
             if let record {
+                let readable = record.managed != nil
                 VStack(spacing: 0) {
                     ForEach(Array(team.members.enumerated()), id: \.element) { index, id in
                         if index > 0 { RowLine(inset: 62) }
                         Button {
-                            pick(id, current: record.chiefBotId)
+                            ask(id, record)
                         } label: {
                             HStack(spacing: 12) {
                                 BotFace(bot: store.bot(id), size: 36)
@@ -1743,36 +1830,77 @@ struct BotTmChiefForm: View {
                             .padding(.horizontal, 14).frame(minHeight: 56).contentShape(Rectangle())
                         }
                         .buttonStyle(PressStyle(scale: 0.98))
-                        .disabled(saving || unsure)
+                        .disabled(saving || unsure || !readable)
                     }
                 }
                 .kCard(radius: 20)
                 if team.members.isEmpty { EmptyNote(text: "This team has no bots.", symbol: "person.3").kCard(radius: 20) }
+                if !readable { HintLine(text: BotTmMap.chiefListUnreadable, symbol: "desktopcomputer") }
                 if let note { HintLine(text: note, symbol: "info.circle", color: Palette.goldText) }
                 if unsure {
                     GoldButton(title: saving ? "Looking" : "Look again") { look() }
                         .disabled(saving)
                         .opacity(saving ? 0.5 : 1)
-                } else if record.chiefBotId != nil {
-                    PillButton(title: saving ? "Saving" : "Remove chief", look: .danger, wide: true) { pick(nil, current: record.chiefBotId) }
+                } else if record.chiefBotId != nil && readable {
+                    PillButton(title: saving ? "Saving" : "Remove chief", look: .danger, wide: true) { ask(nil, record) }
                         .disabled(saving)
                 }
+            } else if live.mapNote == .loaded {
+                HintLine(text: "This team is not on your desktop any more.", symbol: "info.circle")
             } else {
-                BotsLoadNote(state: live.shown(live.mapLoad), waiting: "Reading the team from your desktop.") {
-                    Task { await live.loadMap(force: false) }
+                BotsLoadNote(state: live.mapNote, waiting: "Reading the team from your desktop.") {
+                    Task { await live.loadMap() }
                 }
             }
         }
         .interactiveDismissDisabled(saving)
+        .task(id: BotsStore.connectionKey) {
+            live.followConnection()
+            guard !Connection.shared.usesSampleData else { return }
+            await live.refreshMap()
+        }
+        .sheet(item: $asking) { ask in
+            ConfirmSheet(title: ask.title, detail: ask.detail, confirm: ask.confirm, danger: ask.botID == nil) { run(ask) }
+        }
     }
 
-    private func pick(_ id: String?, current: String?) {
-        guard !saving, !unsure else { return }
-        if id == current { dismiss(); return }
+    /// "Studio", "Studio and Shop floor", "Studio, Shop floor and Repairs".
+    static func list(_ names: [String]) -> String {
+        guard let last = names.last else { return "" }
+        return names.count == 1 ? last : names.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    /// The confirm, in what the desktop does (bot_departments.py: set_chief). The other teams a chief manages are
+    /// kept on the team: a new chief takes them over, and removing the chief clears them for good.
+    private func ask(_ id: String?, _ record: BotTmDepartmentDTO) {
+        guard !saving, !unsure, let managed = record.managed else { return }
+        if id == record.chiefBotId { dismiss(); return }
         Haptics.tap()
+        let others = Self.list(managed.map { live.teamName($0) ?? "a team no longer on your desktop" })
+        if let id {
+            let name = store.bot(id).name
+            var detail = record.chiefBotId.map { "\(name) takes over from \(store.bot($0).name) and coordinates \(team.name)." }
+                ?? "\(name) coordinates \(team.name)."
+            detail += managed.isEmpty ? " The chief manages no other team."
+                                      : " \(name) also manages \(others): your desktop keeps that list with the team, so it passes to the new chief."
+            asking = BotTmChiefAsk(botID: id, shownChief: record.chiefBotId, shownManaged: managed,
+                                   title: "Make \(name) Chief of Staff?", detail: detail, confirm: "Make chief")
+        } else {
+            var detail = "\(team.name) has no Chief of Staff until you choose one."
+            if !managed.isEmpty {
+                detail += " Your desktop also clears the other teams the chief manages: \(others). Choosing a chief again does not bring them back."
+            }
+            asking = BotTmChiefAsk(botID: nil, shownChief: record.chiefBotId, shownManaged: managed,
+                                   title: "Remove the chief of \(team.name)?", detail: detail, confirm: "Remove chief")
+        }
+    }
+
+    private func run(_ ask: BotTmChiefAsk) {
+        guard !saving, !unsure else { return }
         saving = true
-        sent = id
-        Task { finish(await live.setChief(team.id, botID: id)) }
+        sent = ask.botID
+        note = nil
+        Task { finish(await live.setChief(team.id, botID: ask.botID, shownChief: ask.shownChief, shownManaged: ask.shownManaged)) }
     }
 
     private func look() {
@@ -1798,7 +1926,7 @@ struct BotTmChiefForm: View {
     }
 }
 
-/// Rename the team on the desktop with the revision it was read at.
+/// Rename the team on the desktop with the revision it was read at. The team is read again when the sheet opens.
 struct BotTmRenameForm: View {
     let team: BotTeam
     let live = BotsTeamsLive.shared
@@ -1815,19 +1943,26 @@ struct BotTmRenameForm: View {
         let record = live.department(team.id)
         VStack(alignment: .leading, spacing: 14) {
             SheetTitle(title: "Rename team", detail: "Every bot in the team moves to the new name. Your desktop waits until none of them is working.")
-            if record == nil {
-                BotsLoadNote(state: live.shown(live.mapLoad), waiting: "Reading the team from your desktop.") {
-                    Task { await live.loadMap(force: false) }
-                }
-            } else {
+            if record != nil {
                 FieldCard(title: "Team name", text: $text, placeholder: "Team name", limit: 60)
                 if let note { HintLine(text: note, symbol: "info.circle", color: Palette.goldText) }
                 GoldButton(title: lookFirst != nil ? (saving ? "Looking" : "Look again") : (saving ? "Saving" : "Save")) { save() }
                     .disabled(saving)
                     .opacity(saving ? 0.5 : 1)
+            } else if live.mapNote == .loaded {
+                HintLine(text: "This team is not on your desktop any more.", symbol: "info.circle")
+            } else {
+                BotsLoadNote(state: live.mapNote, waiting: "Reading the team from your desktop.") {
+                    Task { await live.loadMap() }
+                }
             }
         }
         .interactiveDismissDisabled(saving)
+        .task(id: BotsStore.connectionKey) {
+            live.followConnection()
+            guard !Connection.shared.usesSampleData else { return }
+            await live.refreshMap()
+        }
         .onAppear(perform: fill)
         .onChange(of: record?.name) { fill() }
     }
@@ -1872,7 +2007,9 @@ struct BotTmRenameForm: View {
     }
 }
 
-/// Delete the team on the desktop. The sheet is the confirm; it stays until the outcome is known.
+/// Delete the team on the desktop. The sheet is the confirm; it reads the team fresh first (every member, hidden
+/// ones too, and whether it is paused) so it says what the desktop will really do, and it stays until the outcome
+/// is known.
 struct BotTmDeleteForm: View {
     let team: BotTeam
     var after: () -> Void
@@ -1883,11 +2020,32 @@ struct BotTmDeleteForm: View {
     @State private var note: String?
     /// A delete whose answer was lost: the next tap looks instead of sending.
     @State private var mustLook = false
+    /// The fresh read of the team; nil while reading.
+    @State private var check: BotTmTeamCheck?
+
+    private var facts: (members: Int, paused: Bool)? {
+        if case .some(.read(let members, let paused)) = check { return (members, paused) }
+        return nil
+    }
+
+    private var checkState: BotsLiveLoad {
+        switch check {
+        case .none: .loading
+        case .some(.read): .loaded
+        case .some(.failed(let words)): .failed(words)
+        case .some(.dropped): .failed("This team was not read. Try again.")
+        }
+    }
 
     var body: some View {
-        let off = deleting || (!mustLook && live.waits(team.id))
+        let off = deleting || (!mustLook && (facts == nil || live.waits(team.id)))
         VStack(spacing: 16) {
-            SheetTitle(title: "Delete \(team.name)?", detail: Self.detail(team.members.count))
+            SheetTitle(title: "Delete \(team.name)?", detail: facts.map { BotTmMap.deleteDetail(members: $0.members, paused: $0.paused) })
+            if facts == nil && !mustLook {
+                BotsLoadNote(state: checkState, waiting: "Reading this team from your desktop.") {
+                    Task { await readFacts() }
+                }
+            }
             if let note { HintLine(text: note, symbol: "info.circle", color: Palette.goldText) }
             PillButton(title: mustLook ? (deleting ? "Looking" : "Look again") : (deleting ? "Deleting" : "Delete team"), look: .danger, wide: true) { act() }
                 .disabled(off)
@@ -1896,17 +2054,18 @@ struct BotTmDeleteForm: View {
                 .disabled(deleting)
         }
         .interactiveDismissDisabled(deleting)
+        .task(id: BotsStore.connectionKey) {
+            live.followConnection()
+            guard !Connection.shared.usesSampleData else { return }
+            await readFacts()
+        }
     }
 
-    /// What the desktop does on delete (services/bot_departments.py: delete clears every member's section).
-    static func detail(_ count: Int) -> String {
-        let who: String
-        switch count {
-        case 0: who = "The team goes."
-        case 1: who = "Its bot leaves the team and is in no team."
-        default: who = "Its \(count) bots leave the team and are in no team."
-        }
-        return who + " They keep their conversations and routines. The team's instructions and memory stop being used. Your desktop refuses while one of its bots is working."
+    private func readFacts() async {
+        if facts == nil { check = nil }
+        let result = await live.readTeam(team.id)
+        if result == .dropped && Task.isCancelled { return }
+        check = result
     }
 
     private func act() {
@@ -1926,6 +2085,7 @@ struct BotTmDeleteForm: View {
             case .refused(let words), .changed(let words):
                 mustLook = false
                 note = words
+                await readFacts()
             case .unsure(let words):
                 mustLook = true
                 note = words

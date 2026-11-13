@@ -7,10 +7,16 @@ import SwiftUI
 // What the desktop does, read from services/bot_departments.py and core/bot_policy.py:
 // - Pause team: every step of the team's bots that is not a read is refused until it is resumed. Asking the person
 //   and reaching the person (message, ring, text) still work. Every approval the team's bots are waiting on is
-//   cancelled at once. Routines keep their schedule; their steps are held like any other.
+//   cancelled at once. Routines keep their schedule; their steps are held like any other. The pause is found by
+//   looking up each bot's team, so a bot in no team is never held.
 // - Rename: every member's `section` moves to the new name. Refused while one of its bots is working.
-// - Delete: the team goes and every member's `section` is cleared, so its bots are in no team. Their conversations
-//   and routines stay. Refused while one of its bots is working.
+// - Delete: the team goes and every member's `section` is cleared, hidden members too, so its bots are in no team
+//   and a pause no longer holds them. Their conversations and routines stay. Refused while one of its bots is working.
+// - Chief (set_chief): no revision check. With a bot it saves `also_manages` exactly as sent; with none it saves an
+//   empty list. So the phone reads the team fresh right before it sends, and sends the list from that read.
+//
+// Which write touches what (a read that began before a write it overlaps is never shown over that write):
+// "team|<id>" (pause, rename, chief, delete), "report|<id>" (rename, delete), "instructions|<id>", "memory|<id>".
 
 /// How a team write the screen waits on came back.
 nonisolated enum BotTmOutcome: Equatable, Sendable {
@@ -21,6 +27,15 @@ nonisolated enum BotTmOutcome: Equatable, Sendable {
     case changed(String)
     /// The answer was lost and a read did not settle it: look again before anything is sent again.
     case unsure(String)
+}
+
+/// A team read fresh for the Delete team confirm.
+nonisolated enum BotTmTeamCheck: Equatable, Sendable {
+    /// Every member (hidden ones too) and whether the team is paused.
+    case read(members: Int, paused: Bool)
+    case failed(String)
+    /// Cancelled or overtaken: nothing to say.
+    case dropped
 }
 
 /// Plain mapping from the desktop's words to the phone's.
@@ -60,12 +75,32 @@ nonisolated enum BotTmMap {
 
     /// The Pause team confirm, in what the desktop really does.
     static let pauseDetail = "Its bots can still read and ask you things. Every other step they try is refused until you resume the team, and anything they are waiting on you to approve is cancelled now."
+
+    /// The chief's other teams are stored in a shape this app cannot read: the chief is not changed from here.
+    static let chiefListUnreadable = "Change the chief in Kairos on your desktop. Your desktop keeps the other teams this chief manages in a form this app cannot read, so changing the chief here could lose them."
+
+    /// The Delete team confirm, in what the desktop really does (bot_departments.py: delete; bot_policy.py: the pause
+    /// is looked up through each bot's team).
+    static func deleteDetail(members: Int, paused: Bool) -> String {
+        let who: String
+        switch members {
+        case 0: who = "The team goes."
+        case 1: who = "Its bot leaves the team and is in no team."
+        default: who = "Its \(members) bots leave the team and are in no team."
+        }
+        var text = who + " They keep their conversations and routines. The team's instructions and memory stop being used."
+        if paused {
+            text += " The team is paused: once it is deleted, its bots are no longer held by the pause and can act again."
+        }
+        return text + " Your desktop refuses while one of its bots is working."
+    }
 }
 
 /// A memory entry sent whose answer was lost: what to look for before anything is added again.
 nonisolated struct BotTmAddCheck: Equatable, Sendable {
     var kind: String
     var name: String
+    var detail: String
     var before: Set<String>
 }
 
@@ -96,10 +131,13 @@ final class BotsTeamsLive {
     var reportLoad: [String: BotsLiveLoad] = [:]
 
     @ObservationIgnored private var account = "sample"
-    @ObservationIgnored private var writing = 0
-    @ObservationIgnored private var writeGeneration = 0
+    /// Bumped when a write that touches the key is sent and again when it is answered.
+    @ObservationIgnored private var touched: [String: Int] = [:]
+    /// Writes on their way, by the key they touch.
+    @ObservationIgnored private var inFlight: [String: Int] = [:]
     @ObservationIgnored private var mapSeq = 0
     @ObservationIgnored private var mapKey = ""
+    @ObservationIgnored private var mapReading = 0
     @ObservationIgnored private var readSeq: [String: Int] = [:]
 
     // MARK: Which desktop
@@ -140,10 +178,11 @@ final class BotsTeamsLive {
         addChecks = [:]
         reports = [:]
         reportLoad = [:]
-        writing = 0
-        writeGeneration += 1
+        touched = [:]
+        inFlight = [:]
         mapSeq += 1
         mapKey = ""
+        mapReading = 0
         readSeq = [:]
     }
 
@@ -156,14 +195,25 @@ final class BotsTeamsLive {
         return client
     }
 
-    private func beginWrite() {
-        writing += 1
-        writeGeneration += 1
+    private func teamKeys(_ teamID: String) -> [String] { ["team|\(teamID)", "report|\(teamID)"] }
+
+    private func beginWrite(_ keys: [String]) {
+        for key in keys {
+            touched[key, default: 0] += 1
+            inFlight[key, default: 0] += 1
+        }
     }
 
-    private func endWrite() {
-        writing = max(0, writing - 1)
-        writeGeneration += 1
+    private func endWrite(_ keys: [String]) {
+        for key in keys {
+            touched[key, default: 0] += 1
+            inFlight[key] = max(0, (inFlight[key] ?? 0) - 1)
+        }
+    }
+
+    /// No write touched this key since a read stamped it, and none is on its way.
+    private func untouched(_ key: String, since stamp: Int) -> Bool {
+        (touched[key] ?? 0) == stamp && (inFlight[key] ?? 0) == 0
     }
 
     /// A write whose answer never came: the desktop may have done it. A request that never left this
@@ -201,6 +251,9 @@ final class BotsTeamsLive {
 
     func paused(_ teamID: String) -> Bool { department(teamID)?.paused ?? false }
 
+    /// The chief as the desktop's team record has it.
+    func chief(_ teamID: String) -> String? { department(teamID)?.chiefBotId }
+
     func waits(_ teamID: String) -> Bool { busy.contains(teamID) || department(teamID) == nil }
 
     var shownRooms: [BotRoomDTO] { isCurrent ? rooms : [] }
@@ -214,40 +267,53 @@ final class BotsTeamsLive {
 
     var mapReady: Bool { isCurrent && (mapLoad == .loaded || !departments.isEmpty) }
 
-    // MARK: Reading
-
-    /// Read the map once, or again when the connection settled since the last read began.
-    func loadIfNeeded() async {
-        followConnection()
-        guard active else { return }
-        switch mapLoad {
-        case .loaded: break
-        case .loading where mapKey == Self.connectionKey: break
-        default:
-            // Its own task: the connection settling restarts the screen's task, and that must not cut this read short.
-            await Task { await self.loadMap(force: false) }.value
-        }
+    /// The line a team screen shows about the map: reading, failed (also when older teams stay shown), or nothing.
+    var mapNote: BotsLiveLoad {
+        guard isCurrent else { return .loading }
+        if case .failed = mapLoad { return mapLoad }
+        return mapReady ? .loaded : shown(mapLoad)
     }
 
-    /// Read every team, room and hand-off. Answers whether the desktop's map was read and shown. A read that began
-    /// before a write finished is dropped unless `force` (a look after a lost answer) or nothing is shown yet.
+    /// The name of another team, for the chief confirm.
+    func teamName(_ teamID: String) -> String? { department(teamID)?.name }
+
+    // MARK: Reading
+
+    /// Read the map again: each time a team screen or sheet appears, and when the connection becomes ready. What is
+    /// shown stays while it reads. A read for this same connection already on its way is not started twice.
+    func refreshMap() async {
+        followConnection()
+        guard active else { return }
+        if mapReading > 0 && mapKey == Self.connectionKey { return }
+        // Its own task: the connection settling restarts the screen's task, and that must not cut this read short.
+        await Task { await self.loadMap() }.value
+    }
+
+    /// Read every team, room and hand-off. Answers whether the desktop's map was read and shown. A team that a write
+    /// touched while this read was on its way keeps what the write left; every other team is replaced.
     @discardableResult
-    func loadMap(force: Bool) async -> Bool {
+    func loadMap() async -> Bool {
         guard active else { return false }
         let account = self.account
         mapSeq += 1
         let seq = mapSeq
         mapKey = Self.connectionKey
-        let first = mapLoad != .loaded
-        if first { mapLoad = .loading }
+        let stamps = touched
+        mapReading += 1
+        defer { if stillLive(account) { mapReading = max(0, mapReading - 1) } }
+        if mapLoad != .loaded && departments.isEmpty { mapLoad = .loading }
         do {
-            let generation = writeGeneration
             let map = try await client().botTeamLiveMap()
             guard stillLive(account), seq == mapSeq else { return false }
-            guard force || first || (writeGeneration == generation && writing == 0) else { return false }
             var found: [String: BotTmDepartmentDTO] = [:]
             for team in BotLossyList(map.departments).items { found[team.id] = team }
-            departments = found
+            var next = departments
+            for id in Set(next.keys).union(found.keys) {
+                let key = "team|\(id)"
+                guard untouched(key, since: stamps[key] ?? 0) else { continue }
+                next[id] = found[id]
+            }
+            departments = next
             rooms = BotLossyList(map.rooms).items.filter { $0.archivedAt == nil }
             handoffs = BotLossyList(map.handoffs).items
             mapLoad = .loaded
@@ -257,72 +323,92 @@ final class BotsTeamsLive {
             guard stillLive(account), seq == mapSeq else { return false }
             if error is CancellationError {
                 if mapLoad == .loading { mapLoad = .idle }
-            } else if first {
+            } else if departments.isEmpty {
                 mapLoad = .failed("Your teams could not be read. " + error.plainWords)
+            } else {
+                mapLoad = .failed("Your teams could not be read just now, so what shows here may be out of date. " + error.plainWords)
             }
             return false
         }
     }
 
-    /// After a change the desktop confirmed: the team map here and the roster the other screens read.
-    private func afterChange(_ account: String) async {
-        guard stillLive(account) else { return }
-        await loadMap(force: false)
-        guard stillLive(account) else { return }
+    /// After a change the desktop confirmed: the team map here and the roster the other screens read. Answers
+    /// whether the map was read.
+    @discardableResult
+    private func afterChange(_ account: String) async -> Bool {
+        guard stillLive(account) else { return false }
+        let read = await loadMap()
+        guard stillLive(account) else { return false }
         await BotsStore.shared.loadRoster()
+        return read
     }
 
+    /// The team's instructions. `.loaded` when this read is now shown, `.failed` with the words to show,
+    /// `.idle` when it was cancelled, overtaken, or began before a save it overlapped.
     @discardableResult
-    func loadInstructions(_ teamID: String) async -> Bool {
-        guard active else { return false }
+    func loadInstructions(_ teamID: String) async -> BotsLiveLoad {
+        guard active else { return .idle }
         let account = self.account
         let key = "instructions|\(teamID)"
         let seq = nextSeq(key)
+        let stamp = touched[key] ?? 0
         if instructionsLoad[teamID] != .loaded { instructionsLoad[teamID] = .loading }
         do {
             let fresh = try await client().botTeamInstructions(teamID)
-            guard stillLive(account), readSeq[key] == seq else { return false }
+            guard stillLive(account), readSeq[key] == seq else { return .idle }
+            guard untouched(key, since: stamp) else {
+                if instructionsLoad[teamID] == .loading { instructionsLoad[teamID] = .idle }
+                return .idle
+            }
             instructions[teamID] = fresh
             instructionsLoad[teamID] = .loaded
-            return true
+            return .loaded
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account), readSeq[key] == seq else { return false }
+            guard stillLive(account), readSeq[key] == seq else { return .idle }
             if error is CancellationError {
                 if instructionsLoad[teamID] == .loading { instructionsLoad[teamID] = .idle }
-            } else if instructionsLoad[teamID] != .loaded {
-                instructionsLoad[teamID] = .failed(status(error) == 404 ? "This team is not on your desktop any more."
-                                                                        : "The team's instructions could not be read. " + error.plainWords)
+                return .idle
             }
-            return false
+            let words = status(error) == 404 ? "This team is not on your desktop any more."
+                                             : "The team's instructions could not be read. " + error.plainWords
+            if instructionsLoad[teamID] != .loaded { instructionsLoad[teamID] = .failed(words) }
+            return .failed(words)
         }
     }
 
+    /// The team's memory, answered like `loadInstructions`.
     @discardableResult
-    func loadMemory(_ teamID: String) async -> Bool {
-        guard active else { return false }
+    func loadMemory(_ teamID: String) async -> BotsLiveLoad {
+        guard active else { return .idle }
         let account = self.account
         let key = "memory|\(teamID)"
         let seq = nextSeq(key)
+        let stamp = touched[key] ?? 0
         if memoryLoad[teamID] != .loaded { memoryLoad[teamID] = .loading }
         do {
             let list = try await client().botTeamMemory(teamID)
-            guard stillLive(account), readSeq[key] == seq else { return false }
+            guard stillLive(account), readSeq[key] == seq else { return .idle }
+            guard untouched(key, since: stamp) else {
+                if memoryLoad[teamID] == .loading { memoryLoad[teamID] = .idle }
+                return .idle
+            }
             let read = BotLossyList(list.entries)
             memory[teamID] = read.items
             skippedMemory[teamID] = read.skipped
             memoryLoad[teamID] = .loaded
-            return true
+            return .loaded
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account), readSeq[key] == seq else { return false }
+            guard stillLive(account), readSeq[key] == seq else { return .idle }
             if error is CancellationError {
                 if memoryLoad[teamID] == .loading { memoryLoad[teamID] = .idle }
-            } else if memoryLoad[teamID] != .loaded {
-                memoryLoad[teamID] = .failed(status(error) == 404 ? "This team is not on your desktop any more."
-                                                                  : "The team's memory could not be read. " + error.plainWords)
+                return .idle
             }
-            return false
+            let words = status(error) == 404 ? "This team is not on your desktop any more."
+                                             : "The team's memory could not be read. " + error.plainWords
+            if memoryLoad[teamID] != .loaded { memoryLoad[teamID] = .failed(words) }
+            return .failed(words)
         }
     }
 
@@ -330,11 +416,15 @@ final class BotsTeamsLive {
         guard active else { return }
         let account = self.account
         let key = "\(teamID)|\(days)"
+        let gate = "report|\(teamID)"
         let seq = nextSeq("report|" + key)
+        let stamp = touched[gate] ?? 0
         if reportLoad[key] != .loaded { reportLoad[key] = .loading }
         do {
             let report = try await client().botTeamReport(teamID, days: days)
             guard stillLive(account), readSeq["report|" + key] == seq else { return }
+            // A rename or delete overlapped this read: keep what is shown; with nothing shown yet, show it.
+            guard untouched(gate, since: stamp) || reports[key] == nil else { return }
             reports[key] = report
             reportLoad[key] = .loaded
         } catch {
@@ -349,29 +439,60 @@ final class BotsTeamsLive {
         }
     }
 
+    /// One team read fresh (GET /api/bot-departments/{id}), with every member, hidden ones too. The record is shown
+    /// unless a write to this team overlapped the read.
+    func readTeam(_ teamID: String) async -> BotTmTeamCheck {
+        guard active else { return .dropped }
+        let account = self.account
+        let key = "team|\(teamID)"
+        let stamp = touched[key] ?? 0
+        do {
+            let read = try await client().botTeamRead(teamID)
+            guard stillLive(account) else { return .dropped }
+            if untouched(key, since: stamp) { departments[teamID] = read.department }
+            return .read(members: BotLossyList(read.members).items.count, paused: read.paused ?? false)
+        } catch {
+            Connection.shared.note(error)
+            guard stillLive(account) else { return .dropped }
+            if error is CancellationError { return .dropped }
+            if status(error) == 404 {
+                if untouched(key, since: stamp) { departments[teamID] = nil }
+                return .failed("This team is not on your desktop any more.")
+            }
+            return .failed("This team could not be read from your desktop. " + error.plainWords)
+        }
+    }
+
     // MARK: Pause
 
     /// Pause or resume the team. Asked first on screen when pausing. Shown once the desktop answers.
     func setPaused(_ teamID: String, name: String, _ paused: Bool, say: @escaping (String) -> Void) {
         guard active, isCurrent, departments[teamID] != nil, !busy.contains(teamID) else { return }
         let account = self.account
+        let keys = teamKeys(teamID)
         busy.insert(teamID)
-        beginWrite()
+        beginWrite(keys)
         Task {
             defer { if stillLive(account) { busy.remove(teamID) } }
             do {
                 let saved = try await client().botTeamSetPaused(teamID, paused)
-                endWrite()
+                endWrite(keys)
                 guard stillLive(account) else { return }
                 departments[saved.id] = saved
-                say(paused ? "\(name) is paused." : "\(name) is back at work.")
+                // The desktop answers with the record it kept, which can differ (the Content Studio team's switch).
+                if (saved.paused ?? false) == paused {
+                    say(paused ? "\(name) is paused." : "\(name) is back at work.")
+                } else {
+                    say(paused ? "Your desktop answered, but \(name) is still working. It was not paused."
+                               : "Your desktop answered, but \(name) is still paused. It was not resumed.")
+                }
                 await afterChange(account)
             } catch {
-                endWrite()
+                endWrite(keys)
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
                 if unconfirmed(error) {
-                    let read = await loadMap(force: true)
+                    let read = await loadMap()
                     guard stillLive(account) else { return }
                     if read, let now = departments[teamID] {
                         say((now.paused ?? false) == paused ? (paused ? "\(name) is paused." : "\(name) is back at work.")
@@ -399,39 +520,41 @@ final class BotsTeamsLive {
         guard let revision = departments[teamID]?.revision else { return .refused("Still reading this team from your desktop. Try again in a moment.") }
         guard !busy.contains(teamID) else { return .refused("Another change to this team is still on its way. Try again in a moment.") }
         let account = self.account
+        let keys = teamKeys(teamID)
         busy.insert(teamID)
-        beginWrite()
+        beginWrite(keys)
         defer { if stillLive(account) { busy.remove(teamID) } }
         do {
             let saved = try await client().botTeamRename(teamID, name: name, expectedRevision: revision)
-            endWrite()
+            endWrite(keys)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
             departments[saved.id] = saved
             await afterChange(account)
             return .done("The team is now \(saved.name ?? name).")
         } catch {
-            endWrite()
+            endWrite(keys)
             Connection.shared.note(error)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
             if unconfirmed(error) { return await confirmRename(teamID, sent: name) }
             if status(error) == 404 { await afterChange(account); return .refused("This team is not on your desktop any more.") }
             if status(error) == 409, words(error).hasPrefix("The team changed") {
-                await loadMap(force: true)
+                await loadMap()
                 return .changed("This team changed on your desktop, so nothing was saved. Your new name is kept here. Check it and save again.")
             }
             return .refused("It was not renamed. " + words(error))
         }
     }
 
-    /// After a rename whose answer was lost: read the team again and compare it with the name that was sent.
+    /// After a rename whose answer was lost: read the team again and compare it with the name that was sent,
+    /// exactly (the desktop only trims spaces, so a change of case is a rename).
     func confirmRename(_ teamID: String, sent: String) async -> BotTmOutcome {
         guard active else { return .refused("Your desktop is not connected.") }
         let account = self.account
-        guard await loadMap(force: true), stillLive(account) else {
+        guard await loadMap(), stillLive(account) else {
             return .unsure("Your desktop did not answer, so this iPhone could not confirm the team was renamed. Look again before saving a second time.")
         }
         guard let now = departments[teamID] else { return .refused("This team is not on your desktop any more.") }
-        if BotTmMap.clean(now.name ?? "").caseInsensitiveCompare(sent) == .orderedSame {
+        if BotTmMap.clean(now.name ?? "") == sent {
             await BotsStore.shared.loadRoster()
             return .done("The team is now \(now.name ?? sent).")
         }
@@ -440,30 +563,68 @@ final class BotsTeamsLive {
 
     // MARK: Chief
 
-    /// Make a member the chief, or none. The other teams the chief manages are sent as the desktop has them.
-    func setChief(_ teamID: String, botID: String?) async -> BotTmOutcome {
+    /// Make a member the chief, or none, after the person confirmed what the sheet said would happen to the other
+    /// teams the chief manages (`shownChief` and `shownManaged` are what that sheet was built from).
+    ///
+    /// The desktop's chief write has no revision check and saves the list as sent, so the team is read fresh just
+    /// before the write and the list is sent from that read. If the read fails, nothing is sent. If the chief or the
+    /// list changed since the sheet was shown, nothing is sent and the screen shows what the desktop has.
+    func setChief(_ teamID: String, botID: String?, shownChief: String?, shownManaged: [String]) async -> BotTmOutcome {
         guard active, isCurrent else { return .refused("Your desktop is not connected.") }
-        guard let team = departments[teamID], let managed = team.managed else {
-            return .refused("Still reading this team from your desktop. Try again in a moment.")
-        }
+        guard departments[teamID] != nil else { return .refused("Still reading this team from your desktop. Try again in a moment.") }
         guard !busy.contains(teamID) else { return .refused("Another change to this team is still on its way. Try again in a moment.") }
         let account = self.account
+        let keys = teamKeys(teamID)
         busy.insert(teamID)
-        beginWrite()
+        beginWrite(keys)
         defer { if stillLive(account) { busy.remove(teamID) } }
+
+        let fresh: BotTmDepartmentDTO
+        do {
+            fresh = try await client().botTeamRead(teamID).department
+        } catch {
+            endWrite(keys)
+            Connection.shared.note(error)
+            guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
+            if status(error) == 404 { await afterChange(account); return .refused("This team is not on your desktop any more.") }
+            return .refused("This team could not be read from your desktop just now, so nothing was sent and the chief is as it was. " + words(error))
+        }
+        guard stillLive(account) else { endWrite(keys); return .refused("Your desktop changed while this was being saved.") }
+        departments[teamID] = fresh
+        guard let managed = fresh.managed else {
+            endWrite(keys)
+            return .refused(BotTmMap.chiefListUnreadable)
+        }
+        if fresh.chiefBotId != shownChief || managed != shownManaged {
+            endWrite(keys)
+            await BotsStore.shared.loadRoster()
+            return .changed("The chief or the other teams it manages changed on your desktop, so nothing was sent. This now shows what your desktop has. Choose again if you still want to.")
+        }
+
         do {
             let saved = try await client().botTeamSetChief(teamID, botID: botID, alsoManages: botID == nil ? [] : managed)
-            endWrite()
+            endWrite(keys)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
             departments[saved.id] = saved
             await afterChange(account)
+            let now = departments[teamID]?.chiefBotId
+            if now != botID {
+                return .refused("Your desktop answered, but it now has \(now.map { BotsStore.shared.bot($0).name } ?? "no chief") as the chief.")
+            }
             return .done(botID == nil ? "The team has no chief now." : "\(BotsStore.shared.bot(botID ?? "").name) is Chief of Staff.")
         } catch {
-            endWrite()
+            endWrite(keys)
             Connection.shared.note(error)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
             if unconfirmed(error) { return await confirmChief(teamID, sent: botID) }
-            if status(error) == 404 { await afterChange(account); return .refused("This team is not on your desktop any more.") }
+            if status(error) == 404 {
+                // The desktop also answers 404 when a team in the chief's list was deleted (its id stays in the list).
+                let read = await afterChange(account)
+                if read, departments[teamID] != nil {
+                    return .refused("Your desktop refused: one of the other teams this chief manages was deleted, and your desktop will not save a list that names it. Removing the chief still works, and it clears that list.")
+                }
+                return .refused(read ? "This team is not on your desktop any more." : "Your desktop refused the change. " + words(error))
+            }
             return .refused("The chief was not changed. " + words(error))
         }
     }
@@ -471,7 +632,7 @@ final class BotsTeamsLive {
     func confirmChief(_ teamID: String, sent: String?) async -> BotTmOutcome {
         guard active else { return .refused("Your desktop is not connected.") }
         let account = self.account
-        guard await loadMap(force: true), stillLive(account) else {
+        guard await loadMap(), stillLive(account) else {
             return .unsure("Your desktop did not answer, so this iPhone could not confirm the chief changed. Look again before choosing a second time.")
         }
         guard let now = departments[teamID] else { return .refused("This team is not on your desktop any more.") }
@@ -479,7 +640,7 @@ final class BotsTeamsLive {
         if now.chiefBotId == sent {
             return .done(sent == nil ? "The team has no chief now." : "\(BotsStore.shared.bot(sent ?? "").name) is Chief of Staff.")
         }
-        return .refused("Your desktop did not answer, and it still has the chief as before. Nothing changed, so you can choose again.")
+        return .refused("Your desktop did not answer, and it does not have this chief. This shows what it has now.")
     }
 
     // MARK: Delete
@@ -489,19 +650,20 @@ final class BotsTeamsLive {
         guard active, isCurrent else { return .refused("Your desktop is not connected.") }
         guard !busy.contains(teamID) else { return .refused("Another change to this team is still on its way. Try again in a moment.") }
         let account = self.account
+        let keys = teamKeys(teamID)
         busy.insert(teamID)
-        beginWrite()
+        beginWrite(keys)
         defer { if stillLive(account) { busy.remove(teamID) } }
         do {
             try await client().botTeamDelete(teamID)
-            endWrite()
+            endWrite(keys)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being deleted.") }
             departments[teamID] = nil
             // Read again after the sheet has closed, so the team never vanishes under its own confirm sheet.
             Task { await self.afterChange(account) }
             return .done("The team was deleted. Its bots are in no team now.")
         } catch {
-            endWrite()
+            endWrite(keys)
             Connection.shared.note(error)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being deleted.") }
             if unconfirmed(error) { return await confirmDelete(teamID) }
@@ -516,7 +678,7 @@ final class BotsTeamsLive {
     func confirmDelete(_ teamID: String) async -> BotTmOutcome {
         guard active else { return .refused("Your desktop is not connected.") }
         let account = self.account
-        guard await loadMap(force: true), stillLive(account) else {
+        guard await loadMap(), stillLive(account) else {
             return .unsure("Your desktop did not answer, so this iPhone could not confirm the team was deleted. Look again before deleting a second time.")
         }
         if departments[teamID] == nil {
@@ -528,43 +690,48 @@ final class BotsTeamsLive {
 
     // MARK: Instructions
 
-    /// Save the text with the hash it was read at. A lost answer reads again and compares with what was sent.
-    func saveInstructions(_ teamID: String, text: String) async -> BotTmOutcome {
+    /// Save the text with the hash the form was filled from (409 when the desktop's text changed since). On done,
+    /// `instructions[teamID]` holds what the desktop answered: the saved text and its hash.
+    func saveInstructions(_ teamID: String, text: String, expectedHash: String) async -> BotTmOutcome {
         guard active, isCurrent else { return .refused("Your desktop is not connected.") }
-        guard let hash = instructions[teamID]?.hash else { return .refused("Still reading the instructions from your desktop. Try again in a moment.") }
         guard !busy.contains(teamID) else { return .refused("Another change to this team is still on its way. Try again in a moment.") }
         let account = self.account
+        let keys = ["instructions|\(teamID)"]
         busy.insert(teamID)
-        beginWrite()
+        beginWrite(keys)
         defer { if stillLive(account) { busy.remove(teamID) } }
         do {
-            let saved = try await client().botTeamSetInstructions(teamID, text: text, expectedHash: hash)
-            endWrite()
+            let saved = try await client().botTeamSetInstructions(teamID, text: text, expectedHash: expectedHash)
+            endWrite(keys)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
             instructions[teamID] = saved
             instructionsLoad[teamID] = .loaded
             return .done("Instructions saved.")
         } catch {
-            endWrite()
+            endWrite(keys)
             Connection.shared.note(error)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
-            if unconfirmed(error) { return await confirmInstructions(teamID, sent: text) }
+            if unconfirmed(error) { return await confirmInstructions(teamID, sent: text, expectedHash: expectedHash) }
             if status(error) == 409 {
                 await loadInstructions(teamID)
-                return .changed("The instructions changed on your desktop, so nothing was saved. Your text is kept here. Saving now replaces what your desktop has.")
+                return .changed("The instructions changed on your desktop, so nothing was saved. Your text is kept here.")
             }
             return .refused("The instructions were not saved. " + words(error))
         }
     }
 
-    func confirmInstructions(_ teamID: String, sent: String) async -> BotTmOutcome {
+    /// After a save whose answer was lost: read the desktop again and compare it with the text that was SENT.
+    func confirmInstructions(_ teamID: String, sent: String, expectedHash: String) async -> BotTmOutcome {
         guard active else { return .refused("Your desktop is not connected.") }
         let account = self.account
-        guard await loadInstructions(teamID), stillLive(account) else {
+        guard await loadInstructions(teamID) == .loaded, stillLive(account), let now = instructions[teamID] else {
             return .unsure("Your desktop did not answer, so this iPhone could not confirm the instructions were saved. Look again before saving a second time.")
         }
-        if instructions[teamID]?.text == sent { return .done("Instructions saved.") }
-        return .refused("Your desktop did not answer, and it does not have this text. It was not saved, so you can save again.")
+        if now.text == sent { return .done("Instructions saved.") }
+        if now.hash == expectedHash {
+            return .refused("Your desktop did not answer, and it still has the text this form was filled from. Yours was not saved, so you can save again.")
+        }
+        return .changed("Your desktop did not answer, and it now has other instructions. Yours were not saved and are kept here.")
     }
 
     // MARK: Memory
@@ -579,41 +746,49 @@ final class BotsTeamsLive {
         guard memoryLoad[teamID] == .loaded else { return .refused("Still reading the team's memory. Try again in a moment.") }
         guard !busy.contains(teamID) else { return .refused("Another change to this team is still on its way. Try again in a moment.") }
         let account = self.account
+        let keys = ["memory|\(teamID)"]
         let before = Set((memory[teamID] ?? []).map(\.id))
         busy.insert(teamID)
-        beginWrite()
+        beginWrite(keys)
         defer { if stillLive(account) { busy.remove(teamID) } }
         do {
             let made = try await client().botTeamAddMemory(teamID, kind: kind, name: name, detail: detail)
-            endWrite()
+            endWrite(keys)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
             if !(memory[teamID] ?? []).contains(where: { $0.id == made.id }) { memory[teamID, default: []].append(made) }
             return .done("Remembered.")
         } catch {
-            endWrite()
+            endWrite(keys)
             Connection.shared.note(error)
             guard stillLive(account) else { return .refused("Your desktop changed while this was being saved.") }
             if unconfirmed(error) {
-                addChecks[teamID] = BotTmAddCheck(kind: kind, name: name, before: before)
+                addChecks[teamID] = BotTmAddCheck(kind: kind, name: name, detail: detail, before: before)
                 return await confirmAdd(teamID)
             }
             return .refused("It was not added. " + words(error))
         }
     }
 
-    /// After an add whose answer was lost: read the memory again and look for the new entry.
+    /// After an add whose answer was lost: read the memory again and look for the new entry, by its name or its
+    /// detail (the desktop may clean either). The desktop saves it as a suggestion first, then accepts it.
     func confirmAdd(_ teamID: String) async -> BotTmOutcome {
-        guard active, let check = addChecks[teamID] else { return .refused("Your desktop is not connected.") }
+        guard active else { return .refused("Your desktop is not connected.") }
         let account = self.account
-        guard await loadMemory(teamID), stillLive(account) else {
+        guard let check = addChecks[teamID] else {
+            await loadMemory(teamID)
+            return .refused("There is no earlier entry to look for. Check the list before adding it.")
+        }
+        guard await loadMemory(teamID) == .loaded, stillLive(account) else {
             return .unsure("Your desktop did not answer, so this iPhone could not confirm it was added. Look again before adding it a second time.")
         }
         addChecks[teamID] = nil
-        let found = (memory[teamID] ?? []).contains {
-            !check.before.contains($0.id) && $0.kind == check.kind
-                && BotTmMap.clean($0.name ?? "").caseInsensitiveCompare(check.name) == .orderedSame
+        let same = { (a: String?, b: String) in BotTmMap.clean(a ?? "").caseInsensitiveCompare(b) == .orderedSame }
+        let found = (memory[teamID] ?? []).first {
+            !check.before.contains($0.id) && $0.kind == check.kind && (same($0.name, check.name) || same($0.detail, check.detail))
         }
-        return found ? .done("Remembered.") : .refused("It was not added. Your desktop has no such entry, so you can add it again.")
+        guard let found else { return .refused("It was not added. Your desktop has no such entry, so you can add it again.") }
+        if found.status == "accepted" { return .done("Remembered.") }
+        return .done("Your desktop saved it as a suggestion only, so the team does not use it yet. Accept it in Kairos on your desktop.")
     }
 
     /// Delete an entry with the revision it was read at. Asked first on screen.
@@ -621,24 +796,25 @@ final class BotsTeamsLive {
         guard active, isCurrent, let revision = entry.revision, !deleting.contains(entry.id) else { return }
         let account = self.account
         let name = entry.name ?? "The entry"
+        let keys = ["memory|\(teamID)"]
         deleting.insert(entry.id)
-        beginWrite()
+        beginWrite(keys)
         Task {
             defer { if stillLive(account) { deleting.remove(entry.id) } }
             do {
                 try await client().botTeamDeleteMemory(teamID, entryID: entry.id, expectedRevision: revision)
-                endWrite()
+                endWrite(keys)
                 guard stillLive(account) else { return }
                 withAnimation(Motion.snappy) { memory[teamID]?.removeAll { $0.id == entry.id } }
                 say("\(name) was deleted.")
             } catch {
-                endWrite()
+                endWrite(keys)
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
                 if unconfirmed(error) {
                     let read = await loadMemory(teamID)
                     guard stillLive(account) else { return }
-                    if !read {
+                    if read != .loaded {
                         say("Your desktop did not answer, so this iPhone could not confirm \(name) was deleted. Look again in a moment.")
                     } else if (memory[teamID] ?? []).contains(where: { $0.id == entry.id }) {
                         say("Your desktop did not answer, and it still has \(name). Nothing was deleted.")
