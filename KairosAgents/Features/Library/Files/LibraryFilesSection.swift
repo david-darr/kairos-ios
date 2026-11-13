@@ -24,6 +24,10 @@ struct LibraryFilesSection: View {
             documentsCard.arrives(3)
         }
         .padding(.top, 6)
+        .task(id: VaultStore.connectionKey) {
+            vault.followConnection()
+            await vault.loadLiveIfNeeded()
+        }
         .onChange(of: chrome.addTick) {
             if router.tab == .library { cover = .document(nil) }
         }

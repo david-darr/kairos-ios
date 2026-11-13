@@ -9,6 +9,15 @@ nonisolated struct VaultNote: Identifiable, Hashable, Sendable {
     var body: String
     var edited: Date
     var editedBy: String
+    /// Paired: false until the note's text has been read from the desktop.
+    var loaded = true
+    /// Paired: properties and word count from the vault list, used until the text is read.
+    var listed: VaultListedFacts? = nil
+    /// Paired: the version the desktop sent with the text, sent back on save.
+    var version: String? = nil
+    var editable = true
+    /// Paired: who last changed it, in the desktop's own words ("Edited outside Kairos").
+    var changeLabel: String? = nil
 
     var title: String { id.split(separator: "/").last.map(String.init) ?? id }
     var folder: String {
@@ -16,13 +25,30 @@ nonisolated struct VaultNote: Identifiable, Hashable, Sendable {
         return parts.dropLast().joined(separator: "/")
     }
     var topFolder: String { id.split(separator: "/").first.map(String.init) ?? "" }
-    var properties: [(key: String, value: String)] { VaultMarkdown.frontmatter(body) }
+    var properties: [(key: String, value: String)] {
+        if !loaded, let listed { return listed.properties.map { (key: $0.key, value: $0.value) } }
+        return VaultMarkdown.frontmatter(body)
+    }
     func property(_ key: String) -> String? { properties.first { $0.key == key }?.value }
     var content: String { VaultMarkdown.stripFrontmatter(body) }
-    var words: Int { content.split { $0.isWhitespace || $0.isNewline }.count }
+    var words: Int {
+        if !loaded, let listed { return listed.words }
+        return content.split { $0.isWhitespace || $0.isNewline }.count
+    }
     var isDaily: Bool { VaultDates.dailyDate(title) != nil }
     var isIndex: Bool { !folder.isEmpty && title == folder.split(separator: "/").last.map(String.init) }
     var wikilink: String { "[[\(title)]]" }
+}
+
+/// What the vault list says about a note before its text is read.
+nonisolated struct VaultListedFacts: Hashable, Sendable {
+    var properties: [VaultPropertyPair]
+    var words: Int
+}
+
+nonisolated struct VaultPropertyPair: Hashable, Sendable {
+    var key: String
+    var value: String
 }
 
 nonisolated struct VaultChange: Identifiable, Hashable, Sendable {
@@ -106,12 +132,36 @@ final class VaultStore: VaultProviding {
     var recent: [String] = []
     var history: [String: [VaultChange]] = [:]
     var expanded: Set<String> = []
-    let dailyFolder = "Daily notes"
-    let templatePath = "Templates/Daily note"
+    var dailyFolder = "Daily notes"
+    var templatePath = "Templates/Daily note"
+
+    // Paired with a desktop (VaultLive.swift). Unpaired, none of this is used.
+    var isSample = true
+    var liveLoad: VaultLiveLoad = .idle
+    var noteLoad: [String: VaultLiveLoad] = [:]
+    var linksOut: [String: [String]] = [:]
+    var linksIn: [String: [String]] = [:]
+    var linksMissing: [String: [String]] = [:]
+    var backlinkSnippets: [String: [String: String]] = [:]
+    var relatedLive: [String: [String]] = [:]
+    var liveTodayID: String?
+    var liveTemplateExists = false
+    var liveIndex: VaultLiveIndex?
+    /// A plain sentence when a quiet save (a ticked box, a pin) did not reach the desktop.
+    var problem: String?
+    @ObservationIgnored var sampleStash: VaultSampleStash?
+    /// The desktop and account the live notes came from (VaultStore.accountKey when they were read).
+    @ObservationIgnored var liveAccount = ""
+    /// Notes with a save on its way to the desktop, so a second tap does not send the same version again.
+    @ObservationIgnored var savingNotes: Set<String> = []
 
     init() { reload() }
 
     func reload() {
+        guard isSample else {
+            Task { await loadLive() }
+            return
+        }
         notes = Dictionary(uniqueKeysWithValues: VaultSample.notes().map { ($0.id, $0) })
         pins = ["Projects/Bike shop/Launch plan", "Home"]
         recent = ["Projects/Bike shop/Launch plan", "Ideas/Video ideas", VaultDates.dailyTitle(.now.addingTimeInterval(-86_400))]
@@ -179,6 +229,7 @@ final class VaultStore: VaultProviding {
     }
 
     func outlinks(_ id: String) -> (resolved: [VaultNote], unresolved: [String]) {
+        if !isSample { return ((linksOut[id] ?? []).compactMap { notes[$0] }, linksMissing[id] ?? []) }
         guard let note = notes[id] else { return ([], []) }
         var resolved: [VaultNote] = []
         var unresolved: [String] = []
@@ -193,6 +244,12 @@ final class VaultStore: VaultProviding {
     }
 
     func backlinks(_ id: String) -> [(note: VaultNote, snippet: String)] {
+        if !isSample {
+            let snippets = backlinkSnippets[id] ?? [:]
+            return (linksIn[id] ?? []).compactMap { notes[$0] }
+                .sorted { $0.id.localizedStandardCompare($1.id) == .orderedAscending }
+                .map { ($0, VaultMarkdown.plain(snippets[$0.id] ?? "")) }
+        }
         guard let target = notes[id] else { return [] }
         return sortedNotes.compactMap { other in
             guard other.id != id else { return nil }
@@ -203,7 +260,10 @@ final class VaultStore: VaultProviding {
         }
     }
 
-    var linkCount: Int { notes.keys.reduce(0) { $0 + outlinks($1).resolved.count } }
+    var linkCount: Int {
+        if !isSample { return linksOut.values.reduce(0) { $0 + $1.count } }
+        return notes.keys.reduce(0) { $0 + outlinks($1).resolved.count }
+    }
 
     var orphans: [VaultNote] {
         sortedNotes.filter { note in
@@ -269,6 +329,7 @@ final class VaultStore: VaultProviding {
 
     /// Notes that share enough uncommon words with this one.
     func related(_ id: String) -> [VaultNote] {
+        if !isSample { return (relatedLive[id] ?? []).compactMap { notes[$0] } }
         guard let note = notes[id] else { return [] }
         let mine = VaultMarkdown.keywords(note.content)
         let linked = Set(outlinks(id).resolved.map(\.id) + backlinks(id).map(\.note.id))
@@ -308,10 +369,12 @@ final class VaultStore: VaultProviding {
     }
 
     func togglePin(_ id: String) {
+        if !isSample { return togglePinLive(id) }
         if pins.contains(id) { pins.removeAll { $0 == id } } else { pins.append(id) }
     }
 
     func save(_ id: String, body: String) {
+        if !isSample { return saveQuietly(id, body: body) }
         guard var note = notes[id], note.body != body else { return }
         let before = note.body
         note.body = body
@@ -324,7 +387,7 @@ final class VaultStore: VaultProviding {
     }
 
     func restore(_ id: String, to change: VaultChange) {
-        guard var note = notes[id] else { return }
+        guard isSample, var note = notes[id] else { return }
         let before = note.body
         note.body = change.before
         note.edited = .now
@@ -333,13 +396,13 @@ final class VaultStore: VaultProviding {
         history[id, default: []].insert(VaultChange(date: .now, label: "Restored", by: "you", before: before, after: change.before), at: 0)
     }
 
-    var todayID: String { "\(dailyFolder)/\(VaultDates.dailyTitle(.now))" }
-    var hasTemplate: Bool { notes[templatePath] != nil }
+    var todayID: String { liveTodayID ?? "\(dailyFolder)/\(VaultDates.dailyTitle(.now))" }
+    var hasTemplate: Bool { isSample ? notes[templatePath] != nil : liveTemplateExists }
 
     /// Creates today's daily note from the template. Returns false when it already existed.
     @discardableResult
     func createToday() -> Bool {
-        guard notes[todayID] == nil else { return false }
+        guard isSample, notes[todayID] == nil else { return false }
         let template = notes[templatePath]?.content ?? "## Notes\n"
         let body = "---\ntype: daily\n---\n# \(VaultDates.dailyTitle(.now))\n\n" + template
         notes[todayID] = VaultNote(id: todayID, body: body, edited: .now, editedBy: "you")
@@ -349,6 +412,11 @@ final class VaultStore: VaultProviding {
 
     /// The folder index note and the line that would list this note in it, when the index does not list it yet.
     func indexSuggestion(for id: String) -> (index: VaultNote, line: String)? {
+        if !isSample {
+            guard let proposal = liveIndex, proposal.noteID == id else { return nil }
+            let index = notes[proposal.indexID] ?? VaultNote(id: proposal.indexID, body: "", edited: .now, editedBy: "", loaded: false)
+            return (index, proposal.line)
+        }
         guard let note = notes[id], let index = indexNote(of: note.folder), index.id != id else { return nil }
         guard !VaultMarkdown.linkTargets(index.content).contains(note.title) else { return nil }
         return (index, "- [[\(note.title)]]")
@@ -357,7 +425,7 @@ final class VaultStore: VaultProviding {
     /// Adds the line to the folder index, above the first list item. Returns false when the index changed since it was read.
     @discardableResult
     func addToIndex(_ id: String, expecting edited: Date) -> Bool {
-        guard let suggestion = indexSuggestion(for: id), suggestion.index.edited == edited else { return false }
+        guard isSample, let suggestion = indexSuggestion(for: id), suggestion.index.edited == edited else { return false }
         var lines = suggestion.index.body.components(separatedBy: "\n")
         let at = lines.firstIndex { $0.hasPrefix("- ") } ?? lines.count
         lines.insert(suggestion.line, at: at)
