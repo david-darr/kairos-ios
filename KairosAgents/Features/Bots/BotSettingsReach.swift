@@ -1312,7 +1312,6 @@ struct BotKnowConversationsPage: View {
     let botID: String
     let store = BotsStore.shared
     let live = BotsKnowledgeLive.shared
-    @Environment(AppRouter.self) private var router: AppRouter?
     @State private var showArchived = false
     @State private var selecting = false
     @State private var selected: Set<String> = []
@@ -1323,7 +1322,6 @@ struct BotKnowConversationsPage: View {
     @State private var renamingFolder: BotKnowFolderRef?
     @State private var deleting: BotKnowDeleteAsk?
     @State private var deletingFolder: BotKnowFolderRef?
-    @State private var opening: String?
 
     private var key: String { "threads|\(botID)" }
 
@@ -1504,7 +1502,7 @@ struct BotKnowConversationsPage: View {
         let snoozed = meta?.snoozedUntil.map { $0 == 0 || $0 > Date().timeIntervalSince1970 } ?? false
         let unread = meta?.unread == true
         let working = item.status == "working"
-        let waits = live.busy.contains("thread|\(item.id)") || opening == item.id
+        let waits = live.busy.contains("thread|\(item.id)")
         let title = (item.title ?? "").isEmpty ? "New conversation" : (item.title ?? "")
         let updated = BotKnowFormat.ago(item.updatedAt.map { Date(timeIntervalSince1970: $0) })
         return HStack(spacing: 12) {
@@ -1513,13 +1511,11 @@ struct BotKnowConversationsPage: View {
                     .font(.system(size: 21)).foregroundStyle(selected.contains(item.id) ? Palette.goldText : Palette.inkFaint)
                     .frame(width: 26)
             }
+            // While paired a tap does not open the conversation: only selecting uses it.
             Button {
-                if selecting {
-                    Haptics.select()
-                    if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
-                } else {
-                    open(item)
-                }
+                guard selecting else { return }
+                Haptics.select()
+                if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
             } label: {
                 HStack(spacing: 8) {
                     if working { PulsingDot(color: Palette.working, size: 6) }
@@ -1539,7 +1535,7 @@ struct BotKnowConversationsPage: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(scale: 0.98))
-            .disabled(!selecting && opening != nil)
+            .disabled(!selecting)
             if !selecting {
                 menu(item, title: title, main: main, archived: archived, pinned: pinned, unread: unread, snoozed: snoozed, folders: folders)
                     .disabled(waits)
@@ -1548,33 +1544,6 @@ struct BotKnowConversationsPage: View {
         .padding(.leading, 16)
         .padding(.trailing, 4)
         .opacity(waits ? 0.6 : 1)
-    }
-
-    /// Open THIS conversation: the bot's chat loads it first, and the chat opens only once it shows it.
-    private func open(_ item: BotThreadDTO) {
-        guard opening == nil else { return }
-        guard let router else { store.say("Open it from the bot's chat."); return }
-        let chats = ChatStore.shared
-        guard !chats.isSample, live.active else { store.say("Your chats are still connecting to your desktop. Try again in a moment."); return }
-        let chat = chats.botChat(botID)
-        let id = item.id
-        opening = id
-        Task {
-            // A read already on its way would make this one return without switching: wait for it (10 s at most).
-            var waited = 0
-            while chat.phase == .loading && waited < 40 {
-                try? await Task.sleep(for: .milliseconds(250))
-                waited += 1
-            }
-            await chat.load(thread: id)
-            opening = nil
-            guard live.active else { return }
-            if chat.threadID == id {
-                router.push(.bot(botID), on: .home)
-            } else {
-                store.say("This conversation could not be opened. Try again.")
-            }
-        }
     }
 
     private func menu(_ item: BotThreadDTO, title: String, main: Bool, archived: Bool, pinned: Bool, unread: Bool, snoozed: Bool,

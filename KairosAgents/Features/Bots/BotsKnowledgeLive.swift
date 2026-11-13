@@ -466,6 +466,11 @@ final class BotsKnowledgeLive {
         if memory[botID]?.index?.hash == sent.hash {
             return .refused("Your desktop did not answer, and its notes are as they were: the note was not added. Your text is kept here.")
         }
+        // The desktop lists only its first 500 notes, and an added note goes at the end of its heading.
+        let listed = BotKnowWire.items(memory[botID]?.index?.notes)
+        if listed.items.count + listed.skipped >= 500 {
+            return .unsure("Your desktop did not answer, and it lists only its first 500 notes, so this iPhone cannot tell whether this one was added. Look on your desktop before adding it again. Your text is kept here.")
+        }
         return .refused("Your desktop did not answer, and it does not have this note. Your text is kept here.")
     }
 
@@ -651,7 +656,8 @@ final class BotsKnowledgeLive {
     // MARK: About you
 
     /// A read that started before a save the desktop confirmed, or that lands while a save or a check is on its
-    /// way, updates only the learned facts: it never puts older text back in the box.
+    /// way, updates only the learned facts: it never puts older text back in the box. While a save is not
+    /// confirmed, the read is settled against the text that was SENT first.
     @discardableResult
     func loadAbout(force: Bool = false) async -> Bool {
         let saves = aboutSaves
@@ -659,6 +665,8 @@ final class BotsKnowledgeLive {
                            { try await $0.botKnowledgeAbout() }) { value in
             if aboutSaves != saves || aboutSaving {
                 showLearned(value)
+            } else if let sent = aboutSent {
+                settleAbout(value, sent: sent.text, expected: sent.expected)
             } else {
                 showAbout(value)
             }
@@ -701,6 +709,8 @@ final class BotsKnowledgeLive {
 
     /// The person typed: save a moment after they stop, unless the page is waiting on their choice.
     func editAbout(_ text: String) {
+        // The desktop reads About you back with one kind of line break: a pasted CR or CRLF would never match.
+        let text = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         aboutDraft = text
         switch aboutState {
         case .changedOnDesktop, .unsure, .notSaved: return
@@ -744,7 +754,7 @@ final class BotsKnowledgeLive {
             let saved = try await client().botKnowledgeAboutSave(text: text, expectedHash: expected)
             endWrite()
             if resets == epoch { aboutSaving = false }
-            guard stillLive(account) else { return }
+            guard stillLive(account) else { lostAbout(epoch); return }
             aboutSaves += 1
             aboutSent = nil
             aboutBase?.text = saved.text
@@ -765,6 +775,7 @@ final class BotsKnowledgeLive {
             Connection.shared.note(error)
             guard stillLive(account) else {
                 if resets == epoch { aboutSaving = false }
+                lostAbout(epoch)
                 return
             }
             if status(error) == 409 || unconfirmed(error) {
@@ -785,35 +796,56 @@ final class BotsKnowledgeLive {
         guard active else { return }
         let account = self.account
         let saves = aboutSaves
+        let epoch = resets
         do {
             let fresh = try await client().botKnowledgeAbout()
-            guard stillLive(account), aboutSaves == saves else { return }
-            let text = fresh.text ?? ""
-            aboutBase = fresh
-            showLearned(fresh)
+            guard stillLive(account) else { lostAbout(epoch); return }
+            guard aboutSaves == saves else { return }
+            settleAbout(fresh, sent: sent, expected: expected)
             loads["about"] = .loaded
-            // Settled either way: the sent text is no longer in doubt.
-            aboutSent = nil
-            if text == sent {
-                aboutSaves += 1
-                if aboutDraft == sent {
-                    aboutState = .saved
-                } else {
-                    aboutState = .unsaved
-                    scheduleAbout()
-                }
-            } else if fresh.hash == expected {
-                aboutState = .notSaved("Your desktop did not answer, and it does not have this text. Nothing was saved; your text is kept here.")
-            } else if aboutDraft == text {
-                aboutState = .idle
-            } else {
-                aboutState = .changedOnDesktop
-            }
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account) else { return }
+            guard stillLive(account) else { lostAbout(epoch); return }
             aboutState = .unsure("Your desktop did not answer, so this iPhone could not confirm About you was saved. Your text is kept here.")
         }
+    }
+
+    /// A fresh read while a save is not confirmed: compare it with what was SENT. The desktop has the sent text:
+    /// the save landed, and anything typed since stays as an unsaved edit on top. It still has the text the save
+    /// was sent against: nothing was saved. Only other text is a change on the desktop, and the person's text
+    /// stays until they choose.
+    private func settleAbout(_ fresh: BotKnowAboutDTO, sent: String, expected: String) {
+        let text = fresh.text ?? ""
+        aboutBase = fresh
+        showLearned(fresh)
+        // Settled either way: the sent text is no longer in doubt.
+        aboutSent = nil
+        if text == sent {
+            aboutSaves += 1
+            if aboutDraft == sent {
+                aboutState = .saved
+            } else {
+                aboutState = .unsaved
+                scheduleAbout()
+            }
+            return
+        }
+        // Nothing is sent on its own while the person has to choose.
+        aboutTask?.cancel()
+        if aboutDraft == text {
+            aboutState = .idle
+        } else if fresh.hash == expected {
+            aboutState = .notSaved("Your desktop did not answer, and it does not have this text. Nothing was saved; your text is kept here.")
+        } else {
+            aboutState = .changedOnDesktop
+        }
+    }
+
+    /// No longer live, but nothing was dropped for another account (unpaired and paired again before a page
+    /// looked): the outcome is not known, and the next read settles it against what was sent.
+    private func lostAbout(_ epoch: Int) {
+        guard resets == epoch, aboutSent != nil else { return }
+        aboutState = .unsure("Your desktop did not answer, so this iPhone could not confirm About you was saved. Your text is kept here.")
     }
 
     /// The person chose to keep their text over the desktop's (or to try again after nothing was saved).
@@ -846,7 +878,9 @@ final class BotsKnowledgeLive {
             Task {
                 let read = await loadAbout(force: true)
                 guard read, stillLive(account), case .unsure = aboutState else { return }
-                aboutState = aboutDraft == (aboutBase?.text ?? "") ? .idle : .changedOnDesktop
+                // The desktop's text came from this iPhone's own save, so it is not called a change on the desktop.
+                aboutState = aboutDraft == (aboutBase?.text ?? "") ? .idle
+                    : .notSaved("Your desktop has other text than this. Your text is kept here and has not been saved.")
             }
             return
         }

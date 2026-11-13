@@ -826,26 +826,28 @@ struct BotKnowMemoryPage: View {
         Task {
             let outcome = await live.addNote(botID, section: section, text: text)
             adding = false
-            show(outcome, text: text)
+            show(outcome, sent: BotsKnowledgeLive.cleanNote(text))
         }
     }
 
     private func checkAdd() {
+        // The text that was SENT, not what is in the box now: a different note typed since is never cleared.
+        guard let sent = live.addChecks[botID]?.text else { return }
         adding = true
-        let text = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             let outcome = await live.checkAdd(botID)
             adding = false
-            if let outcome { show(outcome, text: text) }
+            if let outcome { show(outcome, sent: sent) }
         }
     }
 
-    private func show(_ outcome: BotKnowOutcome, text: String) {
+    /// `sent` is the note as it was sent (cleaned): the box is cleared only while it still holds that text.
+    private func show(_ outcome: BotKnowOutcome, sent: String) {
         switch outcome {
         case .done(let words):
             Haptics.success()
             problem = nil
-            if newNote.trimmingCharacters(in: .whitespacesAndNewlines) == text { newNote = "" }
+            if BotsKnowledgeLive.cleanNote(newNote) == sent { newNote = "" }
             store.say(words)
         case .refused(let words), .unsure(let words):
             problem = words
