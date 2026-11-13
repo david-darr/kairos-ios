@@ -378,7 +378,11 @@ extension CalStore {
         guard let found = try? await client.calendarEvents(start: CalDates.add(-1, to: day), end: CalDates.add(2, to: day)) else {
             return nil
         }
-        return found.compactMap(CalendarWire.event).contains { Self.matches($0, draft, google: google) && !before.contains($0.id) }
+        let there = found.compactMap(CalendarWire.event).contains { Self.matches($0, draft, google: google) && !before.contains($0.id) }
+        // On Google, not seeing it proves nothing: a hidden calendar, a Google read the desktop dropped, or an
+        // older saved answer can each hide a new event. Only "it is there" is trusted.
+        if !there && google { return nil }
+        return there
     }
 
     /// An item that looks like the new event: same title, calendar, kind and start.

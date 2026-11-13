@@ -99,7 +99,8 @@ final class AppRouter {
 
     private func showLibrary(_ section: LibrarySection) {
         paths[.library] = []
-        librarySection = section
+        // A calendar save still waiting on the desktop keeps its sheet on screen: its result must be seen.
+        if !(CalStore.shared.liveSheetBusy && section != .calendar) { librarySection = section }
         select(.library)
     }
 
