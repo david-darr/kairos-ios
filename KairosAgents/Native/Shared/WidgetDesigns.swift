@@ -203,10 +203,17 @@ extension WidgetSnapshot {
     func mood(kip: Bool = false) -> BotMood {
         guard connected else { return .offline }
         let work = kip ? running.filter { $0.isKip == true } : running
+        // Work last seen too long ago is not shown as working (or waiting) as if it were current.
+        if stale == true, !work.isEmpty { return .offline }
         if work.contains(where: { $0.waiting == true }) { return .needsYou }
         if !work.isEmpty { return .working }
         if let ended, !kip || ended.isKip == true { return ended.failed ? .failed : .done }
         return .idle
+    }
+
+    /// "Last seen 9:41": what a stale snapshot says in place of a step or a timer.
+    var lastSeenLine: String {
+        "Last seen \(updatedAt.formatted(date: .omitted, time: .shortened))"
     }
 }
 
@@ -543,9 +550,21 @@ struct RunningWidgetView: View {
     var hidingTitles: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private func title(_ item: WidgetSnapshot.Running) -> String { hidingTitles ? "\(item.botName) is working" : item.title }
-    private func mood(_ item: WidgetSnapshot.Running) -> BotMood { item.waiting == true ? .needsYou : .working }
-    private func step(_ item: WidgetSnapshot.Running) -> String { item.waiting == true ? "Waiting for you" : item.step }
+    private func title(_ item: WidgetSnapshot.Running) -> String {
+        guard hidingTitles else { return item.title }
+        return stale ? item.botName : "\(item.botName) is working"
+    }
+    private var stale: Bool { snapshot.stale == true }
+    private func mood(_ item: WidgetSnapshot.Running) -> BotMood {
+        if stale { return .offline }
+        return item.waiting == true ? .needsYou : .working
+    }
+    private func step(_ item: WidgetSnapshot.Running) -> String {
+        if stale { return snapshot.lastSeenLine }
+        return item.waiting == true ? "Waiting for you" : item.step
+    }
+    /// "3 running", or "Last seen" once the snapshot is stale.
+    private var countTitle: String { stale ? "Last seen" : "\(snapshot.running.count) running" }
 
     private func endedLine(_ ended: WidgetSnapshot.Ended) -> String {
         let what = hidingTitles ? "\(ended.botName)'s work" : ended.title
@@ -580,7 +599,8 @@ struct RunningWidgetView: View {
             }
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 2) {
-                Label("\(snapshot.running.count) running", systemImage: "bolt.fill").font(.system(size: 15, weight: .semibold)).widgetAccentable()
+                Label(stale ? snapshot.lastSeenLine : countTitle, systemImage: stale ? "link" : "bolt.fill")
+                    .font(.system(size: 15, weight: .semibold)).widgetAccentable()
                     .contentTransition(.numericText(value: Double(snapshot.running.count)))
                 if let first = snapshot.running.first {
                     TickerText(text: title(first), font: .system(size: 13), color: .primary, dimColor: .secondary)
@@ -592,7 +612,7 @@ struct RunningWidgetView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         case .systemMedium, .systemLarge:
             VStack(alignment: .leading, spacing: family == .systemLarge ? 12 : 9) {
-                WidgetHeader(symbol: "bolt.fill", title: "\(snapshot.running.count) running")
+                WidgetHeader(symbol: stale ? "link" : "bolt.fill", title: countTitle)
                     .contentTransition(.numericText(value: Double(snapshot.running.count)))
                 ForEach(snapshot.running.prefix(family == .systemLarge ? 5 : 3)) { item in
                     WidgetLink(link: item.link, label: "Open \(item.title)") { row(item) }
@@ -640,7 +660,7 @@ struct RunningWidgetView: View {
         default:
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 4) {
-                    WidgetHeader(symbol: "bolt.fill", title: "Running")
+                    WidgetHeader(symbol: stale ? "link" : "bolt.fill", title: stale ? "Last seen" : "Running")
                     if let started = snapshot.running.first?.startedAt { timer(started) }
                 }
                 if let first = snapshot.running.first {
@@ -1146,8 +1166,9 @@ struct QuickActionsWidgetView: View {
     var hidingTitles: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Kip's own state on the paired desktop (or on the sample data before pairing).
-    private var mood: BotMood { snapshot.mood(kip: true) }
+    /// Kip's own state on the paired desktop (or on the sample data before pairing). With no widget data
+    /// (the person turned sharing off) Kip is simply there to ask: idle, never "not connected".
+    private var mood: BotMood { snapshot.connected ? snapshot.mood(kip: true) : .idle }
 
     private var line: String {
         let work = snapshot.running.first { $0.isKip == true }
@@ -1158,7 +1179,8 @@ struct QuickActionsWidgetView: View {
         case .needsYou: return "Waiting for you"
         case .done: return "Finished. Tap to see"
         case .failed: return "Couldn't finish"
-        case .offline: return "Not connected"
+        // Only a stale snapshot gets here (see `mood`).
+        case .offline: return snapshot.lastSeenLine
         case .idle: return "Anything, any time"
         }
     }

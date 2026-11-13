@@ -18,8 +18,11 @@ enum NativeGlue {
     private static var opened: Set<String> = []
     /// Each running turn's step and the one before it, so a widget can move the line on.
     private static var steps: [String: (now: String, before: String?)] = [:]
-    /// The newest turn that finished or failed, for the widgets' end card.
+    /// The newest turn that finished or failed, for the widgets' end card. Only an end the desktop reported:
+    /// a turn the phone saw disappear while it was away reaches `runEnded` still "processing" and leaves no card.
     private static var lastEnded: WidgetSnapshot.Ended?
+    /// `ChatStore.generation` when the widgets were last written, so another account's work is dropped.
+    private static var accountGeneration: Int?
 
     /// Called once at launch, before any screen is up.
     static func join() {
@@ -165,6 +168,13 @@ enum NativeGlue {
     /// they come from the desktop and include work this phone has not opened.
     private static func publishWidgets() {
         let store = ChatStore.shared
+        if let seen = accountGeneration, seen != store.generation {
+            // Unpaired, or paired with another desktop: nothing of the last account may show or be tapped.
+            live = [:]
+            steps = [:]
+            lastEnded = nil
+        }
+        accountGeneration = store.generation
         guard !store.isSample else {
             WidgetSync.publish()
             return

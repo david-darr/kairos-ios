@@ -56,9 +56,10 @@ struct KairosLiveActivity: Widget {
         }
     }
 
-    /// A stale activity says so instead of showing an old step as if it were current.
+    /// A stale activity says so instead of showing an old step as if it were current. A call is not: the phone
+    /// runs it itself and ends its activity when it ends, so a long call stays a call.
     private func shown(_ context: ActivityViewContext<KairosActivityAttributes>) -> KairosActivityAttributes.ContentState {
-        guard context.isStale, !context.state.phase.ended else { return context.state }
+        guard context.isStale, !context.state.phase.ended, context.attributes.kind != .call else { return context.state }
         var state = context.state
         state.step = "Open Kairos to refresh"
         state.stale = true
@@ -80,21 +81,22 @@ nonisolated struct SnapshotProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (SnapshotEntry) -> Void) {
+        let now = Date()
         let stored = WidgetSnapshotStore.read()
-        completion(SnapshotEntry(date: .now, snapshot: context.isPreview && !stored.connected ? NativeSample.snapshot() : stored))
+        completion(SnapshotEntry(date: now, snapshot: context.isPreview && !stored.connected ? NativeSample.snapshot() : stored.shown(at: now)))
     }
 
     /// The app reloads every widget whenever it writes new numbers (free while it is open, from the budget
-    /// otherwise). Between those, one more entry is planned when an end card is due to leave, so the widget
-    /// eases back to its quiet state on time; timer text keeps ticking without any entry.
+    /// otherwise). Between those, entries are planned for the moments the snapshot changes by itself: when
+    /// running work turns into last seen (`WidgetSnapshot.staleAt`) and when an end card leaves. So a widget
+    /// changes on time with the app closed; timer text keeps ticking without any entry until then.
     func getTimeline(in context: Context, completion: @escaping (Timeline<SnapshotEntry>) -> Void) {
         let now = Date()
         let stored = WidgetSnapshotStore.read()
-        var entries = [SnapshotEntry(date: now, snapshot: stored.shown(at: now))]
-        if let ended = stored.ended {
-            let leaves = ended.at.addingTimeInterval(WidgetSnapshot.Ended.shownFor)
-            if leaves > now { entries.append(SnapshotEntry(date: leaves, snapshot: stored.shown(at: leaves))) }
-        }
+        var moments = [now]
+        if let ended = stored.ended { moments.append(ended.at.addingTimeInterval(WidgetSnapshot.Ended.shownFor)) }
+        if !stored.running.isEmpty, stored.isSample != true { moments.append(stored.staleAt) }
+        let entries = moments.filter { $0 >= now }.sorted().map { SnapshotEntry(date: $0, snapshot: stored.shown(at: $0)) }
         completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(15 * 60))))
     }
 }

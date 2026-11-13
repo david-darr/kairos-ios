@@ -344,6 +344,19 @@ private struct ActivityFigure: View {
     var compact = false
 
     var body: some View {
+        if state.stale == true, attributes.kind != .call {
+            // Stale: no timer counting on from work the phone no longer sees.
+            Image(systemName: "link")
+                .font(.system(size: compact ? 13 : 15, weight: .semibold))
+                .foregroundStyle(IslandInk.faint)
+                .accessibilityLabel("Not up to date")
+        } else {
+            figure
+        }
+    }
+
+    @ViewBuilder
+    private var figure: some View {
         switch attributes.kind {
         case .reply:
             if state.helpers.isEmpty {

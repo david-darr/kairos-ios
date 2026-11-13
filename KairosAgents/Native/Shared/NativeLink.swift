@@ -28,7 +28,8 @@ nonisolated enum NativeLink: Hashable, Sendable {
     case allBots
 
     /// The id a widget or a push uses for Kip when it cannot know the desktop's own id.
-    /// On a paired phone it means the paired desktop's Kip, found when the link is followed.
+    /// On a paired phone it means the paired desktop's Kip, found when the link is followed, unless the desktop
+    /// has a bot whose own id is "kip" (desktop ids are generated, so that is not expected).
     static let kip = "kip"
 
     static let scheme = "kairos-agents"

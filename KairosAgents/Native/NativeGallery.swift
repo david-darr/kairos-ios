@@ -358,6 +358,8 @@ extension BotMood {
 struct WidgetStatePage: View {
     let family: WidgetFamily
     let mood: BotMood
+    /// Work last seen 20 minutes ago on a paired phone, instead of `mood`.
+    var stale = false
 
     private var kinds: [KairosWidgetKind] {
         family == .systemLarge ? [.running] : [.running, .needsYou, .quickActions, .team]
@@ -372,8 +374,8 @@ struct WidgetStatePage: View {
     }
 
     var body: some View {
-        let snapshot = NativeSample.snapshot(mood)
-        GalleryPage(title: "Widgets, \(familyName): \(mood.label.lowercased())") {
+        let snapshot = stale ? NativeSample.staleSnapshot() : NativeSample.snapshot(mood)
+        GalleryPage(title: "Widgets, \(familyName): \(stale ? "last seen" : mood.label.lowercased())") {
             if family == .systemSmall {
                 LazyVGrid(columns: [GridItem(.fixed(170), spacing: 22), GridItem(.fixed(170))], spacing: 22) {
                     ForEach(kinds, id: \.self) { kind in
@@ -401,10 +403,12 @@ struct WidgetStatePage: View {
 /// The Lock Screen widgets that follow a state, in one state.
 struct LockWidgetStatePage: View {
     let mood: BotMood
+    /// Work last seen 20 minutes ago on a paired phone, instead of `mood`.
+    var stale = false
 
     var body: some View {
-        let snapshot = NativeSample.snapshot(mood)
-        GalleryPage(title: "Lock Screen widgets: \(mood.label.lowercased())", dark: true) {
+        let snapshot = stale ? NativeSample.staleSnapshot() : NativeSample.snapshot(mood)
+        GalleryPage(title: "Lock Screen widgets: \(stale ? "last seen" : mood.label.lowercased())", dark: true) {
             Caption(text: "Inline", dark: true)
             WidgetDrawing(kind: .needsYou, family: .accessoryInline, snapshot: snapshot)
             Caption(text: "Circular", dark: true)

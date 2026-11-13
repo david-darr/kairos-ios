@@ -126,6 +126,14 @@ nonisolated enum NativeSample {
         return sample
     }
 
+    /// The sample widgets as a paired phone shows work it last saw 20 minutes ago, for the gallery.
+    static func staleSnapshot(now: Date = .now) -> WidgetSnapshot {
+        var sample = snapshot(now: now.addingTimeInterval(-20 * 60))
+        sample.isSample = nil
+        sample.needsYou = []
+        return sample.shown(at: now)
+    }
+
     static func snapshot(now: Date = .now) -> WidgetSnapshot {
         let calendar = Calendar.current
         let friday = calendar.nextDate(after: now, matching: DateComponents(hour: 9, minute: 0, weekday: 6), matchingPolicy: .nextTime) ?? now.addingTimeInterval(86_400)
@@ -163,7 +171,8 @@ nonisolated enum NativeSample {
                 .init(id: "f1", title: "Mobile layout prototype", project: "shop-site", added: 412, removed: 36, waiting: true),
                 .init(id: "f2", title: "Faster image loading", project: "shop-site", added: 88, removed: 120, waiting: false),
             ]),
-            pinned: .init(title: "CRM", symbol: "person.2")
+            pinned: .init(title: "CRM", symbol: "person.2"),
+            isSample: true
         )
     }
 }

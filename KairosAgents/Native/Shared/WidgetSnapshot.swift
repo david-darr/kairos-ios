@@ -123,12 +123,34 @@ nonisolated struct WidgetSnapshot: Codable, Hashable, Sendable {
     var desktop: Desktop?
     var pinned: Pinned?
     var ended: Ended? = nil
+    /// The sample data shown before pairing. Its times are made again for each moment it is drawn.
+    var isSample: Bool? = nil
+    /// Set only by `shown(at:)`, never written: the work in it is older than `freshFor`, so it is shown as
+    /// last seen, with no timer and no "working".
+    var stale: Bool? = nil
 
-    /// The snapshot as it should read at `date`: an end card older than 30 minutes is gone.
+    /// How long running work in a snapshot is shown as running. The app rewrites the snapshot on every step,
+    /// approval and end while it runs; once iOS suspends it, nothing rewrites it and widget reloads only read the
+    /// same file again. Fifteen minutes is the Live Activity's own stale time, and the shortest gap between
+    /// reloads iOS allows a widget with the app closed.
+    static let freshFor: TimeInterval = 15 * 60
+
+    /// When the running work in this snapshot stops being shown as running.
+    var staleAt: Date { updatedAt.addingTimeInterval(Self.freshFor) }
+
+    /// The snapshot as it should read at `date`: an end card older than 30 minutes is gone, and running work
+    /// written more than `freshFor` before is last seen, not working. The sample is made again for `date`.
     func shown(at date: Date) -> WidgetSnapshot {
-        guard let ended, date >= ended.at.addingTimeInterval(Ended.shownFor) else { return self }
+        if isSample == true { return NativeSample.snapshot(now: date) }
         var copy = self
-        copy.ended = nil
+        if let ended, date >= ended.at.addingTimeInterval(Ended.shownFor) { copy.ended = nil }
+        if !running.isEmpty, date >= staleAt {
+            copy.stale = true
+            for index in copy.running.indices {
+                copy.running[index].startedAt = nil
+                copy.running[index].previousStep = nil
+            }
+        }
         return copy
     }
 
