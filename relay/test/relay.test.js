@@ -262,7 +262,7 @@ test("alert with notice: each kind's line, thread from the chat link, retry ids"
   const { env } = await makeEnv();
   const inst = await register(world, env);
   const lines = { approval: "Ada wants your approval", question: "Ada is waiting for your answer", replyReady: "Your reply is ready",
-    workDone: "Ada finished a task", workFailed: "Ada couldn't finish" };
+    workDone: "Ada finished a task", workFailed: "A task couldn't finish" };
   for (const [notice, line] of Object.entries(lines)) {
     assert.equal((await push(world, env, inst, { kind: "alert", notice, who: "Ada", link: "kairos-agents://chat/abc123" })).status, 200);
     const payload = JSON.parse(world.calls.at(-1).init.body);

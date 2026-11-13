@@ -310,6 +310,9 @@ final class Connection {
         PushBridge.registerTokens = { apns, voip in
             await Connection.shared.rememberPushTokens(apns: apns, voip: voip)
         }
+        PushBridge.detailChanged = {
+            await Connection.shared.resendPushTokens()
+        }
         PushBridge.registerActivity = { activityID, kind, token in
             await Connection.shared.rememberActivity(id: activityID, kind: kind, token: token)
         }
@@ -326,6 +329,11 @@ final class Connection {
         await sendPushTokens(apns: apns, voip: voip)
     }
 
+    private func resendPushTokens() async {
+        guard let tokens = pushTokens else { return }
+        await sendPushTokens(apns: tokens.apns, voip: tokens.voip)
+    }
+
     private func sendPushTokens(apns: String, voip: String?) async {
         guard let client, state == .connected else { return }
         #if DEBUG
@@ -335,7 +343,8 @@ final class Connection {
         #endif
         let locale = Locale.current.identifier.replacingOccurrences(of: "_", with: "-")
         do {
-            try await client.phonePushRegister(apns: apns, voip: voip, environment: environment, locale: locale)
+            try await client.phonePushRegister(apns: apns, voip: voip, environment: environment, locale: locale,
+                                               detail: NativeSettings.detail.rawValue)
         } catch {
             note(error)
         }

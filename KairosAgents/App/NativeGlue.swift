@@ -30,10 +30,17 @@ enum NativeGlue {
 
         NativeBridge.stop = { @Sendable id, _ in await NativeGlue.stop(id) }
         NativeBridge.retry = { @Sendable id, _ in await NativeGlue.retry(id) }
+        NativeBridge.canRetry = { @Sendable id in await NativeGlue.canRetry(id) }
     }
 
     static func stop(_ turnID: String) async {
         await ConnectionSeam.stop(turnID: turnID)
+    }
+
+    /// Whether Retry knows this turn's chat. A failure the phone did not watch is not here,
+    /// so the notification's Try again opens its chat instead (`NativeNotifications.handle`).
+    static func canRetry(_ turnID: String) -> Bool {
+        chats[turnID] != nil
     }
 
     /// Retry sends a model chat's last question again. A bot's turn has no retry on the desktop yet.
