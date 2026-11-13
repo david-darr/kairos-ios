@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 /// Where the first desktop read stands, for one plain sentence on screen.
 nonisolated enum MailLiveLoad: Equatable, Sendable {
@@ -71,6 +72,8 @@ extension MailStore {
     /// Move between sample mail and the paired desktop to match the connection.
     func followConnection() {
         let wantLive = !Connection.shared.usesSampleData
+        // Unpaired: no desktop and no account, so no send from one can be waiting. Every saved hold goes.
+        if !wantLive { Self.forgetAllHolds() }
         if wantLive && !isSample && liveAccount != Self.accountKey {
             // Another desktop or account: nothing read from the last one may stay on screen.
             resetLive()
@@ -126,12 +129,15 @@ extension MailStore {
         sendingIDs = []
         sentIDs = []
         unconfirmedSends = [:]
+        restoredHolds = []
+        savedHolds = [:]
         accountBusy = false
         triageUnclearSince = nil
         // Answers to anything already on its way are now stale.
         readSerial += 1
         writeSerial += 1
         liveAccount = Self.accountKey
+        loadHolds()
     }
 
     private func liveClient() throws -> APIClient {
@@ -142,13 +148,15 @@ extension MailStore {
     // MARK: Reading
 
     /// Read triage, the Email tab accounts and the sending addresses. Already read, it refreshes quietly.
-    func loadLive() async {
-        guard !isSample else { return }
+    /// True only when this read's answer is what the screen now shows.
+    @discardableResult
+    func loadLive() async -> Bool {
+        guard !isSample else { return false }
         let account = liveAccount
         if Connection.shared.state == .connecting {
             // The read starts by itself once the desktop answers (connectionKey changes).
             if liveLoad != .loaded { liveLoad = .loading }
-            return
+            return false
         }
         readSerial += 1
         let serial = readSerial
@@ -160,7 +168,7 @@ extension MailStore {
             let listed = try await client.mailAccounts()
             let sending = try await client.mailSendingAccounts()
             // A newer read, or a write that finished meanwhile, has the better answer.
-            guard stillLive(account), serial == readSerial, writesAtStart == writeSerial else { return }
+            guard stillLive(account), serial == readSerial, writesAtStart == writeSerial else { return false }
             showTriage(triage)
             showAccounts(listed.accounts)
             showSenders(sending)
@@ -169,20 +177,35 @@ extension MailStore {
                 : (skipped == 1 ? "1 item from your desktop could not be read and is left out."
                                 : "\(skipped) items from your desktop could not be read and are left out.")
             liveLoad = .loaded
+            return true
         } catch is CancellationError {
             // Stopped (the screen went away or the connection changed): not a failure.
-            guard stillLive(account), serial == readSerial else { return }
+            guard stillLive(account), serial == readSerial else { return false }
             if liveLoad == .loading { liveLoad = .idle }
+            return false
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account), serial == readSerial else { return }
+            guard stillLive(account), serial == readSerial else { return false }
             let words = (error as? APIError) == .notPaired ? Connection.shared.statusLine : error.plainWords
             if liveLoad == .loaded {
                 liveNote = "Your mail could not be read again. This shows the last answer. " + words
             } else {
                 liveLoad = .failed("Your mail could not be read. " + words)
             }
+            return false
         }
+    }
+
+    /// A note first, then whatever the read itself said (items it left out), so neither hides the other.
+    private static func joined(_ first: String, _ then: String?) -> String {
+        guard let then, !then.isEmpty else { return first }
+        return first + " " + then
+    }
+
+    /// After a read that did not land: the note says so, unless the read already said why.
+    private func noteReadMissed() {
+        guard liveLoad == .loaded, !(liveNote?.hasPrefix("Your mail could not be read again") ?? false) else { return }
+        liveNote = "Your mail could not be read again. This shows the last answer. " + Connection.shared.statusLine
     }
 
     private func showTriage(_ triage: MailTriageDTO) {
@@ -206,11 +229,19 @@ extension MailStore {
         }
         // A message with a reply waiting here (a draft, or a send that could not be confirmed) stays on
         // the list after triage stops listing it, so the reply and its warning can still be reached.
+        // A hold saved before the app last closed comes back on its message. The typed reply did not survive.
+        for item in fresh where unconfirmedSends[item.id] == nil {
+            if let when = savedHolds[Self.hashed(item.id)] {
+                unconfirmedSends[item.id] = when
+                restoredHolds.insert(item.id)
+            }
+        }
         let freshIDs = Set(fresh.map(\.id))
         let kept = items.filter { old in
             !freshIDs.contains(old.id) && (drafts[old.id] != nil || unconfirmedSends[old.id] != nil)
         }
         items = fresh + kept
+        pruneHolds()
         lastChecked = triage.generatedAt.map { Date(timeIntervalSince1970: $0) }
         scanned = triage.scanned ?? 0
         let problem = triage.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -245,10 +276,15 @@ extension MailStore {
             // The last run went without an answer and may still be going: a second run would ask the model again.
             // Read what the desktop has instead.
             refreshing = true
-            await loadLive()
+            let read = await loadLive()
             guard stillLive(account) else { return "" }
             refreshing = false
-            liveNote = "Your desktop may still be running the last check. This shows what it has now. Try again in a few minutes."
+            guard read else {
+                // The failed read stays on screen: never covered by a line that says this is current.
+                noteReadMissed()
+                return "Your mail could not be read again"
+            }
+            liveNote = Self.joined("Your desktop may still be running the last check. This shows what it has now. Try again in a few minutes.", liveNote)
             return "The last check may still be running"
         }
         refreshing = true
@@ -268,15 +304,24 @@ extension MailStore {
             writeSerial += 1
             refreshing = false
             if case .server(let status, let detail)? = error as? APIError, Self.isRefusal(status, detail) || detail.hasPrefix("triage failed") {
-                liveNote = "Triage did not run. " + (detail.isEmpty ? error.plainWords : detail)
-                await loadLive()
+                let why = "Triage did not run. " + (detail.isEmpty ? error.plainWords : detail)
+                let read = await loadLive()
+                if stillLive(account) {
+                    if !read { noteReadMissed() }
+                    liveNote = Self.joined(why, liveNote)
+                }
                 return "Triage did not run"
             }
             // No answer: the run may still finish on the desktop. Show what it has now, and hold off a second run.
             triageUnclearSince = Date()
-            await loadLive()
+            let read = await loadLive()
             if stillLive(account) {
-                liveNote = "Your desktop did not answer in time, so this may not be the newest check. It shows what your desktop has now."
+                if read {
+                    liveNote = Self.joined("Your desktop did not answer in time, so this may not be the newest check. It shows what your desktop has now.", liveNote)
+                } else {
+                    noteReadMissed()
+                    liveNote = Self.joined("Your desktop did not answer in time, so this may not be the newest check.", liveNote)
+                }
             }
             return "Could not confirm the check finished"
         }
@@ -410,10 +455,17 @@ extension MailStore {
         guard !isSample else { return nil }
         let to = (item.account ?? "").trimmingCharacters(in: .whitespaces).lowercased()
         guard !to.isEmpty else { return nil }
-        let matches = accounts.filter { $0.remoteID != nil && $0.email.lowercased() == to }
-        // An account the desktop lists as this person's own sender comes first.
-        let own = Set(liveSenders.filter { $0.via == .emailTab }.compactMap(\.remoteID))
-        return matches.first(where: { own.contains($0.remoteID ?? "") }) ?? matches.first
+        let matches = replyMatches(to)
+        // More than one Email tab account has this address (an admin also sees accounts other people added):
+        // which one it came to is not known, so none of them sends. Never pick one.
+        guard matches.count == 1 else { return nil }
+        return matches.first
+    }
+
+    /// The Email tab accounts with this address that the desktop can send from.
+    private func replyMatches(_ address: String) -> [MailAccount] {
+        let to = address.trimmingCharacters(in: .whitespaces).lowercased()
+        return accounts.filter { $0.remoteID != nil && $0.email.lowercased() == to }
     }
 
     /// The reply account as a sender, for the draft's From line.
@@ -425,6 +477,9 @@ extension MailStore {
     func replyOffLine(for item: MailItem) -> String {
         let to = (item.account ?? "").trimmingCharacters(in: .whitespaces)
         if to.isEmpty { return "Kairos does not know which address this came to. Reply from your desktop." }
+        if !isSample && replyMatches(to).count > 1 {
+            return "More than one account on your desktop uses \(to), so this iPhone cannot tell which to send from. Reply from your desktop."
+        }
         return "This came to \(to), which cannot send from this iPhone. Reply from your desktop."
     }
 
@@ -469,8 +524,12 @@ extension MailStore {
                 writeSerial += 1
                 drafts[draft.itemID] = nil
                 unconfirmedSends[draft.itemID] = nil
+                restoredHolds.remove(draft.itemID)
+                savedHolds[Self.hashed(draft.itemID)] = nil
                 sentIDs.insert(draft.itemID)
             }
+            // Confirmed: no hold stays saved for it, even when the account changed meanwhile.
+            Self.writeHold(draft.itemID, at: nil, account: account)
             return .sent(sender.email)
         } catch {
             Connection.shared.note(error)
@@ -492,11 +551,15 @@ extension MailStore {
                              said: String?) async -> MailSendOutcome {
         let lead = "The phone could not confirm this was sent."
         let tail = said.map { " Your desktop said: \($0)" } ?? ""
+        // Saved first, so the hold survives the app being closed, even if the account changed meanwhile.
+        Self.writeHold(draft.itemID, at: started, account: account)
         guard stillLive(account) else {
             return .unknown(lead + " Check your Sent folder before sending again." + tail)
         }
         writeSerial += 1
         unconfirmedSends[draft.itemID] = started
+        restoredHolds.remove(draft.itemID)
+        savedHolds[Self.hashed(draft.itemID)] = started
         drafts[draft.itemID] = draft
         let found = await lookInSent(draft, sender: sender, after: started)
         switch found {
@@ -534,6 +597,83 @@ extension MailStore {
                   let when = MailWire.date(row.date) else { return false }
             return when >= started.addingTimeInterval(-60)
         }
+    }
+
+    // MARK: Holds kept across launches
+
+    /// A send the desktop never confirmed keeps its hold when the app is closed. Saved per desktop and account,
+    /// each as a one-way hash of the message id with the time of the attempt. Nothing else: no body,
+    /// no recipients, no subject (the id itself holds the subject and sender, so only its hash is kept).
+    private static let holdsKey = "mailUnconfirmedSends"
+    private static let holdLife: TimeInterval = 7 * 24 * 60 * 60
+
+    private static func hashed(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func readAllHolds() -> [String: [String: Double]] {
+        UserDefaults.standard.dictionary(forKey: holdsKey) as? [String: [String: Double]] ?? [:]
+    }
+
+    private static func writeAllHolds(_ all: [String: [String: Double]]) {
+        if all.isEmpty {
+            UserDefaults.standard.removeObject(forKey: holdsKey)
+        } else {
+            UserDefaults.standard.set(all, forKey: holdsKey)
+        }
+    }
+
+    /// Save (a time) or clear (nil) one message's hold under one desktop and account.
+    private static func writeHold(_ itemID: String, at when: Date?, account: String) {
+        guard account != "sample" else { return }
+        var all = readAllHolds()
+        let slot = hashed(account)
+        var marks = all[slot] ?? [:]
+        marks[hashed(itemID)] = when?.timeIntervalSince1970
+        all[slot] = marks.isEmpty ? nil : marks
+        writeAllHolds(all)
+    }
+
+    private static func forgetAllHolds() {
+        UserDefaults.standard.removeObject(forKey: holdsKey)
+    }
+
+    /// On launch and on pairing: this account's saved holds, with anything older than 7 days dropped everywhere.
+    private func loadHolds() {
+        savedHolds = [:]
+        restoredHolds = []
+        guard liveAccount != "sample" else { return }
+        let cutoff = Date().addingTimeInterval(-Self.holdLife).timeIntervalSince1970
+        var all = Self.readAllHolds()
+        for (slot, marks) in all {
+            let fresh = marks.filter { $0.value > cutoff }
+            all[slot] = fresh.isEmpty ? nil : fresh
+        }
+        Self.writeAllHolds(all)
+        savedHolds = (all[Self.hashed(liveAccount)] ?? [:]).mapValues { Date(timeIntervalSince1970: $0) }
+    }
+
+    /// After a triage read: a hold goes when its message is no longer on the list, or after 7 days.
+    private func pruneHolds() {
+        let cutoff = Date().addingTimeInterval(-Self.holdLife)
+        for (id, when) in unconfirmedSends where when <= cutoff {
+            unconfirmedSends[id] = nil
+            restoredHolds.remove(id)
+        }
+        let listed = Set(items.map { Self.hashed($0.id) })
+        let kept = savedHolds.filter { listed.contains($0.key) && $0.value > cutoff }
+        guard kept != savedHolds else { return }
+        savedHolds = kept
+        var all = Self.readAllHolds()
+        all[Self.hashed(liveAccount)] = kept.isEmpty ? nil : kept.mapValues(\.timeIntervalSince1970)
+        Self.writeAllHolds(all)
+    }
+
+    /// The person tapped "I have checked Sent": the saved hold goes. This session still warns in the confirm.
+    func checkedSent(_ itemID: String) {
+        guard !isSample else { return }
+        savedHolds[Self.hashed(itemID)] = nil
+        Self.writeHold(itemID, at: nil, account: liveAccount)
     }
 }
 

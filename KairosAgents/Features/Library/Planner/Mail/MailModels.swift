@@ -212,6 +212,10 @@ final class MailStore {
     var sentIDs: Set<String> = []
     /// Replies whose send got no answer, with when they were sent. Check Sent before sending again.
     var unconfirmedSends: [String: Date] = [:]
+    /// Holds that came back from a save after the app was closed. The typed reply did not survive.
+    var restoredHolds: Set<String> = []
+    /// This account's saved holds: a hash of the message id with when the send was tried, nothing else.
+    var savedHolds: [String: Date] = [:]
     /// An account is being added or removed: the accounts sheet holds still until it is known.
     var accountBusy = false
     /// When a triage run last went without an answer. The desktop may still be on it, so a new run waits.

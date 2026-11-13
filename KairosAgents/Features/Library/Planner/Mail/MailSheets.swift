@@ -203,6 +203,7 @@ struct MailDraftSheet: View {
                             Haptics.tap()
                             problem = nil
                             heldForCheck = false
+                            store.checkedSent(item.id)
                             swipeKey += 1
                         }
                         .padding(.top, 14)
@@ -244,6 +245,10 @@ struct MailDraftSheet: View {
         .animation(Motion.snappy, value: sending)
         .plannerNotice($notice)
         .interactiveDismissDisabled(sending)
+        .onChange(of: store.unconfirmedSends[item.id]) { _, now in
+            // The hold follows the store, so a sheet opened or rebuilt while a send was out still holds.
+            if !store.isSample && now != nil { heldForCheck = true }
+        }
         .onChange(of: confirming) {
             // Closed without Send (a tap outside): the swipe comes back.
             if !confirming && !sending && sentFrom == nil { swipeKey += 1 }
@@ -317,6 +322,10 @@ struct MailDraftSheet: View {
 
     private var unconfirmedLine: String? {
         guard problem == nil, let when = store.unconfirmedSends[item.id] else { return nil }
+        if store.restoredHolds.contains(item.id) {
+            // Saved from before the app closed: the typed reply is gone, so this speaks of the attempt only.
+            return "You tried to reply to this earlier and your desktop did not confirm it. Check your Sent folder before replying again."
+        }
         let time = when.formatted(date: .omitted, time: .shortened)
         return "A send of this reply at \(time) could not be confirmed. Check Sent in your mail app before sending it again."
     }
