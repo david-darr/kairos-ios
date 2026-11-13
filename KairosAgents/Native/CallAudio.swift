@@ -307,7 +307,9 @@ nonisolated enum CallAudioEvent: Sendable {
     /// Another app or a phone call took the audio.
     case interrupted
     case resumed
-    /// The audio could not run. One plain sentence.
+    /// Something about this call's audio the person should know; the call goes on. One plain sentence.
+    case notice(String)
+    /// The audio could not run, and the call cannot go on. One plain sentence.
     case failed(String)
 }
 
@@ -353,6 +355,18 @@ nonisolated final class CallAudio: @unchecked Sendable {
     private var built = false
     private var running = false
     private var closed = false
+    /// CallKit took the audio session (didDeactivate); only `start()` (its didActivate) brings the engine back.
+    private var suspended = false
+    /// An interruption stopped the engine; its end may bring it back.
+    private var interrupted = false
+    /// The engine stopped itself (a configuration change) and is being started again.
+    private var restarting = false
+    /// Changes whenever the engine is stopped on purpose, so a restart still waiting is dropped.
+    private var restartToken = 0
+    /// When the engine stopped itself lately: more than three in ten seconds and the call audio gives up.
+    private var restarts: [Date] = []
+    /// The bot's voice is paused because the person may be about to talk over it (barge-in's duck).
+    private var ducked = false
     private var observers: [NSObjectProtocol] = []
     private var inputConverter: AVAudioConverter?
     private var capturing = false
@@ -383,6 +397,9 @@ nonisolated final class CallAudio: @unchecked Sendable {
     func start() async throws {
         try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
             queue.async {
+                self.suspended = false
+                self.interrupted = false
+                self.restarting = false
                 do {
                     try self.startOnQueue()
                     done.resume()
@@ -395,7 +412,10 @@ nonisolated final class CallAudio: @unchecked Sendable {
 
     /// The audio session was taken away (CallKit's didDeactivate): stop the engine, keep everything else.
     func suspend() {
-        queue.async { self.halt() }
+        queue.async {
+            self.suspended = true
+            self.halt()
+        }
     }
 
     /// The call is over: stop everything, remove the taps and observers, release the session if this owns it.
@@ -433,7 +453,11 @@ nonisolated final class CallAudio: @unchecked Sendable {
             // Voice processing (echo cancellation) can only change while the engine is stopped, and turning it on
             // for the input turns it on for the output too. It comes first, before any connection or tap.
             if !engine.inputNode.isVoiceProcessingEnabled {
-                try? engine.inputNode.setVoiceProcessingEnabled(true)
+                do {
+                    try engine.inputNode.setVoiceProcessingEnabled(true)
+                } catch {
+                    continuation.yield(.notice("Echo cancellation could not start, so the bot may hear itself. Headphones help."))
+                }
             }
             engine.attach(player)
             engine.connect(player, to: engine.mainMixerNode, format: playFormat)
@@ -454,6 +478,8 @@ nonisolated final class CallAudio: @unchecked Sendable {
 
     /// Stop the engine and remove the taps. Whatever was queued to play is dropped.
     private func halt() {
+        restartToken += 1
+        restarting = false
         guard running || built else { return }
         if running {
             player.stop()
@@ -465,6 +491,7 @@ nonisolated final class CallAudio: @unchecked Sendable {
         queuedSeconds = 0
         converters = [:]
         replyEnding = false
+        ducked = false
     }
 
     private func installTaps() throws {
@@ -513,47 +540,83 @@ nonisolated final class CallAudio: @unchecked Sendable {
         })
     }
 
-    /// The engine stopped itself (a new route, a new sample rate): drop what was queued, take the new formats, start again.
+    /// The engine stopped itself (a new route, a new sample rate): drop what was queued, take the new formats, start
+    /// again. The engine posts this only after it has stopped; one still running needs nothing. A few tries a little
+    /// apart, and more than three restarts in ten seconds, and the call is told its audio failed.
     private func rebuild() {
-        guard running, !closed else { return }
+        guard running, !closed, !engine.isRunning else { return }
         if outstanding > 0 { continuation.yield(.playbackLost(generation: generation)) }
         player.stop()
         engine.stop()
+        removeTaps()
         running = false
         outstanding = 0
         queuedSeconds = 0
         converters = [:]
         replyEnding = false
+        ducked = false
+        let now = Date()
+        restarts = restarts.filter { now.timeIntervalSince($0) < 10 }
+        restarts.append(now)
+        guard restarts.count <= 3 else {
+            continuation.yield(.failed("The call audio kept stopping. End the call and try again."))
+            return
+        }
+        restarting = true
+        restart(attempt: 1, token: restartToken)
+    }
+
+    private func restart(attempt: Int, token: Int) {
+        guard token == restartToken, restarting, !running, !closed else { return }
         do {
             try startOnQueue()
+            restarting = false
         } catch {
-            continuation.yield(.failed("The call audio stopped. End the call and try again."))
+            guard attempt < 3 else {
+                restarting = false
+                continuation.yield(.failed("The call audio stopped. End the call and try again."))
+                return
+            }
+            queue.asyncAfter(deadline: .now() + 0.3) { self.restart(attempt: attempt + 1, token: token) }
         }
     }
 
-    /// Headphones or Bluetooth came or went: a new microphone format needs a new tap.
-    private func rebuildIfInputChanged() {
+    /// Headphones or Bluetooth came or went: a new microphone format needs a new tap. A format of no rate or no
+    /// channels can be passing; it is tried again a little later, and only then is the call told there is no microphone.
+    private func rebuildIfInputChanged(attempt: Int = 1, token: Int? = nil) {
         guard running, !closed else { return }
-        let format = engine.inputNode.outputFormat(forBus: 0)
-        guard let current = inputConverter?.inputFormat, current != format else { return }
+        if let token, token != restartToken { return }
+        if attempt == 1 {
+            let format = engine.inputNode.outputFormat(forBus: 0)
+            guard let current = inputConverter?.inputFormat, current != format else { return }
+        }
         do {
             try installTaps()
         } catch {
-            continuation.yield(.failed("No microphone is available for the call."))
+            guard attempt < 3 else {
+                continuation.yield(.failed("No microphone is available for the call."))
+                return
+            }
+            let mine = restartToken
+            queue.asyncAfter(deadline: .now() + 0.3) { self.rebuildIfInputChanged(attempt: attempt + 1, token: mine) }
         }
     }
 
+    /// Another app or a phone call took the audio. When it gives it back with "should resume", the engine starts
+    /// again, for a CallKit call too (CallKit did not take the session, so no didActivate follows; the engine never
+    /// activates a CallKit session itself). A session CallKit deactivated waits for its didActivate instead.
     private func interruption(_ type: AVAudioSession.InterruptionType?, resume: Bool) {
         guard !closed else { return }
         switch type {
         case .began?:
-            guard running else { return }
+            guard running || restarting else { return }
             if outstanding > 0 { continuation.yield(.playbackLost(generation: generation)) }
             halt()
+            interrupted = true
             continuation.yield(.interrupted)
         case .ended?:
-            // A CallKit call comes back through didActivate instead; only the app's own session resumes here.
-            guard ownsSession, resume, !running else { return }
+            guard interrupted, resume, !suspended, !running else { return }
+            interrupted = false
             do {
                 try startOnQueue()
                 continuation.yield(.resumed)
@@ -580,7 +643,15 @@ nonisolated final class CallAudio: @unchecked Sendable {
                 self.barge = watching
                 if watching { self.bargeIn.reset(ambient: self.segmenter.noise) }
             }
+            // No longer watching for barge-in (muted, held, the reply over): a voice paused by the duck carries on,
+            // since no "clear" can come for it any more.
+            if !watching, self.ducked { self.undock() }
         }
+    }
+
+    private func undock() {
+        ducked = false
+        if running, engine.isRunning { player.play() }
     }
 
     func setSmartTurn(_ value: Bool) {
@@ -629,8 +700,17 @@ nonisolated final class CallAudio: @unchecked Sendable {
             let result = bargeIn.push(samples)
             level = result.rms
             switch result.event {
-            case .duck?: continuation.yield(.bargeDuck)
-            case .clear?: continuation.yield(.bargeClear)
+            case .duck?:
+                // Hold the bot's voice: the person may be about to talk. Paused here, on the queue, so a mute or a
+                // reply ending in between can never leave it paused (setCapture lets it go).
+                if running {
+                    player.pause()
+                    ducked = true
+                }
+                continuation.yield(.bargeDuck)
+            case .clear?:
+                if ducked { undock() }
+                continuation.yield(.bargeClear)
             case .barge(let parts, let voiced)?:
                 barge = false
                 continuation.yield(.bargeIn)
@@ -715,19 +795,11 @@ nonisolated final class CallAudio: @unchecked Sendable {
             self.converters = [:]
             self.began = []
             self.replyEnding = false
+            self.ducked = false
             guard self.built else { return }
             self.player.stop()
             if self.running, self.engine.isRunning { self.player.play() }
         }
-    }
-
-    /// Hold the bot's voice (the person may be about to talk), or let it carry on.
-    func pausePlayback() {
-        queue.async { if self.running { self.player.pause() } }
-    }
-
-    func resumePlayback() {
-        queue.async { if self.running, self.engine.isRunning { self.player.play() } }
     }
 
     private func finishSentence(_ sentence: Int, generation: Int, now: Bool) {
@@ -780,7 +852,7 @@ nonisolated final class CallAudio: @unchecked Sendable {
             guard let self else { return }
             self.queue.async { self.played(mine, sentence: sentence, first: first, seconds: seconds) }
         }
-        if engine.isRunning, !player.isPlaying { player.play() }
+        if engine.isRunning, !player.isPlaying, !ducked { player.play() }
     }
 
     private func played(_ mine: Int, sentence: Int, first: Bool, seconds: Double) {

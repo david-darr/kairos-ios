@@ -100,6 +100,12 @@ final class CallSession {
     @ObservationIgnored private var voice: CallVoiceChoice = .device
     @ObservationIgnored private var smartTurn = false
     @ObservationIgnored private var turnFailures = 0
+    /// Transcriptions and turns that failed in a row; three and the call cannot go on.
+    @ObservationIgnored private var failureStreak = 0
+    /// The error line a failed transcription or turn put up, cleared by the next one that works.
+    @ObservationIgnored private var errorLine: String?
+    /// A reply was started and has not finished playing (or was cut): stopping it now means telling the desktop.
+    @ObservationIgnored private var replyPending = false
     @ObservationIgnored private var idleMinutes = 5
     @ObservationIgnored private var lastActivity = Date()
     @ObservationIgnored private var lastContact = Date()
@@ -191,19 +197,15 @@ final class CallSession {
         openedAt = nil
     }
 
-    /// CallKit took the audio session away (didDeactivate): stop the engine and wait for it to come back.
+    /// CallKit took the audio session away (didDeactivate): stop the engine and wait for it to come back. The engine is
+    /// suspended even while a start is still on its way (the suspend runs after it on the engine's queue).
     func audioPaused() {
         guard callID != nil else { return }
         audioAllowed = false
-        guard let audio, audioRunning else { return }
-        audioRunning = false
+        guard let audio else { return }
         audio.suspend()
-        if active {
-            stopPlayback()
-            mode = .paused
-            applyMicrophone()
-            updatePhase()
-        }
+        audioRunning = false
+        hold()
     }
 
     /// Mute stops capture and stops sending. It comes from CallKit's mute action, which the call screen's key asks for.
@@ -211,7 +213,9 @@ final class CallSession {
         muted = value
         guard active else { return }
         if value {
+            // Capture stops and the segmenter forgets the half-said sentence, so no end of it will ever come.
             speechActive = false
+            utterance = (false, false)
             level = 0
         }
         applyMicrophone()
@@ -293,23 +297,31 @@ final class CallSession {
             guard current(mine) else { return }
             // The ring's reason becomes the bot's first words. A ring the desktop no longer offers still gets a call.
             let ring = info.ringID.flatMap { Self.isRingID($0) ? $0 : nil }
-            var opening = ring != nil
-            let record: CallRecordDTO
-            do {
-                record = try await client.callStart(parentID: parent, agentID: botID, endpointID: conversation.endpoint,
-                                                    model: conversation.model, ringID: ring)
-            } catch APIError.server(let code, _) where code == 409 && ring != nil {
-                guard current(mine) else { return }
-                record = try await client.callStart(parentID: parent, agentID: botID, endpointID: conversation.endpoint,
-                                                    model: conversation.model, ringID: nil)
-                opening = false
+            let talkEndpoint = conversation.endpoint, talkModel = conversation.model
+            // Its own task, not cancelled with the setup: a record the desktop opened always comes back here, so a
+            // call hung up meanwhile still ends it below.
+            let opened = Task { () async throws -> (CallRecordDTO, Bool) in
+                do {
+                    let made = try await client.callStart(parentID: parent, agentID: botID, endpointID: talkEndpoint,
+                                                          model: talkModel, ringID: ring)
+                    return (made, ring != nil)
+                } catch APIError.server(let code, _) where code == 409 && ring != nil {
+                    let made = try await client.callStart(parentID: parent, agentID: botID, endpointID: talkEndpoint,
+                                                          model: talkModel, ringID: nil)
+                    return (made, false)
+                }
             }
+            let (record, opening) = try await opened.value
             guard current(mine) else {
                 Self.endRecord(record.id, client: client)
                 return
             }
             recordID = record.id
             recordEnded = false
+            // The desktop ends a call it has not seen for 90 seconds, and loading a cold model can take that long:
+            // the keep-alive runs from here, through the preparing, as the web client's does.
+            lastContact = Date()
+            pollTask = Task { await self.keepAlive(mine) }
             try await client.callPrepare(record.id)
             guard current(mine) else { return }
             _ = try await client.speechPrepare(model: model, backend: "auto")
@@ -326,17 +338,16 @@ final class CallSession {
             muted = CallCenter.shared.muted
             if audioAllowed {
                 try await audio.start()
-                audioRunning = true
+                // CallKit may have taken the audio while it started (didDeactivate suspends it right after).
+                audioRunning = audioAllowed
             }
             guard current(mine) else { return }
             audio.setSmartTurn(smartTurn)
             active = true
             openedAt = Date()
             lastActivity = Date()
-            lastContact = Date()
-            pollTask = Task { await self.keepAlive(mine) }
             watchTask = Task { await self.watch(mine) }
-            if audioRunning { listen() } else { mode = .paused; updatePhase() }
+            listen()
             if opening {
                 workUpdates.append("ring-opening")
                 scheduleFlush()
@@ -369,13 +380,16 @@ final class CallSession {
         value.count == 32 && value.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
     }
 
+    /// CallKit gave the audio back. Also while the set-up's own start is still on its way (a deactivate and an
+    /// activate in between): this start then runs after that suspend, so the engine ends up running.
     private func resumeAudio() {
-        guard let audio, active, !audioRunning, audioAllowed else { return }
+        guard let audio, !audioRunning, audioAllowed else { return }
         let mine = epoch
         Task {
             do {
                 try await audio.start()
-                guard self.current(mine) else { return }
+                // CallKit took the audio again while it started: its didDeactivate already suspended the engine.
+                guard self.current(mine), self.audioAllowed else { return }
                 self.audioRunning = true
                 if self.line == "Paused. Another call has the audio." { self.line = nil }
                 self.listen()
@@ -400,6 +414,32 @@ final class CallSession {
             guard !Task.isCancelled, self.callID == id else { return }
             CallCenter.shared.endFromCall(failed: true)
         }
+    }
+
+    /// A transcription or a turn failed: say so in the error line. Three in a row and the call cannot go on.
+    private func stepFailed(_ message: String) {
+        failureStreak += 1
+        if failureStreak >= 3 {
+            fail(message)
+            return
+        }
+        line = message
+        errorLine = message
+    }
+
+    /// A transcription or a turn worked: the streak is over, and its error line goes.
+    private func stepWorked() {
+        failureStreak = 0
+        if let errorLine, line == errorLine { line = nil }
+        errorLine = nil
+    }
+
+    /// At most `limit` Unicode code points: the desktop counts a text's length that way (pydantic's max_length),
+    /// not in Swift's characters, so an emoji or an accent can never push a text past its limit.
+    static func clip(_ text: String, _ limit: Int) -> String {
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: text.unicodeScalars.prefix(limit))
+        return String(scalars)
     }
 
     /// The desktop ended the call (or no longer has it).
@@ -435,6 +475,7 @@ final class CallSession {
         audioQueue = []; texts = []; workUpdates = []; announced = []; deferredReply = nil
         speechActive = false; transcribing = false; dispatching = false; voiceBusy = false; flushQueued = false
         endWhenQuiet = false; openingRunning = false; turnFailures = 0; revision += 1
+        failureStreak = 0; errorLine = nil; replyPending = false
         utterance = (false, false)
         mode = .preparing
     }
@@ -460,16 +501,19 @@ final class CallSession {
 
     // MARK: Keeping the call alive
 
-    /// The web client's poll: every 2 seconds, which is also the desktop's keep-alive (a call unseen for 90 seconds
-    /// is ended there). Finished work is announced, and a call the desktop ended ends here.
+    /// The web client's poll: at once, then every 2 seconds, from the moment the record exists (through the preparing),
+    /// which is also the desktop's keep-alive (a call unseen for 90 seconds is ended there). Finished work is
+    /// announced, and a call the desktop ended ends here. One slow or failed poll is not a lost desktop: the call ends
+    /// only after two or more misses in a row and 20 seconds without an answer.
     private func keepAlive(_ mine: Int) async {
+        var misses = 0
         while current(mine) {
-            try? await Task.sleep(for: .seconds(2))
-            guard current(mine), let client, let id = recordID else { return }
+            guard let client, let id = recordID else { return }
             do {
                 let record = try await client.callStatus(id)
                 guard current(mine) else { return }
                 lastContact = Date()
+                misses = 0
                 if record.ended == true {
                     endedByDesktop()
                     return
@@ -490,15 +534,17 @@ final class CallSession {
                 return
             } catch {
                 guard current(mine) else { return }
-                if Date().timeIntervalSince(lastContact) > 10 {
+                misses += 1
+                if misses >= 2, Date().timeIntervalSince(lastContact) >= 20 {
                     fail("Lost the connection to your desktop.")
                     return
                 }
             }
-            if Date().timeIntervalSince(lastActivity) > Double(idleMinutes) * 60, !voiceBusy, !speechActive {
+            if active, Date().timeIntervalSince(lastActivity) > Double(idleMinutes) * 60, !voiceBusy, !speechActive {
                 hangUp()
                 return
             }
+            try? await Task.sleep(for: .seconds(2))
         }
     }
 
@@ -517,7 +563,7 @@ final class CallSession {
                         if let task = event.taskId { announceWork(task) }
                     case "typed":
                         if active, let text = event.text, !text.isEmpty {
-                            texts.append(String(text.prefix(2000)))
+                            texts.append(Self.clip(text, 2000))
                             scheduleFlush()
                         }
                     case "end":
@@ -569,10 +615,9 @@ final class CallSession {
             segmentEnded(wav)
         case .askTurn(let id, let wav):
             askTurn(id, wav: wav)
-        case .bargeDuck:
-            if active, mode == .speaking { audio?.pausePlayback() }
-        case .bargeClear:
-            audio?.resumePlayback()
+        case .bargeDuck, .bargeClear:
+            // The engine pauses and resumes the bot's voice itself, on its own queue.
+            break
         case .bargeIn:
             bargeIn()
         case .sentenceBegan(let generation, let index):
@@ -595,20 +640,41 @@ final class CallSession {
         case .interrupted:
             audioRunning = false
             line = "Paused. Another call has the audio."
-            if active {
-                stopPlayback()
-                mode = .paused
-                applyMicrophone()
-                updatePhase()
-            }
+            hold()
         case .resumed:
+            guard audioAllowed else { return }
             audioRunning = true
             if line == "Paused. Another call has the audio." { line = nil }
             listen()
             scheduleFlush()
-        case .failed(let message):
+        case .notice(let message):
             line = message
+        case .failed(let message):
+            // The engine is stopped or has no microphone: the call cannot go on, so it ends, honestly.
+            fail(message)
         }
+    }
+
+    /// The call is on hold (CallKit took the audio, or another app interrupted it): nothing is captured, no turn
+    /// runs, and the screen says "On hold". A reply on its way is stopped and the desktop is told how much of it was
+    /// heard. What was said and not yet sent waits for the audio to come back.
+    private func hold() {
+        // Capture stops and the segmenter forgets the half-said sentence, so no end of it will ever come.
+        speechActive = false
+        utterance = (false, false)
+        guard active else { return }
+        if voiceBusy || replyPending {
+            sendInterrupt(spoken: false, heard: heardNow())
+            voiceBusy = false
+            openingRunning = false
+            revision += 1
+            // Utterances already cut still count; only the reply is dropped.
+            let next = revision
+            audioQueue = audioQueue.map { Utterance(wav: $0.wav, revision: next, during: false, asked: false) }
+            turnTask?.cancel()
+        }
+        stopPlayback()
+        setMode(.paused)
     }
 
     private func setMode(_ next: Mode) {
@@ -638,9 +704,10 @@ final class CallSession {
         }
     }
 
+    /// Back to listening, unless the call is on hold (no audio): then it stays paused and says so.
     private func listen() {
         guard active else { return }
-        setMode(.listening)
+        setMode(audioRunning ? .listening : .paused)
     }
 
     // MARK: Your turn
@@ -673,16 +740,20 @@ final class CallSession {
         while active, current(mine), !audioQueue.isEmpty, let client {
             let item = audioQueue.removeFirst()
             if item.revision != revision { continue }
-            if !voiceBusy { setMode(.transcribing) }
+            if !voiceBusy, audioRunning { setMode(.transcribing) }
             do {
                 let heard = try await client.speechTranscribe(wav: item.wav, model: speechModel, backend: "auto")
                 guard active, current(mine), revision == item.revision else { continue }
+                stepWorked()
                 let text = (heard.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 // A nod over the bot's voice ("mm-hm") is not a turn: nothing is sent, nothing interrupts.
                 if !text.isEmpty, item.during, Backchannel.isBackchannel(text, asked: item.asked) { continue }
                 if !text.isEmpty {
                     texts.append(text)
                     if mode == .speaking {
+                        // A reply already fully sent is being cut off in the person's ears: the desktop keeps only
+                        // what was heard. One still streaming is held back instead (runTurn defers it).
+                        if !voiceBusy { sendInterrupt(spoken: true, heard: heardNow()) }
                         stopPlayback()
                         listen()
                     }
@@ -690,7 +761,7 @@ final class CallSession {
             } catch is CancellationError {
                 return
             } catch {
-                if active, current(mine), item.revision == revision { line = APIError.plain(error) }
+                if active, current(mine), item.revision == revision { stepFailed(APIError.plain(error)) }
             }
         }
         guard current(mine) else { return }
@@ -777,7 +848,8 @@ final class CallSession {
 
     /// Send what was said (or a finished piece of work, or the ring's opening) once nothing else is going on.
     private func flushText() {
-        guard active else { return }
+        // On hold nothing is sent: it waits until the audio is back.
+        guard active, audioRunning else { return }
         if texts.isEmpty, workUpdates.isEmpty, deferredReply == nil, !transcribing, audioQueue.isEmpty { return }
         if speechActive || transcribing || !audioQueue.isEmpty || dispatching || voiceBusy || mode == .speaking { return }
         if texts.isEmpty, workUpdates.isEmpty {
@@ -787,7 +859,7 @@ final class CallSession {
             }
             return
         }
-        let text = String(texts.joined(separator: " ").prefix(turnLimit))
+        let text = Self.clip(texts.joined(separator: " "), turnLimit)
         let work = text.isEmpty && !workUpdates.isEmpty ? workUpdates.removeFirst() : nil
         texts = []
         guard !text.isEmpty || work != nil else { return }
@@ -838,6 +910,7 @@ final class CallSession {
             }
             if active, current(mine), revision == turn {
                 voiceBusy = false
+                stepWorked()
                 if deferred {
                     deferredReply = output
                     openingRunning = false
@@ -848,11 +921,11 @@ final class CallSession {
             }
         } catch {
             if active, current(mine), revision == turn {
-                if !(error is CancellationError) { line = APIError.plain(error) }
                 voiceBusy = false
                 openingRunning = false
                 stopPlayback()
                 listen()
+                if !(error is CancellationError) { stepFailed(APIError.plain(error)) }
             }
         }
         guard current(mine) else { return }
@@ -876,6 +949,7 @@ final class CallSession {
     private func replyEnded() {
         guard active else { return }
         openingRunning = false
+        replyPending = false
         if mode == .speaking || (mode == .thinking && !voiceBusy) {
             if voiceBusy { setMode(.thinking) } else { listen() }
             scheduleFlush()
@@ -890,6 +964,7 @@ final class CallSession {
     private func resetSpeech() {
         cancelSpeech()
         lastHeard = []
+        replyPending = true
     }
 
     /// Stop the voice: the playing sentence, the queued ones and their downloads.
@@ -900,6 +975,7 @@ final class CallSession {
 
     private func cancelSpeech() {
         if !sentences.isEmpty { lastHeard = heardNow() }
+        replyPending = false
         playGeneration += 1
         audio?.cancelPlayback(generation: playGeneration)
         for task in fetches.values { task.cancel() }
@@ -944,7 +1020,7 @@ final class CallSession {
     private func enqueueSentence(_ raw: String) {
         let text = SpokenText.clean(raw)
         guard !text.isEmpty, sentences.count < 200 else { return }
-        sentences.append(Sentence(index: sentences.count, raw: raw, text: String(text.prefix(1600))))
+        sentences.append(Sentence(index: sentences.count, raw: raw, text: Self.clip(text, 1600)))
         launch()
     }
 
