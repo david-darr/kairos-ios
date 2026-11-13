@@ -38,8 +38,9 @@ nonisolated enum Keychain {
         item[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(item as CFDictionary, &result)
-        if status == errSecItemNotFound { return .missing }
-        guard status == errSecSuccess else { return .unreadable }
+        // Only a locked phone means "not readable yet". Any other failure is treated as no token, as before.
+        if status == errSecInteractionNotAllowed { return .unreadable }
+        guard status == errSecSuccess else { return .missing }
         guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else { return .missing }
         return .found(value)
     }
