@@ -51,6 +51,8 @@ struct MascotPicker: View {
     @Binding var accessory: MascotAccessory
     var previewSize: CGFloat = 150
     var showPreview = true
+    /// The shapes offered. A paired bot can only be stored in the desktop's three.
+    var shapes: [MascotShape] = MascotShape.allCases
 
     private let shapeColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
     private let accessoryColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
@@ -100,7 +102,7 @@ struct MascotPicker: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(text: "Shape")
                 LazyVGrid(columns: shapeColumns, spacing: 8) {
-                    ForEach(MascotShape.allCases, id: \.self) { option in
+                    ForEach(shapes, id: \.self) { option in
                         tile(on: option == shape, label: BotLook.name(option)) {
                             shape = option
                         } content: {
@@ -158,8 +160,17 @@ struct BotLookScreen: View {
     @State private var shape: MascotShape = .round
     @State private var accessory: MascotAccessory = .none
     @State private var loaded = false
+    var live = BotsSettingsLive.shared
 
     var body: some View {
+        if live.active {
+            BotSetLookScreen(botID: botID)
+        } else {
+            sample
+        }
+    }
+
+    @ViewBuilder private var sample: some View {
         let bot = store.bot(botID)
         BotsPage("Look and name") {
             if bot.isKip {
@@ -224,5 +235,185 @@ struct BotLookScreen: View {
         store.botBinding(botID).wrappedValue = bot
         Haptics.success()
         store.say("Look saved")
+    }
+}
+
+/// Settings > Look and name while paired: name, job and a look the desktop can store (its three shapes, the six
+/// colours and the six accessories). A form over the bot record (BotSetForm): it remembers the desktop values and
+/// revision it was filled from and sends only what the person changed since, with that revision. Kip stays locked.
+private struct BotSetLookScreen: View {
+    let botID: String
+    let store = BotsStore.shared
+    var live = BotsSettingsLive.shared
+    @State private var name = ""
+    @State private var job = ""
+    @State private var colorHex: UInt32 = Palette.botPowder
+    @State private var shape: MascotShape = .round
+    @State private var accessory: MascotAccessory = .none
+    @State private var form: BotSetForm?
+    @State private var saving = false
+
+    private static let nameLimit = 100
+    private static let jobLimit = 200
+
+    var body: some View {
+        let agent = live.record(botID)
+        BotsPage("Look and name", live: true) {
+            BotSetUnsureNote(botID: botID)
+            BotsLoadNote(state: live.shown(live.recordLoad[botID])) {
+                Task {
+                    await live.loadRecord(botID)
+                    sync()
+                }
+            }
+            if let agent, agent.isFrontDesk {
+                let bot = store.bot(botID)
+                VStack(spacing: 14) {
+                    BotFace(bot: bot, size: 150, blinks: true)
+                    Text(bot.name).font(KFont.display(36)).foregroundStyle(Palette.ink)
+                    HintLine(text: "Kip always looks like Kairos's own Kip. Its name and look cannot be changed, so you always know who answers first.", symbol: "lock")
+                        .padding(14)
+                        .kCard(radius: 18)
+                }
+                .frame(maxWidth: .infinity)
+            } else if agent != nil, let form {
+                let edited = form.edited(values())
+                let cleanName = BotSetForm.name(name)
+                let blank = cleanName.isEmpty
+                // Counted as the desktop counts: code points, after it tidies the text.
+                let nameTooLong = BotSetForm.length(cleanName) > Self.nameLimit
+                let jobTooLong = edited.contains("role") && BotSetForm.length(BotSetForm.job(job)) > Self.jobLimit
+                FieldCard(title: "Name", text: $name, placeholder: "e.g. Juniper", limit: Self.nameLimit)
+                if blank {
+                    HintLine(text: "A bot needs a name.", symbol: "exclamationmark.circle", color: Palette.danger)
+                } else if nameTooLong {
+                    HintLine(text: "A name is at most 100 characters on your desktop.", symbol: "exclamationmark.circle", color: Palette.danger)
+                }
+                FieldCard(title: "Job", text: $job, placeholder: "What is this bot for?", limit: Self.jobLimit)
+                if jobTooLong {
+                    HintLine(text: "A job is at most 200 characters on your desktop.", symbol: "exclamationmark.circle", color: Palette.danger)
+                }
+                MascotPicker(colorHex: $colorHex, shape: $shape, accessory: $accessory, shapes: BotAvatarRules.shapes)
+                    .padding(16)
+                    .kCard(radius: 22)
+                let ready = !edited.isEmpty && !blank && !nameTooLong && !jobTooLong && !saving && !live.busy.contains(botID)
+                HStack(spacing: 10) {
+                    PillButton(title: "Shuffle", symbol: "shuffle", wide: true) {
+                        withAnimation(Motion.bouncy) {
+                            colorHex = BotLook.colors.randomElement()?.hex ?? Palette.botGold
+                            shape = BotAvatarRules.shapes.randomElement() ?? .round
+                            accessory = BotLook.accessories.randomElement() ?? .none
+                        }
+                    }
+                    .disabled(saving)
+                    PillButton(title: saving ? "Saving" : "Save look", symbol: "checkmark", look: .filled, wide: true) { save() }
+                        .disabled(!ready)
+                        .opacity(ready ? 1 : 0.5)
+                }
+                let clashed = form.clashed.intersection(edited)
+                if !clashed.isEmpty {
+                    HintLine(text: "Your desktop changed \(Self.list(clashed)) while you were editing. Your choice is kept here; saving puts it in place of your desktop's.", symbol: "exclamationmark.triangle", color: Palette.goldText)
+                }
+                if !edited.isEmpty {
+                    HintLine(text: "Changes are not saved yet.", symbol: "circle.dotted")
+                }
+                HintLine(text: "Your desktop keeps three shapes: round, squircle and tall.", symbol: "info.circle")
+            }
+        }
+        // Read each time the page appears and when the connection becomes ready.
+        .task(id: BotsSettingsLive.connectionKey) {
+            sync()
+            await live.loadRecord(botID)
+            sync()
+        }
+        .onChange(of: live.record(botID)) { sync() }
+        .onChange(of: live.busy.contains(botID)) { sync() }
+    }
+
+    private static func list(_ fields: Set<String>) -> String {
+        let words = ["name", "role", "avatar"].filter { fields.contains($0) }.map { BotSetWords.field($0) }
+        return words.count > 1 ? words.dropLast().joined(separator: ", ") + " and " + (words.last ?? "") : (words.first ?? "")
+    }
+
+    /// The look as one value: shape, colour and accessory. A shape the desktop cannot store shows as round.
+    private static func look(_ shape: MascotShape, _ color: UInt32, _ accessory: MascotAccessory) -> String {
+        "\(shape.rawValue)|\(String(format: "#%06X", color))|\(accessory.rawValue)"
+    }
+
+    private static func shown(_ agent: AgentDTO) -> MascotShape {
+        BotAvatarRules.shapes.contains(agent.mascotShape) ? agent.mascotShape : .round
+    }
+
+    /// The desktop's values, tidied the way the desktop tidies what it is sent.
+    private static func values(_ agent: AgentDTO) -> [String: String] {
+        ["name": BotSetForm.name(agent.name), "role": BotSetForm.job(agent.role),
+         "avatar": look(shown(agent), agent.bodyColorHex, agent.mascotAccessory)]
+    }
+
+    private func values() -> [String: String] {
+        ["name": BotSetForm.name(name), "role": BotSetForm.job(job), "avatar": Self.look(shape, colorHex, accessory)]
+    }
+
+    private func refill(_ key: String, from agent: AgentDTO) {
+        switch key {
+        case "name": name = agent.name ?? ""
+        case "role": job = agent.role ?? ""
+        case "avatar":
+            colorHex = agent.bodyColorHex
+            shape = Self.shown(agent)
+            accessory = agent.mascotAccessory
+        default: break
+        }
+    }
+
+    /// Fill the form from the desktop, or bring an open one up to the newest read: untouched fields take the
+    /// desktop's values, edited ones stay. Waits while a change is on its way.
+    private func sync(acknowledge: Bool = false) {
+        guard live.isCurrent, let agent = live.record(botID), !agent.isFrontDesk, !saving, !live.busy.contains(botID) else { return }
+        let desktop = Self.values(agent)
+        let revision = agent.revision ?? 0
+        guard var next = form, next.account == BotsSettingsLive.accountKey else {
+            for key in desktop.keys { refill(key, from: agent) }
+            form = BotSetForm(account: BotsSettingsLive.accountKey, revision: revision, values: desktop)
+            return
+        }
+        for key in next.rebase(form: values(), desktop: desktop, revision: revision, acknowledge: acknowledge) {
+            refill(key, from: agent)
+        }
+        form = next
+    }
+
+    private func save() {
+        guard let form, !saving, let agent = live.record(botID) else { return }
+        let now = values()
+        let edited = form.edited(now)
+        guard !edited.isEmpty else { return }
+        var changes: [String: Any] = [:]
+        if edited.contains("name") { changes["name"] = now["name"] }
+        if edited.contains("role") { changes["role"] = now["role"] }
+        if edited.contains("avatar") {
+            changes["avatar"] = [
+                "version": 3,
+                "character": "ajar",
+                "shape": shape.rawValue,
+                "color": String(format: "#%06X", colorHex),
+                "acc": accessory.rawValue,
+                // Not part of the form: the desktop's own, checked by the revision sent.
+                "finish": agent.avatar?.finish ?? "flat",
+            ] as [String: Any]
+        }
+        saving = true
+        Task {
+            let outcome = await live.patch(botID, changes, revision: form.revision, what: "the new look", done: "Look saved.")
+            saving = false
+            if case .changed = outcome {
+                sync(acknowledge: true)
+                store.say("This bot changed on your desktop, so nothing was saved. Your changes are kept here and the rest shows what your desktop has. Save again to use yours.")
+            } else {
+                sync()
+                if !outcome.text.isEmpty { store.say(outcome.text) }
+            }
+            if outcome.isDone { Haptics.success() }
+        }
     }
 }
