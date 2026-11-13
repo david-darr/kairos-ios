@@ -104,16 +104,16 @@ nonisolated struct Notice: Hashable, Sendable {
 
     var detail: NoticeDetail { detailOverride ?? NativeSettings.detail }
 
-    /// Who and what kind. Never the message itself.
+    /// What kind. Never the message itself, and never the sender's name: the title already says who.
     var headline: String {
         let named = detail == .hideTitles || title.isEmpty
         switch kind {
-        case .approval: return "\(botName) wants your approval"
-        case .question: return "\(botName) is waiting for your answer"
+        case .approval: return "Wants your approval"
+        case .question: return "Is waiting for your answer"
         case .replyReady: return "Your reply is ready"
-        case .workDone: return "\(botName) finished a task"
-        case .workFailed: return "A task couldn't finish"
-        case .teamUpdate: return "\(botName) sent the team's update"
+        case .workDone: return "Finished a task"
+        case .workFailed: return "Couldn't finish"
+        case .teamUpdate: return "Sent the team's update"
         case .posted: return fact.isEmpty ? "Your post is up" : "Posted to \(fact)"
         case .needsTap: return fact.isEmpty ? "A TikTok post needs your tap" : fact
         case .channelWarning: return "A channel is paused"
@@ -124,7 +124,7 @@ nonisolated struct Notice: Hashable, Sendable {
         case .morningBrief: return "Your morning brief is ready"
         case .forgeWaiting: return "Session waiting for you"
         case .usage: return "\(fact.isEmpty ? "A provider" : fact) is near its limit"
-        case .missedCall: return "Missed call from \(botName)"
+        case .missedCall: return "Missed call"
         }
     }
 

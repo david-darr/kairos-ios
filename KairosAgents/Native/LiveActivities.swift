@@ -61,14 +61,30 @@ final class LiveActivities {
         }
     }
 
-    /// End with the Done or Couldn't finish card, which stays on the Lock Screen for a while.
+    /// End with the Done or Couldn't finish card, which leaves the Lock Screen on its own: five minutes
+    /// for done or stopped, thirty for failed. The desktop's end push uses the same times.
     func finish(_ id: String, _ state: State) {
         guard let activity = activity(id) else { return }
         running[id] = nil
         tokenTasks[id]?.cancel()
         tokenTasks[id] = nil
-        let linger: TimeInterval = state.phase == .failed ? 60 * 60 : 15 * 60
+        let linger: TimeInterval = state.phase == .failed ? 30 * 60 : 5 * 60
         Task { await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(Date().addingTimeInterval(linger))) }
+    }
+
+    /// The person opened the chat or thread these activities follow (`matches` says which): they end and leave
+    /// at once, running or done. A call's activity is never one of them. Answers the ids it ended.
+    @discardableResult
+    func dismiss(where matches: (KairosActivityAttributes) -> Bool) -> [String] {
+        let found = Activity<KairosActivityAttributes>.activities.filter { $0.attributes.kind != .call && matches($0.attributes) }
+        for activity in found {
+            let id = activity.attributes.id
+            running[id] = nil
+            tokenTasks[id]?.cancel()
+            tokenTasks[id] = nil
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+        }
+        return found.map(\.attributes.id)
     }
 
     func markStopped(_ id: String) async {

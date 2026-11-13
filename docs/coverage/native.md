@@ -9,8 +9,8 @@ extension and in the app's gallery (`-kDebugView native.<name>`, list in `Tools/
 | Function | Notification | Live Activity and Dynamic Island | Widget |
 |---|---|---|---|
 | Bot rings or calls you | VoIP push reported to CallKit: native incoming-call screen with Answer and Decline (`CallCenter.reportRing`). Missed call: `missedCall` with Call back | `call` kind: face, name, timer, Mute and End on the Lock Screen, compact (face, timer), minimal, expanded (Mute, End). Gallery `activity-call`, `activity-ends` (muted). In-app: `CallView` and the minimize pill (`call`, `call-pill`) | Quick actions: Call Kip |
-| Bot needs you (approval, question) | `approval`: "Kip wants your approval", Allow, Deny, Reply inline. `question`: "Scout is waiting for your answer", Reply inline, Open. Time sensitive, communication style (the bot's face) | A running reply shows "Waiting for you" and the hand in the island (`activity-ends`) | Needs you: small, medium, circular, rectangular, inline |
-| Reply ready (long turn) | `replyReady`: "Your reply is ready", Open | `reply` kind: step, title, where it saves, sub-agent chips, Open chat and Stop; Done and Couldn't finish with Retry (`activity-reply`) | |
+| Bot needs you (approval, question) | `approval`: "Wants your approval", Allow, Deny, Reply inline. `question`: "Is waiting for your answer", Reply inline, Open. Time sensitive, communication style (the bot's face) | A running reply shows "Waiting for you" and the hand in the island (`activity-ends`) | Needs you: small, medium, circular, rectangular, inline |
+| Reply ready (long turn) | `replyReady`: "Your reply is ready", Open | `reply` kind: step, title, where it saves, sub-agent chips, Open chat and Stop; Done and Couldn't finish with Retry (`activity-reply`). The end card leaves after 5 minutes (30 when it failed), and at once when the chat is opened | |
 | Background task, routine run | `workDone` (Open), `workFailed` (Open, Try again) | `task` kind: progress ring, bar, Stop; Done, Couldn't finish (`activity-task`) | Running work: small, medium, large, circular, rectangular |
 | Bot team cycle | `teamUpdate`: one update from Producer per cycle, never per post | `team` kind: Research, Script, Render, Post track, stage count in the island (`activity-team`) | Team status: small, medium, rectangular |
 | Post published, TikTok tap | `posted`: "Posted to YouTube (Private)"; `needsTap`: "1 TikTok post needs your tap" | `render` kind: Render and Upload track with percent (`activity-render`) | Latest post: small, medium, rectangular |
@@ -36,9 +36,9 @@ messages, and can be turned off. Lock Screen previews fall back to "Kairos" when
 ## Push payload (what the desktop and the relay send)
 
 - Alerts: `aps.alert` with title = who it is from (the bot's or model's name, else "Kairos"), subtitle = the chat's
-  title when sent, body = the kind's fixed line (`approval` "Kip wants your approval", `question` "Kip is waiting for
-  your answer", `replyReady` "Your reply is ready", `workDone` "Kip finished a task", `workFailed` "Kip couldn't
-  finish"); `aps.category` = `kairos.<kind>`, `aps.interruption-level` (time sensitive for approval and question),
+  title when sent, body = the kind's fixed line (`approval` "Wants your approval", `question` "Is waiting for
+  your answer", `replyReady` "Your reply is ready", `workDone` "Finished a task", `workFailed` "Couldn't
+  finish"; the line never repeats the name, since the title already says who); `aps.category` = `kairos.<kind>`, `aps.interruption-level` (time sensitive for approval and question),
   `thread-id` (`bot-<id>` or `chat-<id>`), and custom keys `link` (a `kairos-agents://` URL: `approval/<request>?bot=<id>`
   for a bot's approval, `chat/<id>` for a chat), `request_id` (approvals: choices `once`, `reject`, or `reply` with
   text), `activity_id`, `activity_kind`, `kind`. Never message text. The relay builds this from the desktop's fields

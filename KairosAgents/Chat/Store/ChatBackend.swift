@@ -67,6 +67,8 @@ protocol ChatBackend: AnyObject {
     func resumeQueue(threadID: String) async throws
     func interrupt(threadID: String, turnID: String) async throws
     func markRead(threadID: String, messageID: String?) async throws
+    /// The person has seen this model chat as it is now (it is on screen or just left it).
+    func markChatSeen(_ chatID: String)
 }
 
 /// A plain-words failure from either backend.

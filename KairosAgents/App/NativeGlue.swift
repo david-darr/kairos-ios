@@ -11,7 +11,11 @@ enum NativeGlue {
     private static var live: [String: ConnectionSeam.RunInfo] = [:]
     /// Which model chat each turn belongs to, kept after it ends so Retry can find it.
     private static var chats: [String: String] = [:]
+    /// Which chat or bot thread each turn belongs to, kept after it ends so opening that thread ends its card.
+    private static var threads: [String: String] = [:]
     private static var publishQueued = false
+    /// Turns whose chat the person opened: their Live Activity was ended and does not come back.
+    private static var opened: Set<String> = []
 
     /// Called once at launch, before any screen is up.
     static func join() {
@@ -22,9 +26,11 @@ enum NativeGlue {
         ConnectionSeam.runChanged = { run in follow(run) }
         ConnectionSeam.runEnded = { run in
             live[run.turnID] = nil
+            opened.remove(run.turnID)
             LiveActivities.shared.finish(run.turnID, state(run))
             publishSoon()
         }
+        ConnectionSeam.chatOpened = { chatID, botID in chatOpened(chatID: chatID, botID: botID) }
         ConnectionSeam.homeChanged = { _ in publishSoon() }
         ConnectionSeam.paired = { PairedAsk.shared.offer() }
 
@@ -53,9 +59,29 @@ enum NativeGlue {
 
     private static func follow(_ run: ConnectionSeam.RunInfo) {
         live[run.turnID] = run
+        threads[run.turnID] = run.chatID
         if run.botID == nil { chats[run.turnID] = run.chatID }
-        LiveActivities.shared.begin(attributes(run), state(run))
+        if !opened.contains(run.turnID) { LiveActivities.shared.begin(attributes(run), state(run)) }
         publishSoon()
+    }
+
+    /// A chat or bot thread is on screen: end its Live Activities now, with no card left behind, including one
+    /// for a turn still running there (the person is watching it). Only that thread's: a bot's other threads keep
+    /// theirs, and an activity whose thread this phone cannot tell is left to time out by itself.
+    private static func chatOpened(chatID: String?, botID: String?) {
+        guard let chatID, !chatID.isEmpty else { return }
+        opened.formUnion(LiveActivities.shared.dismiss { thread(of: $0) == chatID })
+        for run in live.values where run.chatID == chatID {
+            opened.insert(run.turnID)
+        }
+    }
+
+    /// The chat or bot thread an activity follows, or nil when this phone cannot tell.
+    private static func thread(of attributes: KairosActivityAttributes) -> String? {
+        if let thread = threads[attributes.id] { return thread }
+        // A model chat's card links to the chat itself; a bot's links only to the bot.
+        if let url = URL(string: attributes.link), case .chat(let chatID)? = NativeLink(url: url) { return chatID }
+        return nil
     }
 
     private static func attributes(_ run: ConnectionSeam.RunInfo) -> KairosActivityAttributes {
