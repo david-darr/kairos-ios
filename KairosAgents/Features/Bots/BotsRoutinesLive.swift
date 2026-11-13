@@ -58,6 +58,8 @@ nonisolated struct BotRoutineCreateCheck: Equatable, Sendable {
     var botID: String
     var name: String
     var before: Set<String>
+    /// The form as it was sent, so a later look can tell when the person has changed it since.
+    var sent: BotRoutineForm? = nil
 }
 
 /// Which desktop trigger a row on screen is.
@@ -105,6 +107,8 @@ final class BotsRoutinesLive {
     var createCheck: BotRoutineCreateCheck?
     /// Routines whose last save got no answer and has not been read again.
     var recheck: Set<String> = []
+    /// The form as it was sent for each save whose answer was lost.
+    var sentForms: [String: BotRoutineForm] = [:]
 
     @ObservationIgnored private var account = "sample"
     @ObservationIgnored private var desktopIDs: [UUID: String] = [:]
@@ -916,7 +920,7 @@ final class BotsRoutinesLive {
         if let check = createCheck, check.botID == botID, check.name == name {
             // This same routine was sent before and its answer was lost: look for it first. Any other routine is
             // sent as usual, and never answered for by that earlier look.
-            return await confirmCreate()
+            return await confirmCreate(now: form)
         }
         guard let schedule = BotRoutineMap.schedule(form, base: nil) else { return .refused("Pick which usage limit it follows.") }
         let account = self.account
@@ -939,7 +943,7 @@ final class BotsRoutinesLive {
             Connection.shared.note(error)
             guard stillLive(account) else { return .refused(changed) }
             if unconfirmed(error) {
-                createCheck = BotRoutineCreateCheck(botID: botID, name: name, before: before)
+                createCheck = BotRoutineCreateCheck(botID: botID, name: name, before: before, sent: form)
                 return await confirmCreate()
             }
             return .refused("It was not scheduled. " + error.plainWords)
@@ -947,7 +951,7 @@ final class BotsRoutinesLive {
     }
 
     /// After a Schedule whose answer was lost: read the routines again and look for the new one.
-    func confirmCreate() async -> BotRoutineOutcome {
+    func confirmCreate(now: BotRoutineForm? = nil) async -> BotRoutineOutcome {
         guard active, let check = createCheck else { return .refused("Your desktop is not connected.") }
         let account = self.account
         let read = await refreshRoutines(force: true)
@@ -957,6 +961,10 @@ final class BotsRoutinesLive {
         }
         createCheck = nil
         if records.values.contains(where: { !check.before.contains($0.id) && $0.botId == check.botID && BotRoutineMap.cleanName($0.name ?? "") == check.name }) {
+            if let sent = check.sent, let now, sent != now {
+                // The first version is on the desktop. Sending the edited one now would make a second routine.
+                return .done("Scheduled as you first sent it. What you changed after that was not sent. Open the routine to change it.")
+            }
             return .done("Scheduled.")
         }
         return .refused("It was not scheduled. Your desktop has no such routine, so you can schedule it again.")
@@ -973,7 +981,11 @@ final class BotsRoutinesLive {
             // The last save got no answer: look first, never send it again blind.
             guard let fresh = await readOne(id, account: account) else { return (.unsure(couldNotConfirm), nil) }
             recheck.remove(id)
-            if BotRoutineMap.landed(form, from: base, in: fresh) { return (.done("Saved."), fresh) }
+            let sent = sentForms.removeValue(forKey: id) ?? form
+            if BotRoutineMap.landed(sent, from: base, in: fresh) {
+                if sent == form { return (.done("Saved."), fresh) }
+                return (.unsure("Your earlier changes were saved. What you changed after that is not saved yet. This shows what your desktop has now, with your newer changes kept on top. Save again to send them."), fresh)
+            }
             return (.unsure("Your desktop does not have these changes. This shows what it has now, with your changes kept on top. Save again to send them."), fresh)
         }
         var fields = BotRoutineMap.changes(form, from: base)
@@ -993,8 +1005,10 @@ final class BotsRoutinesLive {
             guard stillLive(account) else { return (.refused("Your desktop changed while this was being saved."), nil) }
             if unconfirmed(error) {
                 recheck.insert(id)
+                sentForms[id] = form
                 guard let fresh = await readOne(id, account: account) else { return (.unsure(couldNotConfirm), nil) }
                 recheck.remove(id)
+                sentForms[id] = nil
                 if BotRoutineMap.landed(form, from: base, in: fresh) { return (.done("Saved."), fresh) }
                 return (.unsure("Your desktop did not answer, and it does not show these changes. This shows what it has now, with your changes kept on top. Save again to send them."), fresh)
             }
