@@ -127,6 +127,12 @@ struct DriveFormEditor: View {
                     }
                 }
                 .kCard(radius: 18)
+                if ui.live {
+                    // Google removes a question by its position, and the desktop cannot send Google's revision
+                    // guard: a change in between could remove a different question and its answers.
+                    HintLine(text: "Remove questions in Google Forms.", symbol: "info.circle")
+                        .padding(.horizontal, 4)
+                }
             }
         }
     }
@@ -152,29 +158,20 @@ struct DriveFormEditor: View {
                 }
             }
             Spacer(minLength: 4)
-            Button {
-                Haptics.tap()
-                if ui.live {
-                    guard let itemID = question.remoteID else { return }
-                    let shown = question.text
-                    ui.sheet = .confirm(DriveLiveConfirm(
-                        title: "Remove question?",
-                        detail: "\"\(shown)\" and its answers leave the form in Google.",
-                        confirm: "Remove"
-                    ) { run({ await ui.store.removeQuestionLive(fileID, itemID: itemID, title: shown) }, done: "Question removed") })
-                } else {
+            if !ui.live {
+                Button {
+                    Haptics.tap()
                     removing = question
+                } label: {
+                    Text("Remove")
+                        .font(KFont.ui(14, .medium, relativeTo: .footnote))
+                        .foregroundStyle(Palette.danger)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
-            } label: {
-                Text("Remove")
-                    .font(KFont.ui(14, .medium, relativeTo: .footnote))
-                    .foregroundStyle(Palette.danger)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(Rectangle())
+                .buttonStyle(PressStyle())
+                .accessibilityLabel("Remove \(question.text)")
             }
-            .buttonStyle(PressStyle())
-            .disabled(working)
-            .accessibilityLabel("Remove \(question.text)")
         }
         .padding(.leading, 14)
         .padding(.trailing, 8)
