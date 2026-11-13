@@ -53,6 +53,10 @@ messages, and can be turned off. Lock Screen previews fall back to "Kairos" when
 - While a ring rings and is not answered on this phone, a paired phone asks `GET /api/rings/{id}` every 3 seconds
   and ends the call as answered elsewhere, declined elsewhere or unanswered. The connection starts at launch;
   Answer and Decline keep trying until the ring runs out, and an answer that cannot be sent ends the call as failed.
+  Before the first unlock after a restart the pairing cannot be read: the connection waits and starts on unlock, and
+  an answer waits for it within the ring's life. Hanging up before the answer is confirmed sends a decline. A repeat
+  push for a ring already over on this phone is reported and ended at once. CallKit's own timer starts on Answer
+  (the action must be fulfilled at once), even while the answer is still being sent.
 - Ring ended elsewhere: a background push `{"kind": "bot_call_end", "ring_id", "outcome"}` (not VoIP).
 - Live Activity updates: ActivityKit pushes to each activity's token (sent with `PushBridge.registerActivity`),
   content-state matching `KairosActivityAttributes.ContentState`. A push-to-start token is sent as activity id `push-to-start`.

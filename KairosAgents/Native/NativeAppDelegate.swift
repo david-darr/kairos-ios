@@ -49,11 +49,10 @@ enum NativeServices {
     /// A ring can launch the app with no screen, and the Lock Screen's Answer or Decline has to reach the
     /// desktop: connect now, not when Home appears. This also fills in `PushBridge`. With no pairing it does
     /// nothing (the app stays on sample data); `Connection.start` runs once however often it is called.
+    /// Before the first unlock after a restart it waits and runs again on unlock.
     /// A debug launch that opens one view on its own (`-kDebugView`) stays off the network, as before.
     private static func startConnection() {
-        #if DEBUG
-        if UserDefaults.standard.string(forKey: "kDebugView") != nil { return }
-        #endif
+        guard !Connection.isDebugViewLaunch else { return }
         Connection.shared.start()
     }
 }

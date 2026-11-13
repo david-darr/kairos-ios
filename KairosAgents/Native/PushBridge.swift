@@ -32,6 +32,9 @@ enum PushBridge {
     static var ringState: (_ ringID: String) async -> String? = { _ in nil }
     /// A desktop is paired and the phone has a token for it.
     static var isPaired: () -> Bool = { false }
+    /// The saved pairing cannot be read yet (a ring launched the app before the first unlock after a restart).
+    /// Only a paired phone gets rings, so a ring in this state is treated as paired.
+    static var awaitingUnlock: () -> Bool = { false }
     /// One of the paired desktop's bots, when the phone already has it.
     static var liveBot: (_ botID: String) -> Bot? = { _ in nil }
 }

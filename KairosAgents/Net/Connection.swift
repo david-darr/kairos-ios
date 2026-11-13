@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 /// The desktop this phone is paired with. Nothing secret: the token is in the Keychain.
 nonisolated struct PairedDesktop: Codable, Hashable, Sendable {
@@ -106,24 +107,71 @@ final class Connection {
     // MARK: Launch
 
     /// Call when the app opens. Reads the saved pairing and asks the desktop whether it still stands.
+    ///
+    /// A ring can launch the app before the first unlock after a restart, when neither the saved pairing nor
+    /// the token can be read. Then nothing is decided: the state stays as it is, nothing is cleared, and this
+    /// runs again once the phone is unlocked (or the app comes to the front, or a ring's answer asks).
     func start() {
         guard !isPreview, !started else { return }
-        started = true
+        let token = Keychain.lookup(account: Connection.tokenAccount)
+        let locked = !UIApplication.shared.isProtectedDataAvailable
+        guard token != .unreadable else { waitForUnlock(); return }
         guard let data = UserDefaults.standard.data(forKey: Connection.desktopKey),
-              let saved = try? JSONDecoder().decode(PairedDesktop.self, from: data) else { return }
-        desktop = saved
-        guard let token = Keychain.read(account: Connection.tokenAccount),
-              let base = APIClient.baseURL(from: saved.address) else {
+              let saved = try? JSONDecoder().decode(PairedDesktop.self, from: data) else {
+            // Not paired, or the saved pairing cannot be read yet.
+            if locked { waitForUnlock(); return }
+            markStarted()
+            return
+        }
+        guard case .found(let value) = token, let base = APIClient.baseURL(from: saved.address) else {
+            if locked, token == .missing { waitForUnlock(); return }
+            markStarted()
+            desktop = saved
             set(.signedOut)
             return
         }
-        client = makeClient(base: base, token: token)
+        markStarted()
+        desktop = saved
+        client = makeClient(base: base, token: value)
         set(.connecting)
         Task { await checkSession() }
     }
 
+    /// The saved pairing could not be read yet (before the first unlock after a restart).
+    @ObservationIgnored private(set) var waitingForUnlock = false
+    @ObservationIgnored private var unlockWatch: NSObjectProtocol?
+
+    private func waitForUnlock() {
+        waitingForUnlock = true
+        guard unlockWatch == nil else { return }
+        unlockWatch = NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in Connection.shared.start() }
+        }
+    }
+
+    private func markStarted() {
+        started = true
+        waitingForUnlock = false
+        if let unlockWatch {
+            NotificationCenter.default.removeObserver(unlockWatch)
+            self.unlockWatch = nil
+        }
+    }
+
+    /// A debug launch that opens one view on its own (`-kDebugView`) stays off the network.
+    static var isDebugViewLaunch: Bool {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "kDebugView") != nil
+        #else
+        return false
+        #endif
+    }
+
     /// Call when the app comes back to the front.
     func wake() {
+        if waitingForUnlock { start() }
         guard !isPreview, let client, state != .signedOut, state != .sample else { return }
         if !stream.isRunning { stream.start(client: client) }
         Task { await checkSession() }
@@ -164,7 +212,7 @@ final class Connection {
         save(paired)
         client = makeClient(base: base, token: claim.token)
         lastContact = Date()
-        started = true
+        markStarted()
         set(.connected)
         becameReady()
         ConnectionSeam.paired()
@@ -328,6 +376,9 @@ final class Connection {
         PushBridge.isPaired = {
             Connection.shared.isPaired && Connection.shared.client != nil
         }
+        PushBridge.awaitingUnlock = {
+            Connection.shared.waitingForUnlock
+        }
         PushBridge.liveBot = { botID in
             let store = ChatStore.shared
             return store.isSample ? nil : store.bots.first(where: { $0.id == botID })
@@ -398,8 +449,15 @@ final class Connection {
     /// answered (or declined) checks whether an earlier try got there first, so one answer never counts twice
     /// and is never mistaken for an answer somewhere else.
     private func answerRing(_ ringID: String, answer: Bool, until deadline: Date) async -> RingReply {
-        guard !isPreview else { return .sample }
+        guard !isPreview, !Connection.isDebugViewLaunch else { return .sample }
         if client == nil { start() }
+        // Before the first unlock the pairing cannot be read: wait for it, within the ring's life. Never
+        // take that for "not paired" (that would show a pretend call the desktop never hears of).
+        while waitingForUnlock {
+            guard !Task.isCancelled, Date().addingTimeInterval(1) < deadline else { return .failed }
+            try? await Task.sleep(for: .seconds(1))
+            start()
+        }
         guard state != .sample else { return .sample }
         var tried = false
         while !Task.isCancelled {
@@ -410,6 +468,9 @@ final class Connection {
                     return .sent(botID: reply.agentId, botName: reply.botName)
                 }
                 try await client.ringDecline(ringID)
+                return .sent(botID: nil, botName: nil)
+            } catch APIError.unreadable {
+                // The desktop said yes (a 2xx) in a shape this phone cannot read: it counted.
                 return .sent(botID: nil, botName: nil)
             } catch APIError.server(let code, _) where code == 404 || code == 409 {
                 // The ring is over on the desktop.
@@ -422,8 +483,10 @@ final class Connection {
             } catch APIError.unauthorized {
                 tokenRefused()
                 return .failed
+            } catch APIError.server(let code, _) where code < 500 {
+                // The desktop refused this try outright: it did not count. Try again until the deadline.
             } catch {
-                // Not reached, or the reply was lost: an earlier try may still have counted.
+                // Not reached, the reply was lost, or the desktop failed partway: an earlier try may have counted.
                 tried = true
                 note(error)
             }

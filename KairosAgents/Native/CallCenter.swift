@@ -32,6 +32,16 @@ final class CallCenter {
         var bot: Bot
         var ringID: String?
         var connectedAt: Date?
+        /// CallKit knows this call. A ring answered from a notification link is the app's alone.
+        var viaCallKit = false
+    }
+
+    /// An answer on its way to the desktop. Hanging up before it is confirmed sends a decline instead.
+    private struct PendingAnswer {
+        let token: UUID
+        let task: Task<Void, Never>
+        let ringID: String
+        let deadline: Date
     }
 
     /// The call in progress, if any.
@@ -56,7 +66,9 @@ final class CallCenter {
     /// For each ring still ringing here: the loop asking the desktop whether it ended somewhere else.
     @ObservationIgnored private var watchers: [UUID: Task<Void, Never>] = [:]
     /// For each answered ring: the answer on its way to the desktop.
-    @ObservationIgnored private var answering: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var answering: [UUID: PendingAnswer] = [:]
+    /// Rings already over on this phone, until they expire: a repeat push for one is ended at once.
+    @ObservationIgnored private var finishedRings: [UUID: Date] = [:]
 
     /// CallKit is not on the simulator; there the call screen still works, drawn by the app alone.
     static var usesCallKit: Bool {
@@ -116,8 +128,10 @@ final class CallCenter {
         let pushedBotID = (payload["agent_id"] as? String).flatMap { Self.isPlainID($0) ? $0 : nil }
         let botName = Self.callerName(payload)
         let expires = (payload["expires_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? Date().addingTimeInterval(60)
-        let ended = payload["kind"] as? String == "bot_call_end" || pushedID == nil || expires <= Date()
         let uuid = Self.uuid(for: ringID)
+        // A repeat push for a ring already declined, answered or ended on this phone must not ring again.
+        let over = finishedRings[uuid].map { $0 > Date() } ?? false
+        let ended = payload["kind"] as? String == "bot_call_end" || pushedID == nil || expires <= Date() || over
 
         let update = CXCallUpdate()
         update.remoteHandle = CXHandle(type: .generic, value: "kairos-bot-" + (pushedBotID ?? "ring-" + ringID))
@@ -149,7 +163,7 @@ final class CallCenter {
         // Reported; now who is calling. CallKit's answer and end actions arrive on the main queue after this.
         // A repeat push for a ring already answered here must not bring the ring back.
         if !ended, session?.uuid != uuid {
-            let paired = PushBridge.isPaired()
+            let paired = PushBridge.isPaired() || PushBridge.awaitingUnlock()
             // The push does not carry the bot id. Paired, it comes from the desktop's answer reply; never guessed.
             let bot = Self.callerBot(id: pushedBotID ?? (paired ? "" : "kip"), name: botName, paired: paired)
             rings[uuid] = Ring(id: ringID, bot: bot, expiresAt: expires)
@@ -175,7 +189,8 @@ final class CallCenter {
     /// ended somewhere else. Answering or declining here removes the ring first (on the main actor) and cancels
     /// this, so a reply still on its way is dropped and never hangs up the phone's own call. Stops at expiry.
     private func watch(_ uuid: UUID, ringID: String, until expires: Date) {
-        guard watchers[uuid] == nil, PushBridge.isPaired() else { return }
+        // Before the first unlock there is no client yet; the loop asks once the connection is up.
+        guard watchers[uuid] == nil, PushBridge.isPaired() || PushBridge.awaitingUnlock() else { return }
         watchers[uuid] = Task {
             while !Task.isCancelled, Date() < expires {
                 try? await Task.sleep(for: .seconds(3))
@@ -195,7 +210,11 @@ final class CallCenter {
     @discardableResult
     private func dropRing(_ uuid: UUID) -> Ring? {
         watchers.removeValue(forKey: uuid)?.cancel()
-        return rings.removeValue(forKey: uuid)
+        let ring = rings.removeValue(forKey: uuid)
+        let now = Date()
+        finishedRings = finishedRings.filter { $0.value > now }
+        if let ring, ring.expiresAt > now { finishedRings[uuid] = ring.expiresAt }
+        return ring
     }
 
     private static func endedReason(_ outcome: String) -> CXCallEndedReason {
@@ -249,7 +268,7 @@ final class CallCenter {
         }
         if session != nil { endCall() }
         let uuid = UUID()
-        session = Session(uuid: uuid, bot: bot)
+        session = Session(uuid: uuid, bot: bot, viaCallKit: Self.usesCallKit)
         muted = false
         if present { showingCall = true }
         // Asking without the usage string in Info.plist ends the app, so the app-only build skips it.
@@ -272,18 +291,25 @@ final class CallCenter {
     /// Open the call for a ring the person answered from a notification instead of the call screen.
     func answerFromLink(ringID: String, botID: String) {
         let uuid = Self.uuid(for: ringID)
+        // The same link opened again: show the call already answered, never answer it a second time.
+        if session?.uuid == uuid {
+            showingCall = true
+            return
+        }
         if rings[uuid] != nil, Self.usesCallKit {
             controller.request(CXTransaction(action: CXAnswerCallAction(call: uuid))) { _ in }
             return
         }
+        if session != nil { endCall() }
         session = Session(uuid: uuid, bot: SampleData.bot(botID), ringID: ringID)
         showingCall = true
         sendAnswer(uuid, ringID: ringID, until: Date().addingTimeInterval(60)) { [weak self] in self?.connected(uuid) }
     }
 
     func endCall() {
-        guard let id = session?.uuid else { return }
-        if Self.usesCallKit, provider != nil {
+        guard let session else { return }
+        let id = session.uuid
+        if session.viaCallKit, provider != nil {
             controller.request(CXTransaction(action: CXEndCallAction(call: id))) { error in
                 guard error != nil else { return }
                 Task { @MainActor in CallCenter.shared.finish(id) }
@@ -295,7 +321,7 @@ final class CallCenter {
 
     func toggleMute() {
         guard let session else { return }
-        if Self.usesCallKit, provider != nil {
+        if session.viaCallKit, provider != nil {
             controller.request(CXTransaction(action: CXSetMutedCallAction(call: session.uuid, muted: !muted))) { _ in }
         } else {
             setMuted(!muted)
@@ -310,12 +336,14 @@ final class CallCenter {
     // MARK: What CallKit tells us (on the main queue)
 
     /// Answered on this phone. The ring is dropped first, so the watch loop stops and ignores any reply in flight.
-    /// The call reads "Calling…" until the desktop has the answer; if it cannot get it, the call ends as failed.
+    /// The app's call screen reads "Calling…" until the desktop has the answer; if it cannot get it, the call
+    /// ends as failed. The action is fulfilled at once, as CallKit requires (holding it past CallKit's action
+    /// timeout would fail the call), so CallKit's own Lock Screen timer runs while the answer is retried.
     fileprivate func perform(_ action: CXAnswerCallAction) {
         let uuid = action.callUUID
         guard let ring = dropRing(uuid) else { action.fail(); return }
         configureAudio()
-        session = Session(uuid: uuid, bot: ring.bot, ringID: ring.id)
+        session = Session(uuid: uuid, bot: ring.bot, ringID: ring.id, viaCallKit: true)
         muted = false
         showingCall = true
         action.fulfill()
@@ -328,12 +356,19 @@ final class CallCenter {
 
     /// Send an answer once (the connection retries it until `deadline`), then fill in the bot the desktop named.
     /// A call hung up meanwhile cancels the send and ignores its reply.
+    /// It holds a little background time, like the decline, so a locked phone can finish sending it.
     private func sendAnswer(_ uuid: UUID, ringID: String, until deadline: Date, onSent: @escaping @MainActor () -> Void) {
-        answering[uuid]?.cancel()
-        answering[uuid] = Task {
+        answering.removeValue(forKey: uuid)?.task.cancel()
+        let token = UUID()
+        let hold = BackgroundHold()
+        hold.id = UIApplication.shared.beginBackgroundTask(withName: "Answer a call") { hold.end() }
+        let task = Task {
             let reply = await PushBridge.ring(ringID, true, deadline)
+            hold.end()
+            // Only the newest answer for this call clears its entry, so a replaced one never leaves it behind.
+            if answering[uuid]?.token == token { answering[uuid] = nil }
             guard !Task.isCancelled, session?.uuid == uuid else { return }
-            answering[uuid] = nil
+            let viaCallKit = session?.viaCallKit ?? false
             switch reply {
             case .sample:
                 onSent()
@@ -344,22 +379,26 @@ final class CallCenter {
                 }
                 onSent()
             case .ended(let status):
-                if Self.usesCallKit { provider?.reportCall(with: uuid, endedAt: nil, reason: Self.endedReason(status)) }
+                // "expired" here means the person answered but it reached the desktop too late: a failure.
+                let reason: CXCallEndedReason = status == "expired" ? .failed : Self.endedReason(status)
+                if viaCallKit { provider?.reportCall(with: uuid, endedAt: nil, reason: reason) }
                 finish(uuid)
             case .failed:
-                if Self.usesCallKit { provider?.reportCall(with: uuid, endedAt: nil, reason: .failed) }
+                if viaCallKit { provider?.reportCall(with: uuid, endedAt: nil, reason: .failed) }
                 finish(uuid)
             }
         }
+        answering[uuid] = PendingAnswer(token: token, task: task, ringID: ringID, deadline: deadline)
     }
 
-    /// Declined on the incoming-call screen. The call is already gone on the phone; the decline keeps trying
-    /// until the ring runs out, with a little background time so a locked phone can finish sending it.
-    private func sendDecline(_ ring: Ring) {
+    /// Declined (on the incoming-call screen, or hung up before the answer was confirmed). The call is already
+    /// gone on the phone; the decline keeps trying until the ring runs out, with a little background time so
+    /// a locked phone can finish sending it. If the answer got there first, the desktop refuses the decline.
+    private func sendDecline(_ ringID: String, until deadline: Date) {
         let hold = BackgroundHold()
         hold.id = UIApplication.shared.beginBackgroundTask(withName: "Decline a call") { hold.end() }
         Task {
-            _ = await PushBridge.ring(ring.id, false, ring.expiresAt)
+            _ = await PushBridge.ring(ringID, false, deadline)
             hold.end()
         }
     }
@@ -374,7 +413,7 @@ final class CallCenter {
     fileprivate func perform(_ action: CXEndCallAction) {
         if let ring = dropRing(action.callUUID) {
             // Declined on the incoming-call screen.
-            sendDecline(ring)
+            sendDecline(ring.id, until: ring.expiresAt)
         }
         finish(action.callUUID)
         action.fulfill()
@@ -401,7 +440,7 @@ final class CallCenter {
     private func connected(_ uuid: UUID) {
         guard session?.uuid == uuid else { return }
         session?.connectedAt = .now
-        if Self.usesCallKit { provider?.reportOutgoingCall(with: uuid, connectedAt: .now) }
+        if session?.viaCallKit == true { provider?.reportOutgoingCall(with: uuid, connectedAt: .now) }
         if let session { LiveActivities.shared.startCall(bot: session.bot, ringID: session.ringID ?? uuid.uuidString) }
     }
 
@@ -411,8 +450,12 @@ final class CallCenter {
     }
 
     private func finish(_ uuid: UUID) {
+        // Hung up before the desktop confirmed the answer: tell it no, so it records a decline, not a miss.
+        if let pending = answering.removeValue(forKey: uuid) {
+            pending.task.cancel()
+            sendDecline(pending.ringID, until: pending.deadline)
+        }
         guard session?.uuid == uuid else { return }
-        answering.removeValue(forKey: uuid)?.cancel()
         session = nil
         showingCall = false
         muted = false

@@ -24,14 +24,24 @@ nonisolated enum Keychain {
         return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
     }
 
-    static func read(account: String) -> String? {
+    /// What a read found. `unreadable` is not "missing": before the first unlock after a restart the item
+    /// is there but cannot be read yet.
+    nonisolated enum Lookup: Equatable, Sendable {
+        case found(String)
+        case missing
+        case unreadable
+    }
+
+    static func lookup(account: String) -> Lookup {
         var item = query(account)
         item[kSecReturnData as String] = true
         item[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        guard SecItemCopyMatching(item as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(item as CFDictionary, &result)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess else { return .unreadable }
+        guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else { return .missing }
+        return .found(value)
     }
 
     static func delete(account: String) {
