@@ -193,6 +193,12 @@ extension APIClient {
     func botWorkCards() async throws -> [BotLossy<BotWorkCardDTO>] {
         try await get("/api/tasks")
     }
+
+    /// GET /api/tasks/{id}: one card or routine (task_routes.py: get_task), the same record as in the list.
+    /// The light check while something runs; 404 when it is gone.
+    func botWorkCard(_ id: String) async throws -> BotWorkCardDTO {
+        try await get("/api/tasks/\(id)")
+    }
 }
 
 // MARK: - Samples

@@ -27,6 +27,58 @@ private enum BotsLiveSession {
     static var writeSerial = 0
 }
 
+/// Where a desktop card stands after an answer that got no reply.
+nonisolated enum BotsCardCheck: Equatable, Sendable {
+    /// Reading the cards again: the card says "Not confirmed yet", its buttons off.
+    case checking
+    /// That read failed: the card says the phone could not check, with Try again.
+    case failed
+    /// The desktop is still waiting on it: its buttons are back, with a line saying the answer did not arrive.
+    case notReceived
+}
+
+/// Desktop cards whose answer is not confirmed, by desktop card id. Such a card never shows Allowed, Rejected or
+/// Answered until a read of the desktop's cards says what happened.
+@Observable
+final class BotsLiveCards {
+    static let shared = BotsLiveCards()
+
+    var checks: [String: BotsCardCheck] = [:]
+    /// Which bot each checked card belongs to.
+    @ObservationIgnored var owners: [String: String] = [:]
+    /// Bots whose cards read was set aside while a write was on its way: read again once the last write ends.
+    @ObservationIgnored var owed: Set<String> = []
+
+    func check(_ card: NeedsCard) -> BotsCardCheck? {
+        card.live.flatMap { checks[$0.id] }
+    }
+
+    /// A card of this bot is still being checked or could not be checked.
+    func unsettled(_ botID: String) -> Bool {
+        checks.contains { owners[$0.key] == botID && $0.value != .notReceived }
+    }
+
+    func clear(_ id: String) {
+        checks[id] = nil
+        owners[id] = nil
+    }
+
+    func reset() {
+        checks = [:]
+        owners = [:]
+        owed = []
+    }
+}
+
+extension NeedsCard {
+    /// The key a list draws this card under: a desktop card keeps its view (and what was picked or typed on it)
+    /// when a read brings it back unchanged.
+    nonisolated var viewKey: String {
+        guard let live else { return id.uuidString }
+        return "\(live.id)|\(live.revision.map { String($0) } ?? "")"
+    }
+}
+
 /// The paired desktop behind the Bots area: the roster (GET /api/agents, /api/bot-team/map,
 /// /api/agents/conversations), one bot's detail (GET /api/agents/{id}) and its waiting cards
 /// (GET /api/bot-cards, POST /api/bot-cards/{id}/respond). Unpaired, nothing here runs.
@@ -82,6 +134,7 @@ extension BotsStore {
             rosterLoad = .idle
             BotsLiveSession.account = "sample"
             BotsLiveSession.reads = [:]
+            BotsLiveCards.shared.reset()
             liveMode = false
         }
     }
@@ -101,6 +154,7 @@ extension BotsStore {
         rosterLoad = .idle
         BotsLiveSession.reads = [:]
         BotsLiveSession.account = Self.accountKey
+        BotsLiveCards.shared.reset()
     }
 
     private func liveClient() throws -> APIClient {
@@ -108,13 +162,27 @@ extension BotsStore {
         return client
     }
 
-    /// Start a read: nil while the desktop is still being reached (the read starts again by itself once it
-    /// answers, since the connection key changes). Otherwise the read's serial and the write counter now.
-    private func beginRead(_ key: String) -> (account: String, serial: Int, writes: Int)? {
-        guard liveMode, Connection.shared.state != .connecting else { return nil }
+    /// While the desktop is still being reached at launch, wait for that to settle (at most 20 seconds), so a
+    /// read goes out once. Then the read runs whatever the state: an unreachable desktop ends in an error with
+    /// Try again, never in a read that does not start. A connection that comes back changes the connection key,
+    /// and the screens read again.
+    static func waitWhileConnecting() async {
+        var waited = 0
+        while Connection.shared.state == .connecting, waited < 80, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(250))
+            waited += 1
+        }
+    }
+
+    /// Start a read: its account, its serial, and the write counter when it goes out. A cancelled wait is
+    /// caught by the read's own `Task.checkCancellation()`.
+    private func beginRead(_ key: String) async -> (account: String, serial: Int, writes: Int)? {
+        guard liveMode else { return nil }
+        let account = BotsLiveSession.account
         let serial = (BotsLiveSession.reads[key] ?? 0) + 1
         BotsLiveSession.reads[key] = serial
-        return (BotsLiveSession.account, serial, BotsLiveSession.writeSerial)
+        await Self.waitWhileConnecting()
+        return (account, serial, BotsLiveSession.writeSerial)
     }
 
     /// This read's answer may be shown: same account, no newer read of the same thing, and no write sent or
@@ -138,6 +206,14 @@ extension BotsStore {
     private func endWrite() {
         BotsLiveSession.writing = max(0, BotsLiveSession.writing - 1)
         BotsLiveSession.writeSerial += 1
+        let checks = BotsLiveCards.shared
+        guard BotsLiveSession.writing == 0, !checks.owed.isEmpty else { return }
+        // A cards read was set aside while this write was on its way: read again now.
+        let owed = checks.owed
+        checks.owed = []
+        for botID in owed {
+            Task { await loadCards(botID) }
+        }
     }
 
     /// A write whose answer never came: the desktop may have done it. An error that means the request never
@@ -162,8 +238,9 @@ extension BotsStore {
         guard liveMode else { return }
         let first = rosterLoad != .loaded
         if first { rosterLoad = .loading }
-        guard let read = beginRead("roster") else { return }
+        guard let read = await beginRead("roster") else { return }
         do {
+            try Task.checkCancellation()
             let client = try liveClient()
             let roster = try await client.agentRoster()
             let map = try? await client.botTeamMap()
@@ -255,7 +332,11 @@ extension BotsStore {
 
     /// Pin or unpin a bot. Shown at once; put back if the desktop refuses; re-read when the answer is lost.
     func pinLive(_ botID: String) {
-        guard liveMode, BotsLiveSession.account == Self.accountKey else { return }
+        guard liveMode else { return }
+        guard BotsLiveSession.account == Self.accountKey else {
+            say("Still reading your desktop. Try again in a moment.")
+            return
+        }
         let account = BotsLiveSession.account
         let wasPinned = pinned.contains(botID)
         let name = bot(botID).name
@@ -289,8 +370,9 @@ extension BotsStore {
         let first = details[botID] == nil
         if first { detailLoad[botID] = .loading }
         let key = "detail|\(botID)"
-        guard let read = beginRead(key) else { return }
+        guard let read = await beginRead(key) else { return }
         do {
+            try Task.checkCancellation()
             let detail = try await liveClient().agentDetail(botID)
             guard current(key, read, first: first) else { return }
             details[botID] = detail
@@ -318,19 +400,32 @@ extension BotsStore {
         let first = cardsLoad[botID] != .loaded
         if first { cardsLoad[botID] = .loading }
         let key = "cards|\(botID)"
-        guard let read = beginRead(key) else { return }
+        guard let read = await beginRead(key) else { return }
         do {
+            try Task.checkCancellation()
             let list = try await liveClient().botCards(botId: botID, status: "pending")
-            guard current(key, read, first: first) else { return }
+            guard current(key, read, first: first) else {
+                readCardsLater(botID, key: key, read: read)
+                return
+            }
             let fresh = (list.cards ?? [])
                 .filter { ($0.waiting ?? true) && ($0.kind == "approval" || $0.kind == "question") }
                 .compactMap { Self.needsCard($0, botID: botID) }
             let freshIDs = Set(fresh.compactMap { $0.live?.id })
+            let gone = settleChecks(botID, waiting: freshIDs)
             withAnimation(Motion.snappy) {
-                needs.removeAll { $0.botID == botID && ($0.settled == nil || freshIDs.contains($0.live?.id ?? "")) }
+                needs.removeAll { card in
+                    guard card.botID == botID else { return false }
+                    let id = card.live?.id ?? ""
+                    return card.settled == nil || freshIDs.contains(id) || gone.contains(id)
+                }
                 needs.append(contentsOf: fresh)
             }
             cardsLoad[botID] = .loaded
+            if !gone.isEmpty {
+                say(gone.count == 1 ? "Your desktop is no longer waiting on that request."
+                                    : "Your desktop is no longer waiting on those requests.")
+            }
         } catch {
             guard latest(key, read) else { return }
             if error is CancellationError {
@@ -338,8 +433,47 @@ extension BotsStore {
                 return
             }
             Connection.shared.note(error)
+            let checks = BotsLiveCards.shared
+            for (id, state) in checks.checks where state == .checking && checks.owners[id] == botID {
+                checks.checks[id] = .failed
+            }
             cardsLoad[botID] = .failed("What needs you could not be read. " + error.plainWords)
         }
+    }
+
+    /// A read of the desktop's cards landed: each unconfirmed card of this bot learns what happened. Still waiting,
+    /// its buttons come back (with a line saying the answer did not arrive); no longer waiting, it goes.
+    /// Returns the desktop ids of the cards that go.
+    private func settleChecks(_ botID: String, waiting: Set<String>) -> Set<String> {
+        let checks = BotsLiveCards.shared
+        var gone: Set<String> = []
+        for (id, state) in checks.checks where checks.owners[id] == botID {
+            if waiting.contains(id) {
+                if state != .notReceived { checks.checks[id] = .notReceived }
+            } else {
+                if state != .notReceived { gone.insert(id) }
+                checks.clear(id)
+            }
+        }
+        return gone
+    }
+
+    /// A cards read set aside because a write was sent or answered meanwhile. While a card of this bot is not
+    /// confirmed, read again: now when no write is on its way, or once the last one ends.
+    private func readCardsLater(_ botID: String, key: String, read: (account: String, serial: Int, writes: Int)) {
+        guard latest(key, read), BotsLiveCards.shared.unsettled(botID) else { return }
+        if BotsLiveSession.writing == 0 {
+            Task { await loadCards(botID) }
+        } else {
+            BotsLiveCards.shared.owed.insert(botID)
+        }
+    }
+
+    /// Try again on a card that could not be checked: read the desktop's cards again. Nothing is sent.
+    func recheckCard(_ card: NeedsCard) {
+        guard liveMode, let id = card.live?.id, BotsLiveCards.shared.checks[id] == .failed else { return }
+        BotsLiveCards.shared.checks[id] = .checking
+        Task { await loadCards(card.botID) }
     }
 
     static func needsCard(_ card: BotCardDTO, botID: String) -> NeedsCard? {
@@ -403,13 +537,17 @@ extension BotsStore {
     }
 
     /// Answer a desktop card. The card shows the answer at once (its buttons go away). A refusal puts it back
-    /// and says why; a lost answer keeps the buttons away, says it could not confirm, and re-reads the cards,
-    /// so the card is only offered again when the desktop still has it waiting.
+    /// and says why. A lost answer never shows as done: the card says it is not confirmed yet, its buttons stay
+    /// off, and the cards are read again. Then the card goes when the desktop is no longer waiting on it, or its
+    /// buttons come back when it still is. Nothing is sent again by itself.
     /// `answers` is keyed by question id, each a text or a list of texts.
     func respondLive(_ card: NeedsCard, _ result: Settled, answers: [String: Any]? = nil) {
-        guard liveMode, BotsLiveSession.account == Self.accountKey,
-              let ref = card.live, let index = needs.firstIndex(where: { $0.id == card.id }),
+        guard liveMode, let ref = card.live, let index = needs.firstIndex(where: { $0.id == card.id }),
               needs[index].settled == nil else { return }
+        guard BotsLiveSession.account == Self.accountKey else {
+            say("Still reading your desktop. Try again in a moment.")
+            return
+        }
         var action = ""
         var choice: String?
         switch result {
@@ -428,6 +566,7 @@ extension BotsStore {
             return
         }
         let account = BotsLiveSession.account
+        BotsLiveCards.shared.clear(ref.id)
         withAnimation(Motion.bouncy) { needs[index].settled = result }
         let botID = card.botID
         beginWrite()
@@ -449,7 +588,10 @@ extension BotsStore {
                 guard stillLive(account) else { return }
                 if unconfirmed(error) {
                     if let api = error as? APIError, api != APIError.from(URLError(.timedOut)) { Connection.shared.note(api) }
-                    say("Your desktop did not answer, so this iPhone could not confirm your answer. This list shows what your desktop has.")
+                    // Not shown as done: the card says it is checking until a read of the cards says what happened.
+                    let checks = BotsLiveCards.shared
+                    withAnimation(Motion.snappy) { checks.checks[ref.id] = .checking }
+                    checks.owners[ref.id] = botID
                     await loadCards(botID)
                     return
                 }

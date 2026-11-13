@@ -154,6 +154,9 @@ nonisolated enum BotsInboxWire {
 nonisolated struct BotAnsweredRow: Sendable {
     var row: BotInboxRowDTO
     var text: String
+    /// A read since the answer no longer listed the row as open. When it is open again it is a new request,
+    /// even with the same text (and so the same revision); when a second read still has it closed, it goes.
+    var closedSeen = false
 }
 
 /// The paired desktop behind a bot's Inbox half: the questions and reviews waiting in Needs you
@@ -273,16 +276,14 @@ final class BotsInboxLive {
     ) async {
         guard isLive else { return }
         let account = self.account
-        if Connection.shared.state == .connecting {
-            // The read starts by itself once the desktop answers (the connection key changes).
-            if state != .loaded { set(.loading) }
-            return
-        }
         let serial = (reads[key] ?? 0) + 1
         reads[key] = serial
-        let writes = writeSerial[group] ?? 0
         if state != .loaded { set(.loading) }
+        // While the desktop is still being reached, wait for that to settle, then read whatever the state.
+        await BotsStore.waitWhileConnecting()
+        let writes = writeSerial[group] ?? 0
         do {
+            try Task.checkCancellation()
             let answer = try await fetch(try liveClient())
             guard stillLive(account), reads[key] == serial else { return }
             // A first read is shown anyway: nothing is on screen yet for it to put back.
@@ -310,11 +311,17 @@ final class BotsInboxLive {
                        let list = BotLossyList(answer.rows)
                        withAnimation(Motion.snappy) { inboxRows = list.items }
                        inboxSkipped = list.skipped
-                       // A row the desktop opened again (a new revision) shows as waiting again.
+                       // A row the desktop opened again shows as waiting again: a new revision, or open after a
+                       // read had it closed (a redone review can come back with the same text and revision).
+                       // A row still closed on a second read leaves the list.
                        for (id, kept) in answered {
-                           if let fresh = list.items.first(where: { $0.id == id }), fresh.status == "open",
-                              fresh.revision != kept.row.revision {
+                           let fresh = list.items.first(where: { $0.id == id })
+                           if let fresh, fresh.status == "open" {
+                               if fresh.revision != kept.row.revision || kept.closedSeen { answered[id] = nil }
+                           } else if kept.closedSeen {
                                answered[id] = nil
+                           } else {
+                               answered[id]?.closedSeen = true
                            }
                        }
                    })
@@ -379,12 +386,61 @@ final class BotsInboxLive {
     }
 
     func workRows(_ botID: String) -> (working: [BotWorkRow], done: [BotWorkRow]) {
-        BotsInboxWire.workRows(work.filter { $0.agentId == botID })
+        let mine = work.filter { $0.agentId == botID }
+        var rows = BotsInboxWire.workRows(mine)
+        // A card in Review waits in Needs you. The desktop's inbox leaves out one older than 30 days, so once the
+        // inbox is read, such a card is shown here instead of nowhere.
+        if inboxLoad == .loaded {
+            let inInbox = Set(inboxRows.map(\.id))
+            for record in mine where record.scheduleKind == "card" && record.status == "review"
+                && !inInbox.contains("review:" + record.id) {
+                let at = record.statusChangedAt ?? record.lastRunAt ?? record.createdAt ?? 0
+                rows.working.append(BotWorkRow(
+                    id: record.id, title: (record.name?.isEmpty == false ? record.name : nil) ?? "Untitled",
+                    detail: "Waiting for your review. Review it on your desktop.", state: .waiting, canStop: false,
+                    updated: ChatFormat.listTime(at > 0 ? Date(timeIntervalSince1970: at) : nil), at: at
+                ))
+            }
+        }
+        return rows
     }
 
-    /// Something of this bot's is running or about to, so Working is read again every few seconds.
+    /// Something of this bot's is running, so it is checked again every few seconds. A card waiting its turn
+    /// can wait for hours (its bot off or out of runs), so it is not watched.
     func watching(_ botID: String) -> Bool {
-        isLive && workRows(botID).working.contains { $0.state == .running || $0.state == .waiting }
+        isLive && BotsInboxWire.workRows(work.filter { $0.agentId == botID }).working.contains { $0.state == .running }
+    }
+
+    /// The light check while something of this bot's runs: each running card or routine on its own
+    /// (GET /api/tasks/{id}). Only when one of them changed (or is gone) are Working, Done and Needs you read
+    /// again in full. A check that does not get through waits for the next one, quietly.
+    func pollRunning(_ botID: String) async {
+        guard liveNow else { return }
+        let account = self.account
+        let running = BotsInboxWire.workRows(work.filter { $0.agentId == botID }).working
+            .filter { $0.state == .running }.map(\.id)
+        var changed = false
+        for id in running {
+            guard let before = work.first(where: { $0.id == id }) else { continue }
+            do {
+                let now = try await liveClient().botWorkCard(id)
+                guard stillLive(account), !Task.isCancelled else { return }
+                if now.status != before.status || now.runStartedAt != before.runStartedAt {
+                    changed = true
+                    break
+                }
+            } catch {
+                guard stillLive(account), !Task.isCancelled else { return }
+                if case .server(status: 404, _) = error as? APIError {
+                    changed = true
+                    break
+                }
+                return
+            }
+        }
+        guard changed else { return }
+        await loadWork()
+        await loadInbox()
     }
 
     func noticeRows(_ botID: String) -> [BotNotificationDTO] {
@@ -438,7 +494,12 @@ final class BotsInboxLive {
     /// Answer a question or a review. `action` is one of the row's own actions: "reply" or "close" for a
     /// question, "approve" or "reply" (send it back with a note) for a review.
     func respond(_ row: BotInboxRowDTO, action: String, text: String = "") async -> BotsWriteOutcome {
-        guard liveNow, let revision = row.revision, (row.actions ?? []).contains(action), action != "open",
+        guard liveNow else {
+            let words = "Still reading your desktop. Try again in a moment."
+            say(words)
+            return .refused(words)
+        }
+        guard let revision = row.revision, (row.actions ?? []).contains(action), action != "open",
               !busyRows.contains(row.id) else { return .refused("") }
         let account = self.account
         let groups = ["inbox", "work"]
@@ -466,8 +527,11 @@ final class BotsInboxLive {
             }
             withAnimation(Motion.bouncy) { answered[row.id] = BotAnsweredRow(row: row, text: settled) }
             Haptics.success()
-            await loadInbox()
-            await loadWork()
+            // The screen stops saying "Sending" now; the re-reads follow on their own.
+            Task {
+                await loadInbox()
+                await loadWork()
+            }
             return .done
         } catch {
             endWrite(groups)
@@ -476,6 +540,7 @@ final class BotsInboxLive {
             if unconfirmed(error) {
                 if let api = error as? APIError, api != APIError.from(URLError(.timedOut)) { Connection.shared.note(api) }
                 say(unsure(what))
+                // The buttons stay off until the desktop's lists are read, so nothing is sent twice unseen.
                 await loadInbox()
                 await loadWork()
                 return .unsure
@@ -483,7 +548,7 @@ final class BotsInboxLive {
             Connection.shared.note(error)
             let words = error.plainWords
             say(words)
-            await loadInbox()
+            Task { await loadInbox() }
             return .refused(words)
         }
     }

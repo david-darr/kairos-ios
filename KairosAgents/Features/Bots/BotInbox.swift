@@ -7,6 +7,7 @@ struct BotInboxSection: View {
     let store = BotsStore.shared
     let live = BotsInboxLive.shared
     @State private var showAllDone = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         let cards = store.needs.filter { $0.botID == botID }
@@ -94,7 +95,7 @@ struct BotInboxSection: View {
             .kCard(radius: 20)
 
             if store.liveMode, live.inboxSkipped + live.workSkipped > 0 {
-                HintLine(text: "Some items from your desktop could not be read and are left out.", symbol: "info.circle")
+                HintLine(text: "Some items on your desktop could not be read, so some may be missing here.", symbol: "info.circle")
                     .padding(.horizontal, 4)
             }
         }
@@ -109,14 +110,14 @@ struct BotInboxSection: View {
                 await live.loadNotices()
             }.value
         }
-        .task(id: "\(BotsStore.connectionKey)-\(live.watching(botID))") {
-            // While something of this bot's runs or waits its turn, read Working and Needs you again now and then.
-            guard store.liveMode, live.watching(botID) else { return }
+        .task(id: "\(BotsStore.connectionKey)-\(live.watching(botID))-\(scenePhase == .active)") {
+            // While something of this bot's runs and the app is in front, check it every few seconds (one small
+            // read per running item); Working, Done and Needs you are read in full only when one changed.
+            guard store.liveMode, live.watching(botID), scenePhase == .active else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(6))
                 guard !Task.isCancelled, store.liveMode else { return }
-                await live.loadWork()
-                await live.loadInbox()
+                await live.pollRunning(botID)
             }
         }
     }
@@ -144,7 +145,7 @@ struct BotInboxSection: View {
                     EmptyNote(text: "Nothing is waiting on you.", symbol: "checkmark.circle").kCard(radius: 20)
                 }
             } else {
-                ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
+                ForEach(Array(cards.enumerated()), id: \.element.viewKey) { index, card in
                     NeedsCardView(card: card)
                         .arrives(min(index, 12))
                 }
@@ -266,6 +267,9 @@ struct NeedsCardView: View {
             case .review(let title, let summary):
                 ReviewBody(card: card, title: title, summary: summary)
             }
+            if card.settled == nil, BotsLiveCards.shared.check(card) == .notReceived {
+                HintLine(text: "Your desktop did not get your answer. It is still waiting.", symbol: "exclamationmark.circle")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
@@ -305,6 +309,31 @@ struct SettledLine: View {
     }
 }
 
+/// A desktop card's settled line. While its answer is not confirmed it never says Allowed, Rejected or
+/// Answered: it says the phone is checking, or that it could not check, with Try again (a read, never a resend).
+struct CardSettledLine: View {
+    let card: NeedsCard
+    let settled: Settled
+    let store = BotsStore.shared
+
+    var body: some View {
+        switch BotsLiveCards.shared.check(card) {
+        case .checking:
+            HintLine(text: "Not confirmed yet. Checking with your desktop.", symbol: "arrow.triangle.2.circlepath")
+        case .failed:
+            VStack(alignment: .leading, spacing: 10) {
+                HintLine(text: "Not confirmed. This iPhone could not check with your desktop.", symbol: "exclamationmark.circle")
+                PillButton(title: "Try again", symbol: "arrow.clockwise") {
+                    Haptics.tap()
+                    store.recheckCard(card)
+                }
+            }
+        case .notReceived, nil:
+            SettledLine(settled: settled)
+        }
+    }
+}
+
 private struct ApprovalBody: View {
     let card: NeedsCard
     let title: String
@@ -331,7 +360,7 @@ private struct ApprovalBody: View {
             .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             if let settled = card.settled {
-                SettledLine(settled: settled)
+                CardSettledLine(card: card, settled: settled)
             } else if replying {
                 replyBox
             } else {
@@ -425,7 +454,7 @@ private struct QuestionBody: View {
             if let settled = card.settled {
                 Text(questions.first?.prompt ?? "").font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
                 Text(summary).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-                SettledLine(settled: settled)
+                CardSettledLine(card: card, settled: settled)
             } else {
                 if questions.count > 1 { tabs }
                 questionView(questions[current])
@@ -740,9 +769,16 @@ struct InboxRowCard: View {
     @State private var confirm: Pending?
     @FocusState private var focused: Bool
 
-    enum Pending: String, Identifiable {
-        case reply, close
-        var id: String { rawValue }
+    /// What the confirm sheet sends, with the row as it was when the sheet opened: a row that changed under the
+    /// sheet is refused by the desktop (its revision no longer matches) instead of answered unseen.
+    enum Pending: Identifiable {
+        case reply(BotInboxRowDTO), close(BotInboxRowDTO)
+        var id: String {
+            switch self {
+            case .reply: "reply"
+            case .close: "close"
+            }
+        }
     }
 
     private var review: Bool { BotsInboxWire.lane(row.id) == "review" }
@@ -791,7 +827,7 @@ struct InboxRowCard: View {
                         }
                     } else {
                         if actions.contains("close") {
-                            PillButton(title: "Close", wide: true) { confirm = .close }
+                            PillButton(title: "Close", wide: true) { confirm = .close(row) }
                         }
                         if actions.contains("reply") {
                             PillButton(title: "Reply", symbol: "arrowshape.turn.up.left", look: .filled, wide: true) { startReply() }
@@ -816,13 +852,13 @@ struct InboxRowCard: View {
         .animation(Motion.snappy, value: replying)
         .sheet(item: $confirm) { pending in
             switch pending {
-            case .reply:
+            case .reply(let seen):
                 ConfirmSheet(title: "Send this reply?", detail: "\(botName) gets your reply: \(trimmed)", confirm: "Send reply", danger: false) {
-                    send("reply")
+                    send("reply", seen)
                 }
-            case .close:
+            case .close(let seen):
                 ConfirmSheet(title: "Close this question?", detail: "\(botName) gets no answer, and the question cannot be answered after this.", confirm: "Close question") {
-                    send("close")
+                    send("close", seen)
                 }
             }
         }
@@ -857,7 +893,7 @@ struct InboxRowCard: View {
                         }
                         send("reply")
                     } else {
-                        confirm = .reply
+                        confirm = .reply(row)
                     }
                 }
             }
@@ -866,13 +902,14 @@ struct InboxRowCard: View {
         .opacity(busy || writing ? 0.5 : 1)
     }
 
-    private func send(_ action: String) {
+    private func send(_ action: String, _ seen: BotInboxRowDTO? = nil) {
         guard !busy, !writing else { return }
         Haptics.tap()
         writing = true
         let sent = action == "reply" ? trimmed : ""
+        let target = seen ?? row
         Task {
-            let outcome = await live.respond(row, action: action, text: sent)
+            let outcome = await live.respond(target, action: action, text: sent)
             writing = false
             if outcome == .done {
                 text = ""
