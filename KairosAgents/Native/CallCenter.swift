@@ -6,13 +6,17 @@ import PushKit
 import SwiftUI
 import UIKit
 
-/// What the native call layer asks of the call connection (`/api/agent-calls`, the Home and chats team).
-/// The audio stream must not start before CallKit hands over the audio session.
+/// What the native call layer asks of the call's voice (`CallSession`, wired by the connection once a desktop is
+/// paired). The audio must not start before CallKit hands over the audio session.
 enum CallAudioBridge {
-    /// The audio session is live: start streaming the call with this bot (ring id when it was a ring).
-    static var start: (_ botID: String, _ ringID: String?) async -> Void = { _, _ in }
-    /// The call ended: close the stream.
+    /// The audio session is live for this call: start its voice, or start it again after CallKit took the audio away.
+    static var start: (_ call: CallAudioStart) async -> Void = { _ in }
+    /// The call ended: stop the voice and release everything it holds.
     static var stop: () async -> Void = {}
+    /// CallKit took the audio session away (didDeactivate) without ending the call.
+    static var paused: () -> Void = {}
+    /// The call was muted or unmuted (the call screen's key or CallKit's own).
+    static var muted: (_ muted: Bool) -> Void = { _ in }
 }
 
 /// Calls with bots: PushKit rings on a locked phone, CallKit's native screens, the audio session, mute and speaker.
@@ -32,6 +36,8 @@ final class CallCenter {
         var bot: Bot
         var ringID: String?
         var connectedAt: Date?
+        /// The bot's conversation the desktop named when it took the answer (a ring's `target.sessionId`).
+        var chatID: String?
         /// CallKit knows this call. A ring answered from a notification link is the app's alone.
         var viaCallKit = false
     }
@@ -328,6 +334,15 @@ final class CallCenter {
         }
     }
 
+    /// The call's voice ends the call: the desktop ended it (`failed` false), or it cannot go on (`failed` true).
+    func endFromCall(failed: Bool) {
+        guard let session else { return }
+        if session.viaCallKit {
+            provider?.reportCall(with: session.uuid, endedAt: nil, reason: failed ? .failed : .remoteEnded)
+        }
+        finish(session.uuid)
+    }
+
     func toggleSpeaker() {
         speaker.toggle()
         try? AVAudioSession.sharedInstance().overrideOutputAudioPort(speaker ? .speaker : .none)
@@ -372,7 +387,8 @@ final class CallCenter {
             switch reply {
             case .sample:
                 onSent()
-            case .sent(let botID, let botName):
+            case .sent(let botID, let botName, let chatID):
+                if let chatID, !chatID.isEmpty { session?.chatID = chatID }
                 if let botID, Self.isPlainID(botID), botID != session?.bot.id {
                     let name = botName.map { String($0.prefix(60)) }.flatMap { $0.isEmpty ? nil : $0 } ?? session?.bot.name ?? "A bot"
                     session?.bot = Self.callerBot(id: botID, name: name, paired: true)
@@ -427,7 +443,13 @@ final class CallCenter {
     fileprivate func audioActivated() {
         guard let session else { return }
         try? AVAudioSession.sharedInstance().overrideOutputAudioPort(speaker ? .speaker : .none)
-        Task { await CallAudioBridge.start(session.bot.id, session.ringID) }
+        let call = CallAudioStart(callID: session.uuid, ringID: session.ringID, ownsAudioSession: false)
+        Task { await CallAudioBridge.start(call) }
+    }
+
+    fileprivate func audioDeactivated() {
+        guard session != nil else { return }
+        CallAudioBridge.paused()
     }
 
     fileprivate func reset() {
@@ -442,10 +464,17 @@ final class CallCenter {
         session?.connectedAt = .now
         if session?.viaCallKit == true { provider?.reportOutgoingCall(with: uuid, connectedAt: .now) }
         if let session { LiveActivities.shared.startCall(bot: session.bot, ringID: session.ringID ?? uuid.uuidString) }
+        // Without CallKit (the simulator, a ring answered from a link) no didActivate comes: the voice starts here
+        // and looks after the audio session itself.
+        if let session, !session.viaCallKit {
+            let call = CallAudioStart(callID: session.uuid, ringID: session.ringID, ownsAudioSession: true)
+            Task { await CallAudioBridge.start(call) }
+        }
     }
 
     private func setMuted(_ value: Bool) {
         muted = value
+        CallAudioBridge.muted(value)
         LiveActivities.shared.updateCall(muted: value)
     }
 
@@ -495,7 +524,9 @@ nonisolated final class CallKitRelay: NSObject, CXProviderDelegate, PKPushRegist
         MainActor.assumeIsolated { CallCenter.shared.audioActivated() }
     }
 
-    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {}
+    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        MainActor.assumeIsolated { CallCenter.shared.audioDeactivated() }
+    }
 
     func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
         let token = pushCredentials.token.map { String(format: "%02x", $0) }.joined()

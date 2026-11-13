@@ -4,8 +4,9 @@ import Foundation
 nonisolated enum RingReply: Equatable, Sendable {
     /// Not paired: there is no desktop to tell, and the sample call goes on as before.
     case sample
-    /// The desktop took it. For an answer, the bot it named in its reply (either may be missing).
-    case sent(botID: String?, botName: String?)
+    /// The desktop took it. For an answer, the bot it named in its reply and the conversation the call belongs to
+    /// (any may be missing).
+    case sent(botID: String?, botName: String?, chatID: String?)
     /// The ring had already ended on the desktop: "answered" (somewhere else), "declined" or "expired".
     case ended(String)
     /// It could not be sent before the ring ran out (signed out, or the desktop never answered).

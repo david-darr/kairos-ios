@@ -6,6 +6,7 @@ struct CallView: View {
     let bot: Bot
     @Environment(\.dismiss) private var dismiss
     private var calls = CallCenter.shared
+    private var voice = CallSession.shared
 
     init(bot: Bot) {
         self.bot = bot
@@ -13,6 +14,17 @@ struct CallView: View {
 
     private var session: CallCenter.Session? {
         calls.session?.bot.id == bot.id ? calls.session : nil
+    }
+
+    /// Paired, the call has a real voice; its timer starts when the microphone is really listening.
+    private var live: Bool { voice.isLive(session?.uuid) }
+
+    private var openedAt: Date? { live ? voice.openedAt : session?.connectedAt }
+
+    /// The bars follow the real level (the microphone, or the bot while it speaks) in a live call.
+    private var barScale: CGFloat {
+        guard live, !calls.muted else { return 1 }
+        return 0.45 + CGFloat(min(1, voice.level)) * 1.1
     }
 
     var body: some View {
@@ -41,12 +53,17 @@ struct CallView: View {
             .shadow(color: .black.opacity(0.5), radius: 30, y: 18)
 
             Text(bot.name).font(KFont.display(44)).foregroundStyle(Palette.cream).padding(.top, 22)
-            LevelBars(color: Palette.cream.opacity(0.75), active: !calls.muted).padding(.top, 6)
+            LevelBars(color: Palette.cream.opacity(0.75), active: !calls.muted)
+                .scaleEffect(x: 1, y: barScale)
+                .animation(Motion.snappy, value: barScale)
+                .padding(.top, 6)
             Group {
-                if let connected = session?.connectedAt {
+                if let connected = openedAt {
                     TimelineView(.periodic(from: connected, by: 1)) { context in
                         Text(calls.muted ? "Muted · " + timer(context.date, since: connected) : timer(context.date, since: connected))
                     }
+                } else if live, let status = voice.status(botName: bot.name, muted: calls.muted) {
+                    Text(status)
                 } else {
                     Text("Calling…")
                 }
@@ -54,6 +71,27 @@ struct CallView: View {
             .font(KFont.ui(16).monospacedDigit())
             .foregroundStyle(Palette.cream.opacity(0.7))
             .padding(.top, 10)
+            if live {
+                VStack(spacing: 6) {
+                    if openedAt != nil, let status = voice.status(botName: bot.name, muted: calls.muted) {
+                        Text(status)
+                            .font(KFont.ui(14, relativeTo: .subheadline))
+                            .foregroundStyle(Palette.cream.opacity(0.6))
+                            .contentTransition(.opacity)
+                            .animation(Motion.gentle, value: status)
+                    }
+                    if let line = voice.line {
+                        Text(line)
+                            .font(KFont.ui(14, .medium, relativeTo: .subheadline))
+                            .foregroundStyle(Palette.cream.opacity(0.9))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 32)
+                            .accessibilityAddTraits(.updatesFrequently)
+                    }
+                }
+                .padding(.top, 6)
+            }
 
             Spacer()
             Spacer()
