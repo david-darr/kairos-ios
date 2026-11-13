@@ -76,7 +76,7 @@ struct RoutinesScreen: View {
 
     var body: some View {
         let routines = (isLive ? live.routines(for: botID) : store.routines(for: botID)).sorted { ($0.on ? 0 : 1, $0.hour) < ($1.on ? 0 : 1, $1.hour) }
-        let triggers = (isLive ? live.triggers : store.triggers).filter { $0.botID == botID }
+        let triggers = (isLive ? live.shownTriggers : store.triggers).filter { $0.botID == botID }
         BotsPage("Routines and triggers", subtitle: store.bot(botID).name, live: isLive, trailing: {
             Menu {
                 Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
@@ -119,11 +119,11 @@ struct RoutinesScreen: View {
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel(text: "Routines").padding(.horizontal, 4)
                 if isLive {
-                    BotsLoadNote(state: live.routinesLoad, waiting: "Reading routines from your desktop.") {
+                    BotsLoadNote(state: live.shown(live.routinesLoad), waiting: "Reading routines from your desktop.") {
                         Task { await live.refreshRoutines(force: false) }
                     }
                 }
-                if routines.isEmpty && (!isLive || live.routinesLoad == .loaded) {
+                if routines.isEmpty && (!isLive || (live.isCurrent && live.routinesLoad == .loaded)) {
                     EmptyNote(text: "No routines yet. Add one and this bot works on its own, on a schedule.", symbol: "clock").kCard(radius: 20)
                 }
                 ForEach(Array(routines.enumerated()), id: \.element.id) { index, routine in
@@ -140,7 +140,7 @@ struct RoutinesScreen: View {
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel(text: "Triggers").padding(.horizontal, 4)
                 if isLive {
-                    BotsLoadNote(state: live.triggersLoad, waiting: "Reading triggers from your desktop.") {
+                    BotsLoadNote(state: live.shown(live.triggersLoad), waiting: "Reading triggers from your desktop.") {
                         Task { await live.loadTriggers() }
                     }
                 }
@@ -198,11 +198,11 @@ struct RoutinesScreen: View {
             await live.loadIfNeeded()
             if store.bot(botID).isKip { await live.loadWatch() }
         }
-        .onChange(of: live.watch?.morning?.time) { syncMorning() }
+        .onChange(of: live.shownWatch?.morning?.time) { syncMorning() }
         .task(id: briefHour * 60 + briefMinute) {
             // The time chip sets the hour and the minute one after the other: send once it settles,
             // and only a time the person picked (never the one just read from the desktop).
-            guard isLive, let stored = TasksWire.clock(live.watch?.morning?.time),
+            guard isLive, let stored = TasksWire.clock(live.shownWatch?.morning?.time),
                   stored.hour != briefHour || stored.minute != briefMinute else { return }
             try? await Task.sleep(for: .seconds(0.8))
             guard !Task.isCancelled else { return }
@@ -219,7 +219,7 @@ struct RoutinesScreen: View {
     }
 
     private func syncMorning() {
-        guard let clock = TasksWire.clock(live.watch?.morning?.time) else { return }
+        guard let clock = TasksWire.clock(live.shownWatch?.morning?.time) else { return }
         briefHour = clock.hour
         briefMinute = clock.minute
     }
@@ -232,7 +232,7 @@ struct RoutinesScreen: View {
     /// Kip's watch on the desktop: a routine of Kip's, plus the morning brief setting.
     @ViewBuilder
     private var liveWatchCard: some View {
-        if let watch = live.watch {
+        if let watch = live.shownWatch {
             let on = watch.enabled ?? false
             let hasRoutine = watch.routineId != nil && (watch.state == "working" || watch.state == "paused")
             VStack(alignment: .leading, spacing: 10) {
@@ -255,7 +255,7 @@ struct RoutinesScreen: View {
                     HintLine(text: "Kip is not watching your day yet.", symbol: "info.circle")
                 }
                 if watch.morning != nil {
-                    Toggle(isOn: Binding(get: { live.watch?.morning?.on ?? false }, set: { value in
+                    Toggle(isOn: Binding(get: { live.shownWatch?.morning?.on ?? false }, set: { value in
                         Haptics.select()
                         live.setMorning(on: value, say: store.say)
                     })) {
@@ -281,7 +281,7 @@ struct RoutinesScreen: View {
             .kCard(radius: 20, raised: true)
             .onAppear(perform: syncMorning)
         } else {
-            BotsLoadNote(state: live.watchLoad, waiting: "Reading Kip's watch from your desktop.") {
+            BotsLoadNote(state: live.shown(live.watchLoad), waiting: "Reading Kip's watch from your desktop.") {
                 Task { await live.loadWatch() }
             }
         }
@@ -524,10 +524,16 @@ struct RoutineEditorScreen: View {
         .task(id: BotsRoutinesLive.connectionKey) {
             live.followConnection()
             guard isLive else { return }
+            if let formAccount = base?.account, formAccount != BotsRoutinesLive.accountKey {
+                // Another desktop or account: nothing read for the last one stays in the form.
+                base = nil
+                missing = false
+                outcome = nil
+            }
             await live.loadIfNeeded()
             loadLive()
             await live.loadLimits()
-            if base != nil && endpointID.isEmpty, let first = live.limits.first { endpointID = first.endpointId }
+            if base != nil && endpointID.isEmpty, let first = live.shownLimits.first { endpointID = first.endpointId }
         }
         .task(id: isLive && base != nil ? BotsRoutinesLive.signature(form) : "") {
             guard isLive, base != nil else { return }
@@ -704,13 +710,13 @@ struct RoutineEditorScreen: View {
         case .limitReset:
             BotsSection(title: "After a limit reset") {
                 if isLive {
-                    if live.limits.isEmpty {
+                    if live.shownLimits.isEmpty {
                         HintLine(text: live.limitsLoad == .loaded ? "Your desktop has no usage limit to follow right now." : "Reading usage limits from your desktop.", symbol: "info.circle")
                             .padding(.horizontal, 16).frame(minHeight: 52)
                     } else {
-                        MenuRow(title: "Which limit", options: live.limits.map { $0.name ?? $0.endpointId }, selection: Binding(
-                            get: { live.limits.first { $0.endpointId == endpointID }.map { $0.name ?? $0.endpointId } ?? "Pick one" },
-                            set: { name in endpointID = live.limits.first { ($0.name ?? $0.endpointId) == name }?.endpointId ?? endpointID }
+                        MenuRow(title: "Which limit", options: live.shownLimits.map { $0.name ?? $0.endpointId }, selection: Binding(
+                            get: { live.shownLimits.first { $0.endpointId == endpointID }.map { $0.name ?? $0.endpointId } ?? "Pick one" },
+                            set: { name in endpointID = live.shownLimits.first { ($0.name ?? $0.endpointId) == name }?.endpointId ?? endpointID }
                         ))
                     }
                 } else {

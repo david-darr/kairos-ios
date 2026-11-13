@@ -45,7 +45,7 @@ struct CalendarDayView: View {
             controls
             weekStrip
             if isLive {
-                BotsLoadNote(state: live.calendarLoad, waiting: "Reading the week from your desktop.") {
+                BotsLoadNote(state: live.shown(live.calendarLoad), waiting: "Reading the week from your desktop.") {
                     Task { await live.loadCalendar(week: week) }
                 }
             }
@@ -259,7 +259,7 @@ struct CalendarDayView: View {
     @ViewBuilder
     private var liveResetMarker: some View {
         let calendar = Calendar.current
-        if let limit = live.limits.first(where: { limit in
+        if let limit = live.shownLimits.first(where: { limit in
                guard let date = limit.resetsAt?.date else { return false }
                return calendar.isDate(date, inSameDayAs: day)
            }),
@@ -317,7 +317,7 @@ struct CalendarDayView: View {
     private func liveEntries(for date: Date) -> [CalendarEntry] {
         let calendar = Calendar.current
         var out: [CalendarEntry] = []
-        for routine in live.routines where botID == nil || routine.botID == botID {
+        for routine in live.shownRoutines where botID == nil || routine.botID == botID {
             guard let id = live.desktopID(routine) else { continue }
             let times = (live.occurrences[id] ?? []).filter { calendar.isDate($0, inSameDayAs: date) }
             for time in times.prefix(8) {
@@ -449,11 +449,11 @@ struct AutomationDetailSheet: View {
     // MARK: Paired
 
     private var liveBody: some View {
-        let current = desk.routines.first { $0.id == routine.id } ?? routine
+        let current = desk.shownRoutines.first { $0.id == routine.id } ?? routine
         let bot = store.bot(current.botID)
         let id = desk.desktopID(current) ?? ""
         let waits = desk.waits(current)
-        let gone = desk.routinesLoad == .loaded && !desk.routines.contains { $0.id == routine.id }
+        let gone = desk.routinesLoad == .loaded && !desk.shownRoutines.contains { $0.id == routine.id }
         let times = (desk.nextTimes[id] ?? []).map { RoutineTiming.label($0, now: Date()) }
         let runs = (desk.details[id]?.recentRuns ?? []).compactMap(\.value)
         return ScrollView {
@@ -684,8 +684,8 @@ struct AutomationsScreen: View {
 
     /// Paired: every routine and trigger here is the desktop's, never a sample.
     private var isLive: Bool { !Connection.shared.usesSampleData }
-    private var allRoutines: [Routine] { isLive ? desk.routines : store.routines }
-    private var allTriggers: [BotTrigger] { isLive ? desk.triggers : store.triggers }
+    private var allRoutines: [Routine] { isLive ? desk.shownRoutines : store.routines }
+    private var allTriggers: [BotTrigger] { isLive ? desk.shownTriggers : store.triggers }
 
     var body: some View {
         let routines = allRoutines.filter { filter == "All bots" || store.bot($0.botID).name == filter }
@@ -840,14 +840,14 @@ struct AutomationsScreen: View {
     /// Paired: a usage limit near its end on the desktop, and the routines due before it resets.
     @ViewBuilder
     private var liveLimitWarning: some View {
-        if let limit = desk.limits.first(where: { ($0.nearLimit == true || $0.blocked == true) && $0.resetsAt?.date != nil }),
+        if let limit = desk.shownLimits.first(where: { ($0.nearLimit == true || $0.blocked == true) && $0.resetsAt?.date != nil }),
            let resets = limit.resetsAt?.date {
             let used = Int((limit.windows ?? []).compactMap { $0.value?.usedPercent }.max() ?? 0)
             let calendar = Calendar.current
             let clock = clockText(calendar.component(.hour, from: resets), calendar.component(.minute, from: resets))
             let when = calendar.isDateInToday(resets) ? clock
                 : (calendar.isDateInTomorrow(resets) ? "tomorrow \(clock)" : RoutineTiming.label(resets, now: Date()))
-            let due = desk.routines.filter { routine in
+            let due = desk.shownRoutines.filter { routine in
                 guard routine.on, let next = TasksWire.date(desk.record(routine)?.nextRunAt) else { return false }
                 return next < resets
             }
@@ -950,7 +950,7 @@ struct AutomationsScreen: View {
         return VStack(alignment: .leading, spacing: 8) {
             SectionLabel(text: "Triggers \(triggers.count)").padding(.horizontal, 4)
             if isLive {
-                BotsLoadNote(state: desk.triggersLoad, waiting: "Reading triggers from your desktop.") {
+                BotsLoadNote(state: desk.shown(desk.triggersLoad), waiting: "Reading triggers from your desktop.") {
                     Task { await desk.loadTriggers() }
                 }
             }

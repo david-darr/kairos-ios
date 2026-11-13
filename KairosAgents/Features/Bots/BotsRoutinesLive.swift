@@ -28,6 +28,8 @@ nonisolated struct BotRoutineForm: Equatable, Sendable {
     var limitSet: Bool
     /// The desktop's revision this form was read at.
     var revision: String?
+    /// The desktop and account it was read from.
+    var account = ""
 }
 
 /// The editor's schedule line while paired: what the desktop says the schedule means.
@@ -219,7 +221,21 @@ final class BotsRoutinesLive {
 
     func waits(_ trigger: BotTrigger) -> Bool { triggerRefs[trigger.id].map { busy.contains($0.kind.rawValue + ":" + $0.id) } ?? true }
 
-    func routines(for botID: String) -> [Routine] { routines.filter { $0.botID == botID } }
+    /// What was read belongs to the desktop and account paired right now. Until the screen's task has caught up
+    /// with a new pairing, nothing read for the last one is shown.
+    var isCurrent: Bool { active && account == Self.accountKey }
+    var shownRoutines: [Routine] { isCurrent ? routines : [] }
+    var shownTriggers: [BotTrigger] { isCurrent ? triggers : [] }
+    var shownWatch: BotWatchDTO? { isCurrent ? watch : nil }
+    var shownLimits: [BotLimitDTO] { isCurrent ? limits : [] }
+
+    /// A load state for the screen: reading until this account's first read has landed.
+    func shown(_ state: BotsLiveLoad) -> BotsLiveLoad {
+        guard isCurrent else { return .loading }
+        return state == .idle ? .loading : state
+    }
+
+    func routines(for botID: String) -> [Routine] { shownRoutines.filter { $0.botID == botID } }
 
     /// The desktop's own sentence for the schedule.
     func sentence(_ routine: Routine) -> String { record(routine)?.sentence ?? routine.sentence }
@@ -237,8 +253,8 @@ final class BotsRoutinesLive {
         return last.id
     }
 
-    var routinesReady: Bool { routinesLoad == .loaded || !routines.isEmpty }
-    var triggersReady: Bool { triggersLoad == .loaded || !triggers.isEmpty }
+    var routinesReady: Bool { isCurrent && (routinesLoad == .loaded || !routines.isEmpty) }
+    var triggersReady: Bool { isCurrent && (triggersLoad == .loaded || !triggers.isEmpty) }
 
     // MARK: Reading
 
@@ -820,8 +836,10 @@ final class BotsRoutinesLive {
 
     /// The form for a routine on screen, from the desktop's record.
     func form(for routineID: UUID) -> BotRoutineForm? {
-        guard let id = desktopIDs[routineID], let record = records[id] else { return nil }
-        return Self.form(record, limits: limits)
+        guard isCurrent, let id = desktopIDs[routineID], let record = records[id] else { return nil }
+        var form = Self.form(record, limits: limits)
+        form.account = account
+        return form
     }
 
     /// A new routine's form: the desktop's own defaults, so nothing the person did not pick is sent.
@@ -834,7 +852,8 @@ final class BotsRoutinesLive {
                               onceDate: calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date(),
                               stopAfter: false,
                               stopDate: calendar.date(byAdding: .month, value: 1, to: Date()) ?? Date(),
-                              endpointID: limits.first?.endpointId ?? "", zone: nil, limitSet: false, revision: nil)
+                              endpointID: limits.first?.endpointId ?? "", zone: nil, limitSet: false, revision: nil,
+                              account: account)
     }
 
     /// What the desktop says a schedule means. Untouched, the routine's own stored schedule is asked about.
@@ -861,6 +880,7 @@ final class BotsRoutinesLive {
     /// Schedule a new routine. A Schedule whose answer was lost is looked for, never sent again blind.
     func create(_ form: BotRoutineForm, base: BotRoutineForm) async -> BotRoutineOutcome {
         guard active else { return .refused("Your desktop is not connected.") }
+        guard base.account == self.account, isCurrent else { return .refused("Your desktop changed. Open this again to start over.") }
         if createCheck != nil { return await confirmCreate() }
         guard let schedule = Self.schedule(form) else { return .refused("Pick which usage limit it follows.") }
         let account = self.account
@@ -912,6 +932,7 @@ final class BotsRoutinesLive {
     /// (the form keeps what was typed and saves against it next time).
     func update(_ routineID: UUID, _ form: BotRoutineForm, base: BotRoutineForm) async -> (BotRoutineOutcome, BotRoutineForm?) {
         guard active, let id = desktopIDs[routineID] else { return (.refused("Your desktop is not connected."), nil) }
+        guard base.account == self.account, isCurrent else { return (.refused("Your desktop changed. Open this again to start over."), nil) }
         let account = self.account
         if recheck.contains(id) {
             // The last save got no answer: look first, never send it again blind.
@@ -964,7 +985,9 @@ final class BotsRoutinesLive {
             let fresh = try await client().botRoutine(id)
             guard stillLive(account) else { return nil }
             replace(fresh)
-            return Self.form(fresh, limits: limits)
+            var form = Self.form(fresh, limits: limits)
+            form.account = account
+            return form
         } catch {
             Connection.shared.note(error)
             return nil
