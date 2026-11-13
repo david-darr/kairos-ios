@@ -83,10 +83,10 @@ struct CalDetailSheet: View {
     private func sourceNote(_ event: CalEvent) -> String? {
         if let reason = event.live?.readOnlyReason { return reason }
         switch event.source {
-        case .notes: "This is a note with a due time. Change it in Notes."
-        case .tab: "This deadline comes from the \(event.tabName ?? "tab") tab."
-        case .google where !(store.calendar(event.calendarID)?.writable ?? true): "This calendar is read-only."
-        default: nil
+        case .notes: return "This is a note with a due time. Change it in Notes."
+        case .tab: return "This deadline comes from the \(event.tabName ?? "tab") tab."
+        case .google where !(store.calendar(event.calendarID)?.writable ?? true): return "This calendar is read-only."
+        default: return nil
         }
     }
 
