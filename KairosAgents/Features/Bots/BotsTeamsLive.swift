@@ -515,9 +515,10 @@ final class BotsTeamsLive {
     // MARK: Rename
 
     /// Rename with the revision the team was read at. A stale revision is read again; the typed name stays.
-    func rename(_ teamID: String, to name: String) async -> BotTmOutcome {
+    /// `revision` is the one the form was filled from; without it, the newest read's.
+    func rename(_ teamID: String, to name: String, revision formRevision: Int? = nil) async -> BotTmOutcome {
         guard active, isCurrent else { return .refused("Your desktop is not connected.") }
-        guard let revision = departments[teamID]?.revision else { return .refused("Still reading this team from your desktop. Try again in a moment.") }
+        guard let revision = formRevision ?? departments[teamID]?.revision else { return .refused("Still reading this team from your desktop. Try again in a moment.") }
         guard !busy.contains(teamID) else { return .refused("Another change to this team is still on its way. Try again in a moment.") }
         let account = self.account
         let keys = teamKeys(teamID)

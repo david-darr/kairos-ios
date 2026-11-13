@@ -1934,6 +1934,10 @@ struct BotTmRenameForm: View {
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var filled = false
+    /// The desktop's name and revision the field was filled from. A save is checked against this revision, so a
+    /// rename made on the desktop since then comes back as "changed" and is never undone silently.
+    @State private var baseName = ""
+    @State private var baseRevision: Int?
     @State private var saving = false
     @State private var note: String?
     /// The name sent whose answer was lost: the next tap looks for it instead of sending.
@@ -1965,12 +1969,18 @@ struct BotTmRenameForm: View {
         }
         .onAppear(perform: fill)
         .onChange(of: record?.name) { fill() }
+        .onChange(of: record?.revision) { fill() }
     }
 
+    /// Fill from the desktop's record, and follow a newer read for as long as the person has not typed a
+    /// different name. Once they have, their text and the revision it was started from both stay.
     private func fill() {
-        guard !filled, let record = live.department(team.id) else { return }
+        guard !saving, lookFirst == nil, let record = live.department(team.id) else { return }
+        guard !filled || BotTmMap.clean(text) == BotTmMap.clean(baseName) else { return }
         filled = true
-        text = record.name ?? team.name
+        baseName = record.name ?? team.name
+        baseRevision = record.revision
+        text = baseName
     }
 
     private func save() {
@@ -1981,9 +1991,9 @@ struct BotTmRenameForm: View {
         }
         let name = BotTmMap.clean(text)
         guard !name.isEmpty, name.count <= 60 else { note = "Use a team name of 1 to 60 characters."; return }
-        if name == live.department(team.id)?.name { dismiss(); return }
+        if name == BotTmMap.clean(baseName) { dismiss(); return }
         saving = true
-        Task { finish(await live.rename(team.id, to: name), sent: name) }
+        Task { finish(await live.rename(team.id, to: name, revision: baseRevision), sent: name) }
     }
 
     private func finish(_ outcome: BotTmOutcome, sent: String) {
@@ -1997,9 +2007,19 @@ struct BotTmRenameForm: View {
             } else {
                 note = "The team is now \(sent). What you typed after that is not saved yet."
             }
-        case .refused(let words), .changed(let words):
+        case .refused(let words):
             lookFirst = nil
             note = words
+        case .changed(let words):
+            lookFirst = nil
+            // The person is now told: a second save goes against the team as the desktop has it.
+            if let record = live.department(team.id) {
+                baseName = record.name ?? baseName
+                baseRevision = record.revision
+                note = words + " Your desktop now calls it \(baseName)."
+            } else {
+                note = words
+            }
         case .unsure(let words):
             lookFirst = sent
             note = words
