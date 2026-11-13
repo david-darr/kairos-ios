@@ -206,6 +206,11 @@ final class BotsInboxLive {
     /// Writes on their way, and a counter bumped when one is sent or answered, per group of lists.
     @ObservationIgnored private var writing: [String: Int] = [:]
     @ObservationIgnored private var writeSerial: [String: Int] = [:]
+    /// Rows the desktop refused an answer for, at the revision refused: not sent again until a read of the inbox
+    /// shows what the desktop has.
+    @ObservationIgnored private var refusedRows: [String: Int] = [:]
+    /// Light checks made per bot while something of it runs.
+    @ObservationIgnored private var pollTicks: [String: Int] = [:]
 
     // MARK: Pairing
 
@@ -245,6 +250,8 @@ final class BotsInboxLive {
         reports = [:]
         reportLoad = [:]
         reads = [:]
+        refusedRows = [:]
+        pollTicks = [:]
     }
 
     /// Still showing the account a request was sent for. Checked after every await.
@@ -260,6 +267,15 @@ final class BotsInboxLive {
     }
 
     private func say(_ text: String) { BotsStore.shared.say(text) }
+
+    /// The client of the pairing a tap was made under, taken at the tap: a later pairing never gets its request.
+    private func pairedClient() -> APIClient? {
+        guard let client = Connection.shared.client else {
+            say(APIError.notPaired.plain)
+            return nil
+        }
+        return client
+    }
 
     // MARK: Reading
 
@@ -281,6 +297,8 @@ final class BotsInboxLive {
         if state != .loaded { set(.loading) }
         // While the desktop is still being reached, wait for that to settle, then read whatever the state.
         await BotsStore.waitWhileConnecting()
+        // Paired again during the wait: this read is not for the desktop now paired, so it does not go out.
+        guard stillLive(account) else { return }
         let writes = writeSerial[group] ?? 0
         do {
             try Task.checkCancellation()
@@ -311,6 +329,8 @@ final class BotsInboxLive {
                        let list = BotLossyList(answer.rows)
                        withAnimation(Motion.snappy) { inboxRows = list.items }
                        inboxSkipped = list.skipped
+                       // The rows now show what the desktop has: a refused row may be answered again by a tap.
+                       refusedRows = [:]
                        // A row the desktop opened again shows as waiting again: a new revision, or open after a
                        // read had it closed (a redone review can come back with the same text and revision).
                        // A row still closed on a second read leaves the list.
@@ -413,17 +433,21 @@ final class BotsInboxLive {
 
     /// The light check while something of this bot's runs: each running card or routine on its own
     /// (GET /api/tasks/{id}). Only when one of them changed (or is gone) are Working, Done and Needs you read
-    /// again in full. A check that does not get through waits for the next one, quietly.
+    /// again in full. A question a bot asks during a run is an inbox item only (agent_service.add_item): its task
+    /// record does not change, so Needs you is also read in full every fifth check (about 30 seconds) while
+    /// something runs. A check that does not get through waits for the next one, quietly.
     func pollRunning(_ botID: String) async {
-        guard liveNow else { return }
+        guard liveNow, let client = Connection.shared.client else { return }
         let account = self.account
+        let tick = (pollTicks[botID] ?? 0) + 1
+        pollTicks[botID] = tick
         let running = BotsInboxWire.workRows(work.filter { $0.agentId == botID }).working
             .filter { $0.state == .running }.map(\.id)
         var changed = false
         for id in running {
             guard let before = work.first(where: { $0.id == id }) else { continue }
             do {
-                let now = try await liveClient().botWorkCard(id)
+                let now = try await client.botWorkCard(id)
                 guard stillLive(account), !Task.isCancelled else { return }
                 if now.status != before.status || now.runStartedAt != before.runStartedAt {
                     changed = true
@@ -438,7 +462,10 @@ final class BotsInboxLive {
                 return
             }
         }
-        guard changed else { return }
+        guard changed else {
+            if tick % 5 == 0 { await loadInbox() }
+            return
+        }
         await loadWork()
         await loadInbox()
     }
@@ -501,6 +528,15 @@ final class BotsInboxLive {
         }
         guard let revision = row.revision, (row.actions ?? []).contains(action), action != "open",
               !busyRows.contains(row.id) else { return .refused("") }
+        if refusedRows[row.id] == revision {
+            // Refused at this revision and not read since: read the desktop's inbox, never send it again unseen.
+            let words = "Your desktop refused this a moment ago. Reading what it has now."
+            say(words)
+            busyRows.insert(row.id)
+            await loadInbox()
+            busyRows.remove(row.id)
+            return .refused(words)
+        }
         let account = self.account
         let groups = ["inbox", "work"]
         let review = BotsInboxWire.lane(row.id) == "review"
@@ -548,20 +584,25 @@ final class BotsInboxLive {
             Connection.shared.note(error)
             let words = error.plainWords
             say(words)
-            Task { await loadInbox() }
+            // The row stays busy until the desktop's inbox is read, so a quick second tap does not send it again.
+            refusedRows[row.id] = revision
+            busyRows.insert(row.id)
+            await loadInbox()
+            guard stillLive(account) else { return .refused(words) }
+            busyRows.remove(row.id)
             return .refused(words)
         }
     }
 
     /// Stop a running card or routine. A stopped card goes to its stuck list on the desktop.
     func stop(_ item: BotWorkRow) {
-        guard liveNow, item.canStop, !busyWork.contains(item.id) else { return }
+        guard liveNow, item.canStop, !busyWork.contains(item.id), let client = pairedClient() else { return }
         let account = self.account
         busyWork.insert(item.id)
         beginWrite(["work"])
         Task {
             do {
-                try await liveClient().taskStop(item.id)
+                try await client.taskStop(item.id)
                 endWrite(["work"])
                 guard stillLive(account) else { return }
                 say("Stopping \(item.title)")
@@ -589,13 +630,13 @@ final class BotsInboxLive {
     /// Send a stuck card back to Ready, so the desktop runs it again when its turn comes
     /// (task_service.py: set_card_status, Blocked to Ready restores its attempts).
     func tryAgain(_ item: BotWorkRow) {
-        guard liveNow, item.state == .failed, !busyWork.contains(item.id) else { return }
+        guard liveNow, item.state == .failed, !busyWork.contains(item.id), let client = pairedClient() else { return }
         let account = self.account
         busyWork.insert(item.id)
         beginWrite(["work"])
         Task {
             do {
-                _ = try await liveClient().taskCardStatus(item.id, status: "ready", note: nil)
+                _ = try await client.taskCardStatus(item.id, status: "ready", note: nil)
                 endWrite(["work"])
                 guard stillLive(account) else { return }
                 busyWork.remove(item.id)
@@ -639,6 +680,7 @@ final class BotsInboxLive {
         undo: @escaping (inout BotNotificationDTO) -> Void,
         send: @escaping (APIClient) async throws -> Void
     ) {
+        guard let client = pairedClient() else { return }
         let account = self.account
         let id = notice.id
         busyNotices.insert(id)
@@ -648,7 +690,7 @@ final class BotsInboxLive {
         beginWrite(["notices"])
         Task {
             do {
-                try await send(try liveClient())
+                try await send(client)
                 endWrite(["notices"])
                 guard stillLive(account) else { return }
                 busyNotices.remove(id)
@@ -675,7 +717,7 @@ final class BotsInboxLive {
     func markAllRead(_ botID: String) {
         guard liveNow, !markingAll.contains(botID) else { return }
         let ids = notices.filter { $0.agentId == botID && $0.read != true }.map(\.id).filter { !busyNotices.contains($0) }
-        guard !ids.isEmpty else { return }
+        guard !ids.isEmpty, let client = pairedClient() else { return }
         let account = self.account
         markingAll.insert(botID)
         busyNotices.formUnion(ids)
@@ -685,7 +727,7 @@ final class BotsInboxLive {
             var refused = 0
             for id in ids {
                 do {
-                    try await liveClient().botNotificationMarkRead(id)
+                    try await client.botNotificationMarkRead(id)
                     guard stillLive(account) else { break }
                     if let index = notices.firstIndex(where: { $0.id == id }) {
                         withAnimation(Motion.snappy) { notices[index].read = true }

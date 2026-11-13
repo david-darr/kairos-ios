@@ -268,7 +268,7 @@ struct NeedsCardView: View {
                 ReviewBody(card: card, title: title, summary: summary)
             }
             if card.settled == nil, BotsLiveCards.shared.check(card) == .notReceived {
-                HintLine(text: "Your desktop did not get your answer. It is still waiting.", symbol: "exclamationmark.circle")
+                HintLine(text: "Your desktop has not confirmed an answer. You can answer again.", symbol: "exclamationmark.circle")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -328,6 +328,8 @@ struct CardSettledLine: View {
                     store.recheckCard(card)
                 }
             }
+        case .desktopHas(let words):
+            HintLine(text: words, symbol: "info.circle")
         case .notReceived, nil:
             SettledLine(settled: settled)
         }
