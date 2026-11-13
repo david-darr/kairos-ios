@@ -82,8 +82,13 @@ struct MailMessageSheet: View {
                 }
 
                 VStack(spacing: 6) {
-                    GoldButton(title: store.drafts[item.id] == nil ? (store.isSample ? "Draft a reply" : "Write a reply") : "Open the draft",
-                               action: onDraft)
+                    if !store.isSample && store.replyAccount(for: item) == nil && store.drafts[item.id] == nil {
+                        // Paired, a reply goes only from the address this came to; that one cannot send from here.
+                        MailLiveLine(text: store.replyOffLine(for: item), symbol: "desktopcomputer")
+                    } else {
+                        GoldButton(title: store.drafts[item.id] == nil ? (store.isSample ? "Draft a reply" : "Write a reply") : "Open the draft",
+                                   action: onDraft)
+                    }
                     if store.isSample {
                         QuietButton(title: "Mark as handled", action: onHandled)
                     }
@@ -126,6 +131,9 @@ struct MailDraftSheet: View {
     @State private var problem: String?
     /// Paired: set the moment Send is tapped, cleared when the answer is known.
     @State private var inFlight = false
+    /// Paired: a send of this reply could not be confirmed. Send comes back only after the person says they
+    /// have read that and checked Sent, so nothing is sent again blind.
+    @State private var heldForCheck = false
 
     /// Paired: this reply is on its way. The sheet holds still and every control is off until it is known.
     private var sending: Bool { inFlight || store.sendingIDs.contains(item.id) }
@@ -181,6 +189,23 @@ struct MailDraftSheet: View {
                         }
                         .frame(maxWidth: .infinity, minHeight: 60)
                         .padding(.top, 14)
+                    } else if !store.isSample && store.replyAccount(for: item) == nil {
+                        // A reply goes only from the address this came to, and that one cannot send from here.
+                        Text(store.replyOffLine(for: item))
+                            .font(KFont.ui(14, relativeTo: .footnote))
+                            .foregroundStyle(Palette.inkFaint)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, minHeight: 60)
+                            .padding(.top, 14)
+                    } else if !store.isSample && heldForCheck {
+                        // The warning above says the last send could not be confirmed. Send comes back only after this.
+                        GoldButton(title: "I have checked Sent") {
+                            Haptics.tap()
+                            problem = nil
+                            heldForCheck = false
+                            swipeKey += 1
+                        }
+                        .padding(.top, 14)
                     } else if canSend {
                         SwipeUpToConfirm(title: "Swipe up to send", doneTitle: store.isSample ? "Sent" : "Check and send",
                                          symbol: "paperplane.fill") {
@@ -188,9 +213,7 @@ struct MailDraftSheet: View {
                         }
                         .id(swipeKey)
                     } else {
-                        Text(!store.isSample && store.defaultSender.isEmpty
-                             ? "Replies send from an Email tab account. Connect one in Email accounts."
-                             : "Add an address and a reply to send it.")
+                        Text("Add an address and a reply to send it.")
                             .font(KFont.ui(14, relativeTo: .footnote))
                             .foregroundStyle(Palette.inkFaint)
                             .multilineTextAlignment(.center)
@@ -256,7 +279,7 @@ struct MailDraftSheet: View {
     /// The swipe only asks; the confirm that names who and from where sends.
     private func askToSend() {
         problem = nil
-        if let why = store.sendProblem(draft) {
+        if let why = store.sendProblem(draft, for: item) {
             Haptics.thud()
             problem = why
             swipeKey += 1
@@ -267,11 +290,11 @@ struct MailDraftSheet: View {
 
     /// Exactly one send per confirm. The answer always shows; nothing is sent again by itself.
     private func sendLive() {
-        guard !sending else { return }
+        guard !sending, !heldForCheck else { return }
         let approved = draft
         inFlight = true
         Task {
-            let outcome = await store.sendLive(approved)
+            let outcome = await store.sendLive(approved, for: item)
             inFlight = false
             switch outcome {
             case .sent(let from):
@@ -284,9 +307,10 @@ struct MailDraftSheet: View {
                 problem = "Not sent. " + why
                 swipeKey += 1
             case .unknown(let text):
+                // Never shown as sent. The draft stays; Send waits until the person has read this.
                 Haptics.thud()
                 problem = text
-                swipeKey += 1
+                heldForCheck = true
             }
         }
     }
@@ -340,7 +364,11 @@ struct MailDraftSheet: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 SectionLabel(text: "From")
-                fromMenu
+                if store.isSample {
+                    fromMenu
+                } else {
+                    fromFixed
+                }
             }
             PlannerTextField(label: "To", placeholder: "name@example.com", text: $draft.to)
                 .textInputAutocapitalization(.never)
@@ -393,6 +421,30 @@ struct MailDraftSheet: View {
         .accessibilityLabel("From: \(draft.from)")
     }
 
+    /// Paired: a reply goes only from the address the message came to, so From is shown, not chosen.
+    private var fromFixed: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: "at")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Palette.goldText)
+                Text(draft.from.isEmpty ? "No address can send this reply" : draft.from)
+                    .font(KFont.ui(16))
+                    .foregroundStyle(draft.from.isEmpty ? Palette.inkFaint : Palette.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 50)
+            .kCard(radius: 16)
+            Text("A reply goes from the address this message came to.")
+                .font(KFont.ui(13.5, relativeTo: .footnote))
+                .foregroundStyle(Palette.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     private func sentCard(_ from: String) -> some View {
         VStack(spacing: 12) {
             Image(systemName: "checkmark")
@@ -425,7 +477,15 @@ struct MailDraftSheet: View {
             writing = false
             return
         }
-        if let saved = store.drafts[item.id] {
+        if !store.isSample {
+            // A send of this reply that could not be confirmed: Send waits until the person has checked Sent.
+            heldForCheck = store.unconfirmedSends[item.id] != nil
+        }
+        if var saved = store.drafts[item.id] {
+            if !store.isSample {
+                // Paired, the reply goes only from the address this came to, whatever the saved draft says.
+                saved.from = store.replySender(for: item)?.email ?? ""
+            }
             draft = saved
             writing = false
             return

@@ -141,12 +141,34 @@ nonisolated enum MailWire {
     static let sendTimeout: TimeInterval = 120
     static let testTimeout: TimeInterval = 90
     static let folderTimeout: TimeInterval = 60
+    /// The one Sent folder read after a send with no answer. The whole check stops after `sentCheckLimit`.
+    static let sentCheckTimeout: TimeInterval = 25
+    static let sentCheckLimit: TimeInterval = 30
     /// A triage run reads every account and asks a model. The session allows 180 seconds in all.
     static let runTimeout: TimeInterval = 175
+    /// After a run that did not answer, a new run waits this long: the desktop may still be on the first.
+    static let runSettle: TimeInterval = 300
 
-    /// Where a provider usually keeps sent mail, tried in order when a send could not be confirmed.
+    /// Where this provider usually keeps sent mail, read once when a send could not be confirmed.
     /// The desktop hands the name to imaplib as written, so a name with a space carries its own IMAP quotes.
-    static let sentFolders = ["Sent", "\"Sent Items\"", "\"Sent Messages\"", "INBOX.Sent", "\"[Gmail]/Sent Mail\""]
+    static func sentFolder(imapHost: String) -> String {
+        let host = imapHost.lowercased()
+        if host.contains("gmail") || host.contains("googlemail") { return "\"[Gmail]/Sent Mail\"" }
+        if host.contains("outlook") || host.contains("office365") || host.contains("hotmail") { return "\"Sent Items\"" }
+        if host.contains("icloud") || host.hasSuffix(".me.com") || host.hasSuffix(".mac.com") { return "\"Sent Messages\"" }
+        return "Sent"
+    }
+
+    /// The SMTP security the desktop should use for a port (email_service.py: "ssl", "starttls" or "none").
+    /// 587 and 25 upgrade with STARTTLS; everything else connects over SSL. Never "none": the password must not go in the clear.
+    static func smtpSecurity(port: Int) -> String {
+        port == 587 || port == 25 ? "starttls" : "ssl"
+    }
+
+    /// A subject as compared with the Sent folder: folded lines and runs of spaces become one space.
+    static func plainSubject(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+    }
 
     /// Split a To line into addresses, the way the desktop checks them (email_send.py: _addresses).
     /// Nil when one part is not an address.
@@ -260,6 +282,7 @@ extension APIClient {
             "email": email, "password": password,
             "imap_host": imapHost, "imap_port": imapPort,
             "smtp_host": smtpHost, "smtp_port": smtpPort,
+            "smtp_security": MailWire.smtpSecurity(port: smtpPort),
         ], timeout: 30)
     }
 
@@ -274,10 +297,11 @@ extension APIClient {
     }
 
     /// GET /api/email/accounts/{id}/messages?folder=&limit= : the newest headers of one folder, read only.
-    func mailFolder(_ id: String, folder: String, limit: Int) async throws -> [MailHeaderDTO] {
+    func mailFolder(_ id: String, folder: String, limit: Int,
+                    timeout: TimeInterval = MailWire.folderTimeout) async throws -> [MailHeaderDTO] {
         let raw: [MailLossy<MailHeaderDTO>] = try await mailCall(
             "GET", "/api/email/accounts/" + MailWire.pathID(id) + "/messages",
-            query: ["folder": folder, "limit": String(limit)], timeout: MailWire.folderTimeout)
+            query: ["folder": folder, "limit": String(limit)], timeout: timeout)
         return raw.compactMap(\.value)
     }
 
@@ -404,7 +428,9 @@ nonisolated enum MailSamples {
                   MailWire.recipients("not an address") == nil,
                   MailWire.recipients("a@example.com\r\nBcc: c@example.com") == nil,
                   MailWire.recipients("") == [] else { throw SampleMismatch("recipients") }
-            return "split, refuse, header break"
+            guard MailWire.smtpSecurity(port: 587) == "starttls", MailWire.smtpSecurity(port: 465) == "ssl",
+                  MailWire.plainSubject("Re: A long\r\n subject") == "re: a long subject" else { throw SampleMismatch("security or subject") }
+            return "split, refuse, header break, security, subject"
         },
     ]
 }

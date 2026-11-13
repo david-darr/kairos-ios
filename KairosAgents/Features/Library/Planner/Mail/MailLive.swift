@@ -8,7 +8,7 @@ nonisolated enum MailLiveLoad: Equatable, Sendable {
 
 /// How a send ended, as far as the phone can know.
 nonisolated enum MailSendOutcome: Equatable, Sendable {
-    /// The desktop said it went (or it is in the Sent folder). The text is the sending address.
+    /// The desktop said it went. Only the desktop's own answer counts, never the Sent folder. The text is the sending address.
     case sent(String)
     /// The desktop refused it before sending: nothing went.
     case notSent(String)
@@ -42,11 +42,12 @@ struct MailSampleStash {
 /// (GET /api/email/sending-accounts) and a reply (POST /api/email/accounts/{id}/send). Unpaired, nothing here runs.
 extension MailStore {
 
-    /// A key that changes when the phone is paired or unpaired, the desktop comes back,
-    /// or a different desktop or account is paired.
+    /// A key that changes with every connection state (paired or unpaired, connecting, offline, signed out,
+    /// back again) and when a different desktop or account is paired. Connecting that ends offline
+    /// changes it too, so the waiting card always ends in an answer or an error with Try again.
     static var connectionKey: String {
         let connection = Connection.shared
-        return "\(connection.usesSampleData)-\(connection.isConnected)-\(accountKey)"
+        return "\(connection.state)-\(accountKey)"
     }
 
     /// Which desktop and which account the mail belongs to. Live mail is only ever shown under this key.
@@ -126,6 +127,7 @@ extension MailStore {
         sentIDs = []
         unconfirmedSends = [:]
         accountBusy = false
+        triageUnclearSince = nil
         // Answers to anything already on its way are now stale.
         readSerial += 1
         writeSerial += 1
@@ -185,7 +187,7 @@ extension MailStore {
 
     private func showTriage(_ triage: MailTriageDTO) {
         var seen: [String: Int] = [:]
-        items = triage.items.map { dto in
+        let fresh: [MailItem] = triage.items.map { dto in
             let sender = MailWire.parse(dto.from ?? "")
             var key = [dto.account ?? "", dto.from ?? "", dto.subject ?? "", dto.date ?? ""].joined(separator: "|")
             let repeats = seen[key, default: 0]
@@ -202,6 +204,13 @@ extension MailStore {
                             suggestedReply: "",
                             account: dto.account)
         }
+        // A message with a reply waiting here (a draft, or a send that could not be confirmed) stays on
+        // the list after triage stops listing it, so the reply and its warning can still be reached.
+        let freshIDs = Set(fresh.map(\.id))
+        let kept = items.filter { old in
+            !freshIDs.contains(old.id) && (drafts[old.id] != nil || unconfirmedSends[old.id] != nil)
+        }
+        items = fresh + kept
         lastChecked = triage.generatedAt.map { Date(timeIntervalSince1970: $0) }
         scanned = triage.scanned ?? 0
         let problem = triage.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -232,12 +241,23 @@ extension MailStore {
     func runTriageLive() async -> String {
         guard !isSample, !refreshing else { return "" }
         let account = liveAccount
+        if let since = triageUnclearSince, Date().timeIntervalSince(since) < MailWire.runSettle {
+            // The last run went without an answer and may still be going: a second run would ask the model again.
+            // Read what the desktop has instead.
+            refreshing = true
+            await loadLive()
+            guard stillLive(account) else { return "" }
+            refreshing = false
+            liveNote = "Your desktop may still be running the last check. This shows what it has now. Try again in a few minutes."
+            return "The last check may still be running"
+        }
         refreshing = true
         liveNote = nil
         do {
             let ran = try await liveClient().mailRunTriage()
             guard stillLive(account) else { return "" }
             writeSerial += 1
+            triageUnclearSince = nil
             showTriage(ran)
             refreshing = false
             if items.isEmpty { return "Triage complete. Nothing important." }
@@ -247,12 +267,13 @@ extension MailStore {
             guard stillLive(account) else { return "" }
             writeSerial += 1
             refreshing = false
-            if case .server(let status, let detail)? = error as? APIError, status < 500 || detail.hasPrefix("triage failed") {
+            if case .server(let status, let detail)? = error as? APIError, Self.isRefusal(status, detail) || detail.hasPrefix("triage failed") {
                 liveNote = "Triage did not run. " + (detail.isEmpty ? error.plainWords : detail)
                 await loadLive()
                 return "Triage did not run"
             }
-            // No answer: the run may still finish on the desktop. Show what it has now.
+            // No answer: the run may still finish on the desktop. Show what it has now, and hold off a second run.
+            triageUnclearSince = Date()
             await loadLive()
             if stillLive(account) {
                 liveNote = "Your desktop did not answer in time, so this may not be the newest check. It shows what your desktop has now."
@@ -286,9 +307,15 @@ extension MailStore {
         guard let api = error as? APIError else { return nil }
         switch api {
         case .notPaired, .unauthorized, .badAddress: return api.plain
-        case .server(let status, let detail) where status < 500: return detail.isEmpty ? api.plain : detail
+        case .server(let status, let detail) where isRefusal(status, detail): return detail
         default: return nil
         }
+    }
+
+    /// The desktop answered and said no. A 408 or 499, or a 4xx with no readable reason, can come from a tunnel
+    /// or proxy that stopped waiting after the desktop already took the request, so those count as no answer.
+    private static func isRefusal(_ status: Int, _ detail: String) -> Bool {
+        status < 500 && status != 408 && status != 499 && !detail.isEmpty
     }
 
     /// Add an Email tab account on the desktop. The password goes to the desktop only and is not kept here.
@@ -343,7 +370,7 @@ extension MailStore {
             if let why = Self.refused(error) { return .failed(why) }
             if let now = await rereadAccounts(account) {
                 if !now.contains(where: { $0.remoteID == id }) { return .done("Account removed") }
-                return .unknown("Your desktop did not answer. \(target.email) is still on its list, so it was not removed.")
+                return .unknown("Your desktop did not answer. \(target.email) is still on its list, so it is not removed yet. Wait a moment and check the list before removing it again.")
             }
             return .unknown("Your desktop did not answer, so this iPhone cannot tell whether \(target.email) was removed. Check the list on your desktop.")
         }
@@ -375,10 +402,37 @@ extension MailStore {
 
     // MARK: Sending
 
+    /// The Email tab account a reply to this message goes from: only the account it came to, never another.
+    /// Nil when that account cannot send from the phone (it is not an Email tab account here, or nothing says
+    /// which account the message came to): then replying is off for this message and the person replies from
+    /// the desktop. When the address is both a Google account and an Email tab account, the Email tab one sends.
+    func replyAccount(for item: MailItem) -> MailAccount? {
+        guard !isSample else { return nil }
+        let to = (item.account ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        guard !to.isEmpty else { return nil }
+        let matches = accounts.filter { $0.remoteID != nil && $0.email.lowercased() == to }
+        // An account the desktop lists as this person's own sender comes first.
+        let own = Set(liveSenders.filter { $0.via == .emailTab }.compactMap(\.remoteID))
+        return matches.first(where: { own.contains($0.remoteID ?? "") }) ?? matches.first
+    }
+
+    /// The reply account as a sender, for the draft's From line.
+    func replySender(for item: MailItem) -> MailSender? {
+        replyAccount(for: item).map { MailSender(email: $0.email, via: .emailTab, canSend: true, remoteID: $0.remoteID) }
+    }
+
+    /// One plain line when replying from the phone is off for this message.
+    func replyOffLine(for item: MailItem) -> String {
+        let to = (item.account ?? "").trimmingCharacters(in: .whitespaces)
+        if to.isEmpty { return "Kairos does not know which address this came to. Reply from your desktop." }
+        return "This came to \(to), which cannot send from this iPhone. Reply from your desktop."
+    }
+
     /// Check a reply before it goes. Nil when it can be sent, or the reason it cannot.
-    func sendProblem(_ draft: MailDraft) -> String? {
-        guard let sender = liveSenders.first(where: { $0.email.lowercased() == draft.from.lowercased() }), sender.sendsFromPhone else {
-            return "Choose an Email tab account to send from. Google accounts send only from your desktop."
+    func sendProblem(_ draft: MailDraft, for item: MailItem) -> String? {
+        guard let sender = replyAccount(for: item) else { return replyOffLine(for: item) }
+        guard draft.from.lowercased() == sender.email.lowercased() else {
+            return "A reply goes from \(sender.email), the address this came to."
         }
         guard let to = MailWire.recipients(draft.to), !to.isEmpty else { return "Check the To line. Separate addresses with commas." }
         guard to.count <= MailWire.maxRecipients else { return "Send to at most \(MailWire.maxRecipients) addresses at once." }
@@ -388,15 +442,16 @@ extension MailStore {
         return nil
     }
 
-    /// Send one reply through the desktop, exactly as written. Never retried. With no answer, the Sent
-    /// folder is read to see whether it went; if that cannot tell, the draft is kept and the outcome says so.
-    func sendLive(_ draft: MailDraft) async -> MailSendOutcome {
+    /// Send one reply through the desktop, exactly as written. Never retried. Only the desktop's own
+    /// "ok" counts as sent. With no answer, the draft is kept, the Sent folder is read once, and the
+    /// outcome says honestly what is known.
+    func sendLive(_ draft: MailDraft, for item: MailItem) async -> MailSendOutcome {
         guard !isSample else { return .notSent("This is sample mail.") }
         guard !sendingIDs.contains(draft.itemID) else { return .notSent("This reply is already on its way.") }
-        if let problem = sendProblem(draft) { return .notSent(problem) }
-        guard let sender = liveSenders.first(where: { $0.email.lowercased() == draft.from.lowercased() }),
-              let accountID = sender.remoteID, let to = MailWire.recipients(draft.to) else {
-            return .notSent("Choose an Email tab account to send from.")
+        if let problem = sendProblem(draft, for: item) { return .notSent(problem) }
+        guard let sender = replyAccount(for: item), let accountID = sender.remoteID,
+              let to = MailWire.recipients(draft.to) else {
+            return .notSent(replyOffLine(for: item))
         }
         let account = liveAccount
         let started = Date()
@@ -408,7 +463,7 @@ extension MailStore {
             let answer = try await liveClient().mailSend(accountID: accountID, to: to.joined(separator: ", "),
                                                          subject: draft.subject, body: draft.body)
             guard answer.ok == true else {
-                return await unconfirmed(draft, accountID: accountID, started: started, account: account)
+                return await unconfirmed(draft, sender: sender, started: started, account: account, said: nil)
             }
             if stillLive(account) {
                 writeSerial += 1
@@ -423,43 +478,62 @@ extension MailStore {
                 // Refused before anything was sent (a missing account, a bad request, signed out).
                 return .notSent(why)
             }
-            return await unconfirmed(draft, accountID: accountID, started: started, account: account)
+            // A 502 "SMTP error" can come after the message went (the desktop reports a failed quit too),
+            // so it is not called "not sent". Its words are shown, so a wrong password is plain to see.
+            var said: String?
+            if case .server(_, let detail)? = error as? APIError, detail.hasPrefix("SMTP error") { said = detail }
+            return await unconfirmed(draft, sender: sender, started: started, account: account, said: said)
         }
     }
 
-    /// A send with no clear answer: read the Sent folder for it, and say plainly what is known.
-    private func unconfirmed(_ draft: MailDraft, accountID: String, started: Date, account: String) async -> MailSendOutcome {
+    /// A send with no clear answer. The draft stays and nothing says "sent": the Sent folder is read once,
+    /// and what it shows only tells the person where to look before sending again.
+    private func unconfirmed(_ draft: MailDraft, sender: MailAccount, started: Date, account: String,
+                             said: String?) async -> MailSendOutcome {
+        let lead = "The phone could not confirm this was sent."
+        let tail = said.map { " Your desktop said: \($0)" } ?? ""
         guard stillLive(account) else {
-            return .unknown("This iPhone could not confirm the reply was sent. Check Sent in your mail app before sending it again.")
+            return .unknown(lead + " Check your Sent folder before sending again." + tail)
         }
         writeSerial += 1
         unconfirmedSends[draft.itemID] = started
         drafts[draft.itemID] = draft
-        if await foundInSent(draft, accountID: accountID, after: started), stillLive(account) {
-            drafts[draft.itemID] = nil
-            unconfirmedSends[draft.itemID] = nil
-            sentIDs.insert(draft.itemID)
-            return .sent(draft.from)
+        let found = await lookInSent(draft, sender: sender, after: started)
+        switch found {
+        case true?:
+            return .unknown(lead + " Something like it is in your Sent folder: check it before sending again." + tail)
+        case false?:
+            return .unknown(lead + " Nothing like it is in your Sent folder yet: check Sent before sending again." + tail)
+        case nil:
+            return .unknown(lead + " Your Sent folder could not be checked either: check Sent in your mail app before sending again." + tail)
         }
-        return .unknown("This iPhone could not confirm the reply was sent. It may have gone. Check Sent in your mail app before sending it again. Your reply is kept here.")
     }
 
-    /// Whether the newest Sent mail has this reply. Folders are read only; nothing is marked or moved.
-    private func foundInSent(_ draft: MailDraft, accountID: String, after started: Date) async -> Bool {
-        guard let client = Connection.shared.client else { return false }
-        let subject = draft.subject.trimmingCharacters(in: .whitespaces).lowercased()
-        let from = draft.from.lowercased()
-        for folder in MailWire.sentFolders {
-            guard let rows = try? await client.mailFolder(accountID, folder: folder, limit: 20) else { continue }
-            // The first folder that answers is the one that counts.
-            return rows.contains { row in
-                guard (row.subject ?? "").trimmingCharacters(in: .whitespaces).lowercased() == subject,
-                      (row.from ?? "").lowercased().contains(from),
-                      let when = MailWire.date(row.date) else { return false }
-                return when >= started.addingTimeInterval(-300)
-            }
+    /// One read-only look at the newest Sent mail for a message like this one (same subject, from this
+    /// address, dated from about a minute before the send). Nil when the folder could not be read within
+    /// `MailWire.sentCheckLimit`. A match cannot tell this reply from another with the same subject, so it
+    /// is never taken as proof that this reply went.
+    private func lookInSent(_ draft: MailDraft, sender: MailAccount, after started: Date) async -> Bool? {
+        guard let client = Connection.shared.client, let accountID = sender.remoteID else { return nil }
+        let folder = MailWire.sentFolder(imapHost: sender.imapHost)
+        let read = Task { () -> [MailHeaderDTO] in
+            try await client.mailFolder(accountID, folder: folder, limit: 20, timeout: MailWire.sentCheckTimeout)
         }
-        return false
+        // A hard stop for the whole check, whatever the network does.
+        let stop = Task {
+            try? await Task.sleep(for: .seconds(MailWire.sentCheckLimit))
+            read.cancel()
+        }
+        defer { stop.cancel() }
+        guard let rows = try? await read.value else { return nil }
+        let subject = MailWire.plainSubject(draft.subject)
+        let from = sender.email.lowercased()
+        return rows.contains { row in
+            guard MailWire.plainSubject(row.subject ?? "") == subject,
+                  (row.from ?? "").lowercased().contains(from),
+                  let when = MailWire.date(row.date) else { return false }
+            return when >= started.addingTimeInterval(-60)
+        }
     }
 }
 

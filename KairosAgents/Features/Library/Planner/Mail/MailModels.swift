@@ -43,7 +43,8 @@ nonisolated struct MailSender: Identifiable, Hashable, Sendable {
     /// Paired: the desktop's id for this address (an Email tab account id sends from the phone).
     var remoteID: String? = nil
 
-    var id: String { email }
+    /// The same address can be listed twice (a Google account and an Email tab account), so the kind is part of the id.
+    var id: String { "\(via == .google ? "google" : "emailTab")|\(email)|\(remoteID ?? "")" }
 
     /// Paired: the phone can send from this address. Only Email tab accounts send from the phone;
     /// Google accounts send only through a bot on the desktop.
@@ -69,7 +70,8 @@ nonisolated struct MailAccount: Identifiable, Hashable, Sendable {
     /// Paired: the desktop's id for this account.
     var remoteID: String? = nil
 
-    var id: String { email }
+    /// Paired, two accounts can share an address (an admin sees accounts other people added): the desktop's id tells them apart.
+    var id: String { remoteID ?? email }
     var hosts: String { "\(imapHost) / \(smtpHost)" }
 }
 
@@ -212,6 +214,8 @@ final class MailStore {
     var unconfirmedSends: [String: Date] = [:]
     /// An account is being added or removed: the accounts sheet holds still until it is known.
     var accountBusy = false
+    /// When a triage run last went without an answer. The desktop may still be on it, so a new run waits.
+    var triageUnclearSince: Date?
 
     init(provider: any MailProviding) {
         self.provider = provider
@@ -304,12 +308,8 @@ final class MailStore {
     }
 
     func newDraft(for item: MailItem) -> MailDraft {
-        var from = defaultSender
-        if !isSample, let account = item.account?.lowercased(),
-           let own = senders.first(where: { $0.sendsFromPhone && $0.email.lowercased() == account }) {
-            // A reply goes out from the address the message came to.
-            from = own.email
-        }
+        // Paired, a reply goes only from the address the message came to, never another one.
+        let from = isSample ? defaultSender : (replySender(for: item)?.email ?? "")
         return MailDraft(itemID: item.id, from: from, to: item.address,
                          subject: item.subject.hasPrefix("Re:") ? item.subject : "Re: \(item.subjectLine)",
                          body: item.suggestedReply)

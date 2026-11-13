@@ -270,9 +270,12 @@ struct LibraryMailSection: View {
                 }
                 .buttonStyle(PressStyle(scale: 0.99))
                 .contextMenu {
-                    Button { sheet = .draft(item, instant: false, sent: false) } label: {
-                        Label(store.drafts[item.id] == nil ? (store.isSample ? "Draft a reply" : "Write a reply") : "Open the draft",
-                              systemImage: "square.and.pencil")
+                    // Paired, replying is off when the address this came to cannot send from the phone.
+                    if store.isSample || store.drafts[item.id] != nil || store.replyAccount(for: item) != nil {
+                        Button { sheet = .draft(item, instant: false, sent: false) } label: {
+                            Label(store.drafts[item.id] == nil ? (store.isSample ? "Draft a reply" : "Write a reply") : "Open the draft",
+                                  systemImage: "square.and.pencil")
+                        }
                     }
                     // Handled is kept on this iPhone only; paired, the next read would bring it back, so it is not offered.
                     if store.isSample {
