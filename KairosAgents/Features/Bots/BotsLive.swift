@@ -16,34 +16,54 @@ struct BotsSampleStash {
     var needs: [NeedsCard]
 }
 
+/// Which account the live roster, detail and cards were read for, and the counters that keep an older read
+/// from replacing newer state. Kept here because `BotsStore` (another area's file) holds only the lists.
+private enum BotsLiveSession {
+    static var account = "sample"
+    /// A counter per read ("roster", "detail|<bot>", "cards|<bot>").
+    static var reads: [String: Int] = [:]
+    /// Writes on their way, and a counter bumped when one is sent or answered.
+    static var writing = 0
+    static var writeSerial = 0
+}
+
 /// The paired desktop behind the Bots area: the roster (GET /api/agents, /api/bot-team/map,
 /// /api/agents/conversations), one bot's detail (GET /api/agents/{id}) and its waiting cards
 /// (GET /api/bot-cards, POST /api/bot-cards/{id}/respond). Unpaired, nothing here runs.
+/// The rest of a bot's Inbox half is `BotsInboxLive`.
 extension BotsStore {
 
-    /// A key that changes when the phone is paired or unpaired, or the desktop comes back.
+    /// A key that changes when the phone is paired or unpaired, the desktop comes back,
+    /// or a different desktop or account is paired.
     static var connectionKey: String {
         let connection = Connection.shared
-        return "\(connection.usesSampleData)-\(connection.isConnected)"
+        return "\(connection.usesSampleData)-\(connection.isConnected)-\(accountKey)"
+    }
+
+    /// Which desktop and which account the live bots belong to. Live data is only ever shown under this key.
+    static var accountKey: String {
+        let connection = Connection.shared
+        guard !connection.usesSampleData, let desktop = connection.desktop else { return "sample" }
+        return desktop.address + "|" + desktop.username
+    }
+
+    /// Still showing the live bots a request was sent for. Checked after every await before writing a result.
+    private func stillLive(_ account: String) -> Bool {
+        liveMode && BotsLiveSession.account == account && Self.accountKey == account
     }
 
     /// Move between sample data and the paired desktop to match the connection.
     func followConnection() {
+        BotsInboxLive.shared.follow()
         let want = !Connection.shared.usesSampleData
+        if want && liveMode && BotsLiveSession.account != Self.accountKey {
+            // Another desktop or account: nothing read from the last one may stay on screen.
+            resetLive()
+        }
         guard want != liveMode else { return }
         if want {
             sampleStash = BotsSampleStash(bots: bots, pinned: pinned, archived: archived, chiefs: chiefs, teams: teams, needs: needs)
-            bots = []
-            pinned = []
-            archived = []
-            chiefs = []
-            teams = []
-            needs = []
-            liveNeedsYou = [:]
-            details = [:]
-            detailLoad = [:]
-            cardsLoad = [:]
-            rosterLoad = .idle
+            resetLive()
             liveMode = true
         } else {
             if let stash = sampleStash {
@@ -55,8 +75,32 @@ extension BotsStore {
                 needs = stash.needs
             }
             sampleStash = nil
+            liveNeedsYou = [:]
+            details = [:]
+            detailLoad = [:]
+            cardsLoad = [:]
+            rosterLoad = .idle
+            BotsLiveSession.account = "sample"
+            BotsLiveSession.reads = [:]
             liveMode = false
         }
+    }
+
+    /// Every live bot, card and load state goes, ready to read the current account's.
+    private func resetLive() {
+        bots = []
+        pinned = []
+        archived = []
+        chiefs = []
+        teams = []
+        needs = []
+        liveNeedsYou = [:]
+        details = [:]
+        detailLoad = [:]
+        cardsLoad = [:]
+        rosterLoad = .idle
+        BotsLiveSession.reads = [:]
+        BotsLiveSession.account = Self.accountKey
     }
 
     private func liveClient() throws -> APIClient {
@@ -64,22 +108,77 @@ extension BotsStore {
         return client
     }
 
+    /// Start a read: nil while the desktop is still being reached (the read starts again by itself once it
+    /// answers, since the connection key changes). Otherwise the read's serial and the write counter now.
+    private func beginRead(_ key: String) -> (account: String, serial: Int, writes: Int)? {
+        guard liveMode, Connection.shared.state != .connecting else { return nil }
+        let serial = (BotsLiveSession.reads[key] ?? 0) + 1
+        BotsLiveSession.reads[key] = serial
+        return (BotsLiveSession.account, serial, BotsLiveSession.writeSerial)
+    }
+
+    /// This read's answer may be shown: same account, no newer read of the same thing, and no write sent or
+    /// answered meanwhile (its answer may picture the desktop before that write). `first` takes it anyway:
+    /// nothing is on screen yet for it to put back.
+    private func current(_ key: String, _ read: (account: String, serial: Int, writes: Int), first: Bool) -> Bool {
+        guard stillLive(read.account), BotsLiveSession.reads[key] == read.serial else { return false }
+        return first || (BotsLiveSession.writeSerial == read.writes && BotsLiveSession.writing == 0)
+    }
+
+    /// This read's error may be shown: same account and no newer read of the same thing.
+    private func latest(_ key: String, _ read: (account: String, serial: Int, writes: Int)) -> Bool {
+        stillLive(read.account) && BotsLiveSession.reads[key] == read.serial
+    }
+
+    private func beginWrite() {
+        BotsLiveSession.writing += 1
+        BotsLiveSession.writeSerial += 1
+    }
+
+    private func endWrite() {
+        BotsLiveSession.writing = max(0, BotsLiveSession.writing - 1)
+        BotsLiveSession.writeSerial += 1
+    }
+
+    /// A write whose answer never came: the desktop may have done it. An error that means the request never
+    /// left this iPhone is not in doubt; an unreadable answer or a server error is.
+    private func unconfirmed(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        guard let api = error as? APIError else { return true }
+        switch api {
+        case .unreadable: return true
+        case .server(let status, _): return status >= 500
+        case .offline:
+            let neverSent: [URLError.Code] = [.notConnectedToInternet, .cannotFindHost, .secureConnectionFailed,
+                                              .appTransportSecurityRequiresSecureConnection]
+            return !neverSent.contains { APIError.from(URLError($0)) == api }
+        default: return false
+        }
+    }
+
     // MARK: Roster
 
     func loadRoster() async {
         guard liveMode else { return }
-        if rosterLoad != .loaded { rosterLoad = .loading }
+        let first = rosterLoad != .loaded
+        if first { rosterLoad = .loading }
+        guard let read = beginRead("roster") else { return }
         do {
             let client = try liveClient()
             let roster = try await client.agentRoster()
             let map = try? await client.botTeamMap()
             let conversations = try? await client.agentConversations()
-            guard liveMode else { return }
+            guard current("roster", read, first: first) else { return }
             showRoster(roster, map: map, conversations: conversations)
             rosterLoad = .loaded
         } catch {
+            guard latest("roster", read) else { return }
+            if error is CancellationError {
+                // Not read is not failed: the next look reads again.
+                if rosterLoad == .loading { rosterLoad = .idle }
+                return
+            }
             Connection.shared.note(error)
-            guard liveMode else { return }
             rosterLoad = .failed("Your bots could not be read. " + error.plainWords)
         }
     }
@@ -154,14 +253,28 @@ extension BotsStore {
         ApprovalLevel(rawValue: agent.approvalMode ?? "ask")
     }
 
+    /// Pin or unpin a bot. Shown at once; put back if the desktop refuses; re-read when the answer is lost.
     func pinLive(_ botID: String) {
+        guard liveMode, BotsLiveSession.account == Self.accountKey else { return }
+        let account = BotsLiveSession.account
         let wasPinned = pinned.contains(botID)
+        let name = bot(botID).name
         if wasPinned { pinned.removeAll { $0 == botID } } else { pinned.append(botID) }
+        beginWrite()
         Task {
             do {
                 _ = try await liveClient().agentOrganize(botID, action: wasPinned ? "unpin" : "pin")
-                say(wasPinned ? "\(bot(botID).name) is unpinned" : "\(bot(botID).name) is pinned")
+                endWrite()
+                guard stillLive(account) else { return }
+                say(wasPinned ? "\(name) is unpinned" : "\(name) is pinned")
             } catch {
+                endWrite()
+                guard stillLive(account) else { return }
+                if unconfirmed(error) {
+                    say("Your desktop did not answer, so this iPhone could not confirm \(name) was \(wasPinned ? "unpinned" : "pinned"). This list shows what your desktop has.")
+                    await loadRoster()
+                    return
+                }
                 Connection.shared.note(error)
                 if wasPinned { if !pinned.contains(botID) { pinned.append(botID) } } else { pinned.removeAll { $0 == botID } }
                 say(error.plainWords)
@@ -173,10 +286,13 @@ extension BotsStore {
 
     func loadDetail(_ botID: String) async {
         guard liveMode else { return }
-        if details[botID] == nil { detailLoad[botID] = .loading }
+        let first = details[botID] == nil
+        if first { detailLoad[botID] = .loading }
+        let key = "detail|\(botID)"
+        guard let read = beginRead(key) else { return }
         do {
             let detail = try await liveClient().agentDetail(botID)
-            guard liveMode else { return }
+            guard current(key, read, first: first) else { return }
             details[botID] = detail
             detailLoad[botID] = .loaded
             if let agent = detail.agent {
@@ -185,8 +301,12 @@ extension BotsStore {
                 liveNeedsYou[botID] = agent.needsYou ?? liveNeedsYou[botID] ?? 0
             }
         } catch {
+            guard latest(key, read) else { return }
+            if error is CancellationError {
+                if detailLoad[botID] == .loading { detailLoad[botID] = .idle }
+                return
+            }
             Connection.shared.note(error)
-            guard liveMode else { return }
             detailLoad[botID] = .failed("This bot could not be read. " + error.plainWords)
         }
     }
@@ -195,10 +315,13 @@ extension BotsStore {
 
     func loadCards(_ botID: String) async {
         guard liveMode else { return }
-        if cardsLoad[botID] != .loaded { cardsLoad[botID] = .loading }
+        let first = cardsLoad[botID] != .loaded
+        if first { cardsLoad[botID] = .loading }
+        let key = "cards|\(botID)"
+        guard let read = beginRead(key) else { return }
         do {
             let list = try await liveClient().botCards(botId: botID, status: "pending")
-            guard liveMode else { return }
+            guard current(key, read, first: first) else { return }
             let fresh = (list.cards ?? [])
                 .filter { ($0.waiting ?? true) && ($0.kind == "approval" || $0.kind == "question") }
                 .compactMap { Self.needsCard($0, botID: botID) }
@@ -209,8 +332,12 @@ extension BotsStore {
             }
             cardsLoad[botID] = .loaded
         } catch {
+            guard latest(key, read) else { return }
+            if error is CancellationError {
+                if cardsLoad[botID] == .loading { cardsLoad[botID] = .idle }
+                return
+            }
             Connection.shared.note(error)
-            guard liveMode else { return }
             cardsLoad[botID] = .failed("What needs you could not be read. " + error.plainWords)
         }
     }
@@ -275,10 +402,14 @@ extension BotsStore {
         }
     }
 
-    /// Answer a desktop card. The card shows the answer at once and goes back if the desktop refuses.
+    /// Answer a desktop card. The card shows the answer at once (its buttons go away). A refusal puts it back
+    /// and says why; a lost answer keeps the buttons away, says it could not confirm, and re-reads the cards,
+    /// so the card is only offered again when the desktop still has it waiting.
     /// `answers` is keyed by question id, each a text or a list of texts.
     func respondLive(_ card: NeedsCard, _ result: Settled, answers: [String: Any]? = nil) {
-        guard let ref = card.live, let index = needs.firstIndex(where: { $0.id == card.id }) else { return }
+        guard liveMode, BotsLiveSession.account == Self.accountKey,
+              let ref = card.live, let index = needs.firstIndex(where: { $0.id == card.id }),
+              needs[index].settled == nil else { return }
         var action = ""
         var choice: String?
         switch result {
@@ -296,13 +427,17 @@ extension BotsStore {
             say("That way to allow is not offered for this request.")
             return
         }
+        let account = BotsLiveSession.account
         withAnimation(Motion.bouncy) { needs[index].settled = result }
         let botID = card.botID
+        beginWrite()
         Task {
             do {
                 let answer = try await liveClient().botCardRespond(
                     ref.id, action: action, choiceId: choice, answers: answers, reviewedRevision: ref.revision
                 )
+                endWrite()
+                guard stillLive(account) else { return }
                 if answer.ok == false {
                     say(answer.message ?? "This was already settled.")
                     await loadCards(botID)
@@ -310,6 +445,14 @@ extension BotsStore {
                     liveNeedsYou[botID] = max(0, (liveNeedsYou[botID] ?? 1) - 1)
                 }
             } catch {
+                endWrite()
+                guard stillLive(account) else { return }
+                if unconfirmed(error) {
+                    if let api = error as? APIError, api != APIError.from(URLError(.timedOut)) { Connection.shared.note(api) }
+                    say("Your desktop did not answer, so this iPhone could not confirm your answer. This list shows what your desktop has.")
+                    await loadCards(botID)
+                    return
+                }
                 Connection.shared.note(error)
                 if let back = needs.firstIndex(where: { $0.id == card.id }) {
                     withAnimation(Motion.snappy) { needs[back].settled = nil }
