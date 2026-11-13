@@ -50,9 +50,7 @@ struct ChatDocumentsScreen: View {
     @State private var liveViewing: DocsLiveViewing?
     /// Paired: the desktop's text search, id to snippet, for the current query.
     @State private var searchHits: [String: String] = [:]
-    /// Paired: an import whose answer never arrived, and the file name it was sent under.
-    @State private var pendingImport: DocsLivePendingCreate?
-    @State private var pendingImportName = ""
+    /// Paired: an import whose answer never arrived lives in the store, so closing this screen cannot lose it.
     @State private var importProblem: String?
     @State private var checkingImport = false
     @State private var openingChat = false
@@ -82,7 +80,7 @@ struct ChatDocumentsScreen: View {
         }
     }
 
-    private var importBusy: Bool { importStatus != nil || pendingImport != nil }
+    private var importBusy: Bool { importStatus != nil || live.pendingImport != nil }
 
     private func isOpen(_ group: ChatDocsGroup) -> Bool {
         searching || (paired ? live.openGroups.contains(group.id) : chats.openGroups.contains(group.id))
@@ -124,8 +122,8 @@ struct ChatDocumentsScreen: View {
                 if let importStatus {
                     importLine(importStatus)
                 }
-                if paired, pendingImport != nil {
-                    DocsLiveLine(text: importProblem ?? "Your desktop did not confirm the import of \(pendingImportName).",
+                if paired, live.pendingImport != nil {
+                    DocsLiveLine(text: importProblem ?? "Your desktop did not confirm the import of \(live.pendingImportName).",
                                  action: checkingImport ? nil : "Check again") { checkImport() }
                 } else if paired, let importProblem {
                     DocsLiveLine(text: importProblem)
@@ -184,7 +182,7 @@ struct ChatDocumentsScreen: View {
             subtitle: "\(NotesCopy.count(allDocuments.count, "document")) · \(NotesCopy.count(fileTotal, "chat file"))",
             backSymbol: "chevron.down",
             backLabel: "Close",
-            back: { dismiss() }
+            back: { if paired && importStatus != nil { toaster.say("Wait until your desktop answers.") } else { dismiss() } }
         ) {
             GlassIconButton(symbol: "arrow.up.doc", label: "Upload a document") { startImport() }
         }
@@ -420,25 +418,25 @@ struct ChatDocumentsScreen: View {
     private func importFinished(_ outcome: DocsLiveCreateOutcome, name: String) {
         switch outcome {
         case .made(let doc):
-            pendingImport = nil
+            live.pendingImport = nil
             importProblem = nil
             Haptics.success()
             toaster.say("Imported \(name)")
             editing = ChatDocsEditing(documentID: doc.id)
         case .refused(let why):
-            pendingImport = nil
+            live.pendingImport = nil
             importProblem = "\(name) was not imported. " + why
         case .unconfirmed(let pending, let why):
-            pendingImport = pending
-            pendingImportName = name
+            live.pendingImport = pending
+            live.pendingImportName = name
             importProblem = why
         }
     }
 
     private func checkImport() {
-        guard let waiting = pendingImport, !checkingImport else { return }
+        guard let waiting = live.pendingImport, !checkingImport else { return }
         checkingImport = true
-        let name = pendingImportName
+        let name = live.pendingImportName
         Task {
             let outcome = await live.findCreated(waiting)
             checkingImport = false

@@ -345,8 +345,15 @@ struct LibraryDocumentEditor: View {
     }
 
     private func leave() {
-        if live && writing {
+        // A write in flight keeps the editor open. An unconfirmed one may be left: the text is unsaved, so the
+        // discard prompt says so first.
+        if live && (saveState == .saving || deleting || checking) {
             toaster.say("Wait until your desktop answers.")
+            return
+        }
+        if live && (pendingCreate != nil || unconfirmedSave != nil) {
+            Haptics.tap()
+            confirmDiscard = true
             return
         }
         if dirty {

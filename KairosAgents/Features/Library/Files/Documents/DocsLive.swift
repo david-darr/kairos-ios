@@ -85,6 +85,9 @@ final class DocsLiveStore {
     var openGroups: Set<String> = []
     /// Documents with a save or delete on its way.
     private(set) var busyDocs: Set<String> = []
+    /// An import whose answer never arrived: checked on the desktop before Import is offered again.
+    var pendingImport: DocsLivePendingCreate?
+    var pendingImportName = ""
 
     private var docsSerial = 0
     private var filesSerial = 0
@@ -136,6 +139,8 @@ final class DocsLiveStore {
         filesSkipped = 0
         openGroups = []
         busyDocs = []
+        pendingImport = nil
+        pendingImportName = ""
         docsSerial += 1
         filesSerial += 1
         writeSerial += 1
