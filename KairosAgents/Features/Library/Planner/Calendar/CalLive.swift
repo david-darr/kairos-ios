@@ -28,6 +28,20 @@ nonisolated struct CalLiveDraft: Sendable {
     var calendarID: String
 }
 
+/// How a save from the editor ended.
+nonisolated enum CalSaveOutcome: Equatable, Sendable {
+    /// The desktop has it.
+    case saved
+    /// Nothing differed from what was read, so nothing was sent.
+    case unchanged
+    /// A new event the desktop never confirmed, but a read afterwards found it there.
+    case savedUnconfirmed
+    /// Not saved, with the reason.
+    case failed(String)
+    /// A new event the desktop never confirmed and that was not found afterwards. It may or may not exist.
+    case unconfirmed(String)
+}
+
 /// The paired desktop behind Calendar: the range (GET /api/calendar/events), Google's calendars
 /// (GET /api/google/status, GET /api/google/calendar/calendars, PATCH /api/google/calendar/settings),
 /// the Archive, and every create, edit, delete and check-off. Unpaired, nothing here runs.
@@ -128,7 +142,7 @@ extension CalStore {
         if liveLoad != .loaded || liveLoadedKey != key { liveLoad = .loading }
         func current() -> Bool { stillLive(account) && liveGeneration == generation }
 
-        await loadGoogleLive(account: account)
+        await loadGoogleLive(account: account, isCurrent: current)
         guard current() else { return }
         do {
             let client = try liveClient()
@@ -160,7 +174,8 @@ extension CalStore {
     }
 
     /// Google's account line and calendars. Google events come with the range; these say which calendars there are.
-    private func loadGoogleLive(account: String) async {
+    /// `isCurrent` is the range read's own guard: an older read's answer never lands over a newer one.
+    private func loadGoogleLive(account: String, isCurrent: () -> Bool) async {
         guard Connection.shared.desktop?.isAdmin == true else {
             googleConnected = false
             calendars = []
@@ -171,8 +186,9 @@ extension CalStore {
         do {
             let client = try liveClient()
             let status = try await client.googleStatus()
-            guard stillLive(account) else { return }
-            accountEmail = status.email ?? "Google account"
+            guard isCurrent() else { return }
+            // The Calendar account, which may differ from the Library's default (`email`).
+            accountEmail = status.calendarEmail ?? "Google account"
             guard status.connected == true else {
                 googleConnected = false
                 calendars = []
@@ -186,7 +202,7 @@ extension CalStore {
                 return
             }
             let list = try await client.googleCalendars()
-            guard stillLive(account) else { return }
+            guard isCurrent() else { return }
             let chosen: Set<String>? = status.calendarIds.map { Set($0) }
             let mapped = list.map { item in
                 CalCalendar(id: item.id, name: item.name ?? item.id,
@@ -201,23 +217,26 @@ extension CalStore {
             liveGoogleNote = nil
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account), !(error is CancellationError) else { return }
+            guard isCurrent(), !(error is CancellationError) else { return }
             googleConnected = false
             calendars = []
             liveGoogleNote = "Your Google calendars could not be read. " + error.plainWords
         }
     }
 
-    /// Checked-off Kairos events and notes. A failed read keeps what was there.
+    /// Checked-off Kairos events and notes. A failed read keeps what was there; an older read never lands over a newer one.
     func loadArchiveLive() async {
         guard !isSample else { return }
         let account = liveAccount
         guard let client = try? liveClient() else { return }
+        liveArchiveGeneration += 1
+        let generation = liveArchiveGeneration
+        func current() -> Bool { stillLive(account) && liveArchiveGeneration == generation }
         do {
             let done = try await client.calendarArchived().compactMap(CalendarWire.event)
-            guard stillLive(account) else { return }
+            guard current() else { return }
             let notes = (try? await client.calendarNotes())?.compactMap(CalendarWire.archivedNote) ?? []
-            guard stillLive(account) else { return }
+            guard current() else { return }
             liveArchived = (done + notes).sorted { ($0.completedAt ?? $0.start) > ($1.completedAt ?? $1.start) }
         } catch {
             Connection.shared.note(error)
@@ -245,58 +264,81 @@ extension CalStore {
         return "\(what) " + error.plainWords
     }
 
-    /// Create or change an event on the desktop. Returns nil when it is saved, else what went wrong.
-    /// `editing` is the item being changed (nil for a new event); `scope` matters only for one event of a Kairos series.
-    func saveLive(_ draft: CalLiveDraft, editing: CalOccurrence?, scope: CalScope) async -> String? {
-        guard !isSample else { return "This calendar is a sample." }
+    /// Create or change an event on the desktop. Sent once; never retried.
+    /// `editing` is the item being changed (nil for a new event). `baseline` is what the editor read for it, so only
+    /// the fields the person changed are sent: a whole series is never rewritten with values nobody touched.
+    /// `scope` matters only for one event of a Kairos series.
+    func saveLive(_ draft: CalLiveDraft, baseline: CalLiveDraft?, editing: CalOccurrence?, scope: CalScope) async -> CalSaveOutcome {
+        guard !isSample else { return .failed("This calendar is a sample.") }
         let busyKey = editing?.event.id ?? "new"
-        guard !liveBusy.contains(busyKey) else { return "Wait a moment for the last change to save." }
+        guard !liveBusy.contains(busyKey) else { return .failed("Wait a moment for the last change to save.") }
         let account = liveAccount
+        let google = editing.map { $0.event.source == .google } ?? (draft.calendarID != "kairos")
+        // What already looks like a new event, so the check after an unconfirmed create does not take it for this one.
+        let alreadyThere: Set<String> = editing == nil
+            ? Set(events.filter { Self.matches($0, draft, google: google) }.map(\.id)) : []
+        let timing = baseline.map { Self.timingChanged(draft, from: $0) } ?? true
         liveBusy.insert(busyKey)
-        defer { if liveAccount == account { liveBusy.remove(busyKey) } }
+        liveSheetBusy = true
+        defer {
+            liveSheetBusy = false
+            if liveAccount == account { liveBusy.remove(busyKey) }
+        }
         do {
             let client = try liveClient()
-            let google = editing.map { $0.event.source == .google } ?? (draft.calendarID != "kairos")
             if google {
                 let action: String = editing == nil ? "create" : "update"
                 var body: [String: Any] = ["action": action]
-                var event: [String: Any] = [
-                    "summary": draft.title, "location": draft.location, "description": draft.notes,
-                    "start": CalendarWire.googleBoundary(allDay: draft.allDay, draft.start, zone: draft.timeZone),
-                    "end": CalendarWire.googleBoundary(allDay: draft.allDay, draft.end, zone: draft.timeZone),
-                ]
-                if let rule = CalendarWire.ruleJSON(draft.rule) { event["repeat"] = rule }
-                body["event"] = event
+                // Never a repeat rule: the phone cannot change or delete a repeating Google event afterwards.
+                var event: [String: Any] = [:]
+                if baseline?.title != draft.title { event["summary"] = draft.title }
+                if baseline?.location != draft.location { event["location"] = draft.location }
+                if baseline?.notes != draft.notes { event["description"] = draft.notes }
+                if timing {
+                    event["start"] = CalendarWire.googleBoundary(allDay: draft.allDay, draft.start, zone: draft.timeZone)
+                    event["end"] = CalendarWire.googleBoundary(allDay: draft.allDay, draft.end, zone: draft.timeZone)
+                }
                 if let live = editing?.event.live {
                     guard live.readOnlyReason == nil, live.editable, let calendarID = live.calendarID else {
-                        return "This event cannot be changed from your phone."
+                        return .failed("This event cannot be changed from your phone.")
                     }
+                    if event.isEmpty { return .unchanged }
                     body["calendar_id"] = calendarID
                     body["event_id"] = live.id
                 } else {
                     body["calendar_id"] = draft.calendarID
                 }
+                body["event"] = event
                 try await client.googleCalendarAction(body)
             } else {
-                let sent = CalendarWire.boundaries(allDay: draft.allDay, start: draft.start, end: draft.end, zone: draft.timeZone)
-                var body: [String: Any] = [
-                    "title": draft.title, "start": sent.start, "end": sent.end, "all_day": draft.allDay,
-                    "location": draft.location, "description": draft.notes, "time_zone": draft.timeZone,
-                ]
+                var body: [String: Any] = [:]
+                if baseline?.title != draft.title { body["title"] = draft.title }
+                if baseline?.location != draft.location { body["location"] = draft.location }
+                if baseline?.notes != draft.notes { body["description"] = draft.notes }
+                if timing {
+                    // The boundaries travel together: their form depends on all-day and the zone.
+                    let sent = CalendarWire.boundaries(allDay: draft.allDay, start: draft.start, end: draft.end, zone: draft.timeZone)
+                    body["start"] = sent.start
+                    body["end"] = sent.end
+                    body["all_day"] = draft.allDay
+                    body["time_zone"] = draft.timeZone
+                }
                 if let live = editing?.event.live {
                     let oneOfSeries = live.seriesID != nil
                     let justThis = oneOfSeries && scope == .this
-                    let scopeText: String = justThis ? "occurrence" : "series"
-                    body["scope"] = scopeText
-                    // One event of a series keeps the series' rule; anything else sends its rule, or null to clear it.
-                    // A rule the phone cannot show is never sent back (it would be cleared).
-                    if !justThis && draft.rule.custom == nil {
-                        if let rule = CalendarWire.ruleJSON(draft.rule) {
-                            body["recurrence"] = rule
+                    // One event of a series keeps the series' rule. Otherwise the rule goes only when the person
+                    // changed it: its rule, or null to clear it. A rule the phone cannot show is never sent back.
+                    if !justThis, let rule = CalendarWire.ruleKey(draft.rule),
+                       rule != baseline.flatMap({ CalendarWire.ruleKey($0.rule) }) {
+                        if let json = CalendarWire.ruleJSON(draft.rule) {
+                            body["recurrence"] = json
                         } else {
                             body["recurrence"] = NSNull()
                         }
                     }
+                    if body.isEmpty { return .unchanged }
+                    let scopeText: String = justThis ? "occurrence" : "series"
+                    body["scope"] = scopeText
                     try await client.calendarUpdate(live.id, body)
                 } else {
                     if let rule = CalendarWire.ruleJSON(draft.rule) { body["recurrence"] = rule }
@@ -305,14 +347,58 @@ extension CalStore {
             }
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account) else { return "Your calendar changed while this was saving." }
+            guard stillLive(account) else { return .failed("Your calendar changed while this was saving.") }
+            if editing == nil, let failure = error as? APIError, failure.isOffline {
+                // The desktop may have made it. Look before saying anything; nothing is sent again from here.
+                let found = await findCreated(draft, google: google, excluding: alreadyThere)
+                guard stillLive(account) else { return .failed("Your calendar changed while this was saving.") }
+                await loadLive()
+                if found == true { return .savedUnconfirmed }
+                if found == false {
+                    return .unconfirmed("Your desktop did not confirm this event, and it is not on your calendar yet. "
+                        + "It may still appear, so check your calendar before you tap Add again.")
+                }
+                return .unconfirmed("Your desktop did not confirm this event, and your calendar could not be read to check. "
+                    + "Check your calendar before you tap Add again.")
+            }
             let problem = writeProblem(error, what: "This event was not saved.")
             await loadLive()
-            return problem
+            return .failed(problem)
         }
-        guard stillLive(account) else { return nil }
+        guard stillLive(account) else { return .saved }
         await loadLive()
-        return nil
+        return .saved
+    }
+
+    /// After a create the desktop never confirmed: read the days around it and look for it.
+    /// true when it is there, false when it is not, nil when the calendar could not be read.
+    private func findCreated(_ draft: CalLiveDraft, google: Bool, excluding before: Set<String>) async -> Bool? {
+        guard let client = try? liveClient() else { return nil }
+        let day = CalDates.day(draft.start)
+        guard let found = try? await client.calendarEvents(start: CalDates.add(-1, to: day), end: CalDates.add(2, to: day)) else {
+            return nil
+        }
+        return found.compactMap(CalendarWire.event).contains { Self.matches($0, draft, google: google) && !before.contains($0.id) }
+    }
+
+    /// An item that looks like the new event: same title, calendar, kind and start.
+    static func matches(_ event: CalEvent, _ draft: CalLiveDraft, google: Bool) -> Bool {
+        guard event.title.trimmingCharacters(in: .whitespacesAndNewlines) == draft.title, event.allDay == draft.allDay else { return false }
+        if google {
+            guard event.source == .google, event.calendarID == draft.calendarID else { return false }
+        } else {
+            guard event.source == .kairos else { return false }
+        }
+        return draft.allDay ? CalDates.same(event.start, draft.start) : abs(event.start.timeIntervalSince(draft.start)) < 60
+    }
+
+    /// The person changed when it happens: all day, the zone of a timed event, or a boundary as it would be sent.
+    static func timingChanged(_ draft: CalLiveDraft, from before: CalLiveDraft) -> Bool {
+        if draft.allDay != before.allDay { return true }
+        if !draft.allDay && draft.timeZone != before.timeZone { return true }
+        let now = CalendarWire.boundaries(allDay: draft.allDay, start: draft.start, end: draft.end, zone: draft.timeZone)
+        let was = CalendarWire.boundaries(allDay: before.allDay, start: before.start, end: before.end, zone: before.timeZone)
+        return now.start != was.start || now.end != was.end
     }
 
     /// Delete on the desktop, after the person confirmed in the delete sheet. nil when it is gone.
@@ -322,7 +408,11 @@ extension CalStore {
         guard live.readOnlyReason == nil, live.editable else { return "This event cannot be deleted from your phone." }
         let account = liveAccount
         liveBusy.insert(item.event.id)
-        defer { if liveAccount == account { liveBusy.remove(item.event.id) } }
+        liveSheetBusy = true
+        defer {
+            liveSheetBusy = false
+            if liveAccount == account { liveBusy.remove(item.event.id) }
+        }
         do {
             let client = try liveClient()
             switch item.event.source {
@@ -371,13 +461,14 @@ extension CalStore {
         liveBusy.insert(id)
         guard let index = events.firstIndex(where: { $0.id == id }) else { liveBusy.remove(id); return }
         withAnimation(Motion.snappy) { events[index].completed = true }
+        // A range read already on its way started before this check-off: its answer must not bring the item back.
+        liveGeneration += 1
         say("Done. It is in the Archive now.")
         Task {
             defer { if liveAccount == account { liveBusy.remove(id) } }
             do {
                 try await liveClient().calendarSetCompleted(path: path, true)
                 guard stillLive(account) else { return }
-                await loadArchiveLive()
             } catch {
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
@@ -386,6 +477,8 @@ extension CalStore {
                 }
                 say(writeProblem(error, what: "It was not checked off."))
             }
+            // Either way, show what the desktop has now: the range and the Archive.
+            await loadLive()
         }
     }
 
@@ -421,7 +514,7 @@ extension CalStore {
         Task {
             defer { if liveAccount == account { liveBusy.remove("google-calendars") } }
             do {
-                _ = try await liveClient().googleCalendarSettings(chosen)
+                try await liveClient().googleCalendarSettings(chosen)
                 guard stillLive(account) else { return }
                 await loadLive()
             } catch {

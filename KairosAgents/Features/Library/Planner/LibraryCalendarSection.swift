@@ -8,53 +8,20 @@ struct LibraryCalendarSection: View {
     @State private var store = CalStore.shared
     @State private var sheet: CalSheet?
 
+    /// The store has not yet followed the connection: paired but still holding the sample or another account's
+    /// items, or unpaired but still holding a desktop's. Nothing of it is drawn; it follows on appear.
+    private var following: Bool {
+        let wantLive = !Connection.shared.usesSampleData
+        return wantLive == store.isSample || (wantLive && store.liveAccount != CalStore.accountKey)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            CalModeBar(store: store)
-            CalNavRow(store: store, onSources: { sheet = .sources }, onNew: { sheet = .new(store.selected) })
-            liveLine
-
-            Group {
-                switch store.mode {
-                case .week:
-                    VStack(alignment: .leading, spacing: 12) {
-                        CalWeekStrip(store: store)
-                        CalLegend(store: store)
-                        dayHeading
-                        CalTimeline(store: store, day: store.selected, onOpen: open)
-                    }
-                case .day:
-                    VStack(alignment: .leading, spacing: 12) {
-                        dayHeading
-                        CalTimeline(store: store, day: store.selected, onOpen: open)
-                    }
-                case .month:
-                    VStack(alignment: .leading, spacing: 20) {
-                        CalMonthGrid(store: store)
-                        CalDayPanel(store: store, day: store.selected, actions: actions)
-                        VStack(alignment: .leading, spacing: 10) {
-                            PlannerHeading(title: "Upcoming")
-                            CalGroupedList(store: store, from: store.today, days: 7, actions: actions)
-                        }
-                    }
-                case .agenda:
-                    CalGroupedList(store: store, from: store.selected, days: 14, actions: actions)
-                }
+            if following {
+                if !Connection.shared.usesSampleData { CalLiveLine(text: "Reading your calendar.") }
+            } else {
+                content
             }
-            .transition(.opacity)
-
-            VStack(spacing: 0) {
-                Button { sheet = .sources } label: {
-                    GroupRow(title: "Your calendars", symbol: "list.bullet", value: visibleSummary)
-                }
-                .buttonStyle(PressStyle(scale: 0.99))
-                Button { sheet = .archive } label: {
-                    GroupRow(title: "Archive", symbol: "archivebox", value: "\(store.archived.count)", last: true)
-                }
-                .buttonStyle(PressStyle(scale: 0.99))
-            }
-            .kCard(radius: 20)
-            .padding(.top, 8)
         }
         .padding(.bottom, 8)
         .animation(Motion.snappy, value: store.mode)
@@ -63,14 +30,66 @@ struct LibraryCalendarSection: View {
                 .environment(router)
                 .environment(chrome)
         }
-        .onAppear(perform: applyDebugState)
+        .onAppear {
+            store.followConnection()
+            applyDebugState()
+        }
         .onChange(of: chrome.addTick) {
-            if router.tab == .library { sheet = .new(store.selected) }
+            // A save or delete on its way keeps its sheet; nothing swaps it.
+            if router.tab == .library && !store.liveSheetBusy { sheet = .new(store.selected) }
         }
         .task(id: store.liveRangeKey) {
             store.followConnection()
             await store.loadLive()
         }
+    }
+
+    @ViewBuilder private var content: some View {
+        CalModeBar(store: store)
+        CalNavRow(store: store, onSources: { sheet = .sources }, onNew: { sheet = .new(store.selected) })
+        liveLine
+
+        Group {
+            switch store.mode {
+            case .week:
+                VStack(alignment: .leading, spacing: 12) {
+                    CalWeekStrip(store: store)
+                    CalLegend(store: store)
+                    dayHeading
+                    CalTimeline(store: store, day: store.selected, onOpen: open)
+                }
+            case .day:
+                VStack(alignment: .leading, spacing: 12) {
+                    dayHeading
+                    CalTimeline(store: store, day: store.selected, onOpen: open)
+                }
+            case .month:
+                VStack(alignment: .leading, spacing: 20) {
+                    CalMonthGrid(store: store)
+                    CalDayPanel(store: store, day: store.selected, actions: actions)
+                    VStack(alignment: .leading, spacing: 10) {
+                        PlannerHeading(title: "Upcoming")
+                        CalGroupedList(store: store, from: store.today, days: 7, actions: actions)
+                    }
+                }
+            case .agenda:
+                CalGroupedList(store: store, from: store.selected, days: 14, actions: actions)
+            }
+        }
+        .transition(.opacity)
+
+        VStack(spacing: 0) {
+            Button { sheet = .sources } label: {
+                GroupRow(title: "Your calendars", symbol: "list.bullet", value: visibleSummary)
+            }
+            .buttonStyle(PressStyle(scale: 0.99))
+            Button { sheet = .archive } label: {
+                GroupRow(title: "Archive", symbol: "archivebox", value: "\(store.archived.count)", last: true)
+            }
+            .buttonStyle(PressStyle(scale: 0.99))
+        }
+        .kCard(radius: 20)
+        .padding(.top, 8)
     }
 
     // Pieces
@@ -79,7 +98,8 @@ struct LibraryCalendarSection: View {
     @ViewBuilder private var liveLine: some View {
         if !store.isSample {
             switch store.liveLoad {
-            case .loading where store.events.isEmpty:
+            // Idle is the moment between following the connection and the first read starting.
+            case .idle where store.events.isEmpty, .loading where store.events.isEmpty:
                 CalLiveLine(text: "Reading your calendar.")
             case .failed(let text):
                 CalLiveLine(text: text) { Task { await store.loadLive() } }

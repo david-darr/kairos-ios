@@ -246,6 +246,10 @@ final class CalStore {
     /// The range the live items were last read for.
     var liveLoadedKey = ""
     var liveGeneration = 0
+    /// Bumped by every Archive read, so an older answer never lands over a newer one.
+    var liveArchiveGeneration = 0
+    /// A save or delete from a sheet is on its way, so nothing may swap or close that sheet.
+    var liveSheetBusy = false
     /// Checked-off events and notes on the desktop.
     var liveArchived: [CalEvent] = []
     /// Why Google calendars are not shown while paired, in one plain line. nil when they are, or not connected at all.

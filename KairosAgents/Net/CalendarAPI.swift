@@ -49,6 +49,32 @@ nonisolated struct CalEventDTO: Decodable, Sendable {
     var idText: String { id?.plainText ?? "" }
 }
 
+/// Stands in for one list item that could not be read, so the list reads on past it.
+nonisolated struct CalSkippedItem: Decodable, Sendable {
+    init(from decoder: Decoder) throws {}
+}
+
+/// A list read item by item: an item of the wrong shape (a tab hook sending `"all_day": 0`, say) is left out
+/// instead of failing the whole calendar.
+nonisolated struct CalLossyList<Element: Decodable>: Decodable {
+    var items: [Element] = []
+    /// How many items were left out.
+    var skipped = 0
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        while !container.isAtEnd {
+            if let item = try? container.decode(Element.self) {
+                items.append(item)
+            } else if (try? container.decode(CalSkippedItem.self)) != nil {
+                skipped += 1
+            } else {
+                break
+            }
+        }
+    }
+}
+
 /// calendar_recurrence.normalize: daily, weekly or monthly, every 1 to 365, ending after a count or on a date.
 nonisolated struct CalRecurrenceDTO: Decodable, Hashable, Sendable {
     var frequency: String?
@@ -72,7 +98,21 @@ nonisolated struct GoogleStatusDTO: Decodable, Sendable {
     var calendarConnected: Bool?
     /// The calendars chosen to show, or null for "the ones Google marks selected".
     var calendarIds: [String]?
+    /// The account Calendar uses, which may not be the Library's default (`email` is the Library's).
     var calendarAccount: String?
+    var accounts: [GoogleAccountDTO]?
+
+    /// The Calendar account's address, or nil when the desktop does not say.
+    var calendarEmail: String? {
+        guard let calendarAccount else { return nil }
+        return accounts?.first { $0.id == calendarAccount }?.email
+    }
+}
+
+/// One of `accounts` in GET /api/google/status.
+nonisolated struct GoogleAccountDTO: Decodable, Sendable {
+    var id: String
+    var email: String?
 }
 
 /// One of GET /api/google/calendar/calendars (google_workspace._fetch_calendar_list).
@@ -197,6 +237,13 @@ nonisolated enum CalendarWire {
         return json
     }
 
+    /// The rule as text, so two rules can be compared by what would be sent ("" for no rule, nil for a custom one).
+    static func ruleKey(_ rule: CalRepeat) -> String? {
+        guard rule.custom == nil else { return nil }
+        guard let json = ruleJSON(rule) else { return "" }
+        return ["frequency", "interval", "count", "until"].map { key -> String in json[key].map { "\($0)" } ?? "-" }.joined(separator: "|")
+    }
+
     // MARK: Items
 
     /// Why a Google event is shown without Edit and Delete on the phone, or nil.
@@ -223,17 +270,28 @@ nonisolated enum CalendarWire {
         }
         let zone = (dto.timeZone?.isEmpty == false ? dto.timeZone : nil) ?? (source == .notes ? "UTC" : TimeZone.current.identifier)
         let rawEnd = (dto.end?.isEmpty == false ? dto.end : nil) ?? rawStart
-        let allDay = (dto.allDay ?? false) && isDateOnly(rawStart)
+        // An all-day event stored with a timed boundary stays all-day, on the day that moment falls on,
+        // as the desktop's own web client shows it (static/js/views/calendar.js localDayKey).
+        let allDay = dto.allDay ?? false
         let start: Date
         let end: Date
         if allDay {
-            guard let first = localDay(rawStart) else { return nil }
+            let first: Date
+            if isDateOnly(rawStart) {
+                guard let day = localDay(rawStart) else { return nil }
+                first = day
+            } else {
+                guard let moment = instant(rawStart, naiveZone: zone) else { return nil }
+                first = CalDates.day(moment)
+            }
             var last: Date
             if isDateOnly(rawEnd), let day = localDay(rawEnd) {
                 let exclusive = source == .google || dto.endExclusive == true
                 last = exclusive ? day : CalDates.add(1, to: day)
             } else if let moment = instant(rawEnd, naiveZone: zone) {
-                last = CalDates.add(1, to: CalDates.day(moment))
+                // A timed end at midnight already ends that day; any later moment ends the next.
+                let day = CalDates.day(moment)
+                last = moment == day ? day : CalDates.add(1, to: day)
             } else {
                 last = CalDates.add(1, to: first)
             }
@@ -260,7 +318,11 @@ nonisolated enum CalendarWire {
             ref.guests = dto.guests ?? 0
             ref.readOnlyReason = googleReadOnly(dto)
         } else if source == .tab {
-            if let url = dto.toggleUrl, url.hasPrefix("/api/"), !url.contains("\\") { ref.toggleURL = url }
+            // Only a plain path: a query, an escape or a fragment would not reach the same place once sent.
+            if let url = dto.toggleUrl, url.hasPrefix("/api/"),
+               !url.contains(where: { "\\?%#".contains($0) || $0.isWhitespace }), !url.contains("..") {
+                ref.toggleURL = url
+            }
         }
         return CalEvent(
             id: "\(dto.source ?? "calendar"):\(dto.calendarId ?? ""):\(id)",
@@ -302,13 +364,17 @@ nonisolated enum CalendarWire {
 extension APIClient {
 
     /// GET /api/calendar/events?start=&end= : everything shown in [start, end).
+    /// Read item by item: one item of the wrong shape is left out, not the whole calendar.
     func calendarEvents(start: Date, end: Date) async throws -> [CalEventDTO] {
-        try await get("/api/calendar/events", query: ["start": CalendarWire.rangeText(start), "end": CalendarWire.rangeText(end)])
+        let list: CalLossyList<CalEventDTO> = try await get("/api/calendar/events",
+            query: ["start": CalendarWire.rangeText(start), "end": CalendarWire.rangeText(end)])
+        return list.items
     }
 
     /// GET /api/calendar/events/archived : checked-off Kairos events, latest first.
     func calendarArchived() async throws -> [CalEventDTO] {
-        try await get("/api/calendar/events/archived")
+        let list: CalLossyList<CalEventDTO> = try await get("/api/calendar/events/archived")
+        return list.items
     }
 
     /// GET /api/calendar/events/{id}?scope=series : the series an event belongs to, for "All events in this series".
@@ -345,15 +411,27 @@ extension APIClient {
         try await get("/api/google/calendar/calendars")
     }
 
-    /// PATCH /api/google/calendar/settings : the whole list of calendars to show.
-    func googleCalendarSettings(_ ids: [String]) async throws -> GoogleCalendarSettingsDTO {
-        try await request("PATCH", "/api/google/calendar/settings", json: ["calendar_ids": ids])
+    /// PATCH /api/google/calendar/settings : the whole list of calendars to show. Only the status is read
+    /// (the answer is GoogleCalendarSettingsDTO): an answer this app cannot read must not undo a change the desktop made.
+    func googleCalendarSettings(_ ids: [String]) async throws {
+        try await call("PATCH", "/api/google/calendar/settings", json: ["calendar_ids": ids])
     }
 
+    /// How long the phone waits for a Google write. The desktop's own wait is longer than the phone's usual 30 s:
+    /// google_workspace.request allows 45 s for Google's answer, after a token refresh of up to 30 s, and tries once
+    /// more after a refused token, so up to 150 s. The phone waits longer than that, so it does not give up first.
+    /// The session's 180 s limit on a whole request still applies.
+    static let googleWriteTimeout: TimeInterval = 170
+
     /// POST /api/google/calendar/action : create, update or delete one Google event. The answer is Google's own
-    /// event (or {deleted: true}) and is not read: the range is read again after.
+    /// event (or {deleted: true}) and is not read: the range is read again after. Sent once, never retried.
     func googleCalendarAction(_ body: [String: Any]) async throws {
-        try await call("POST", "/api/google/calendar/action", json: body)
+        guard JSONSerialization.isValidJSONObject(body) else { throw APIError.unreadable("request") }
+        var request = try urlRequest("POST", "/api/google/calendar/action")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = APIClient.googleWriteTimeout
+        _ = try await send(request)
     }
 
     /// GET /api/notes?include_completed=true
@@ -449,6 +527,19 @@ nonisolated enum CalendarSamples {
 
     static let settings = #"{"calendar_ids": ["shop@example.com"]}"#
 
+    /// A list with two items the phone cannot read (a number for a start, a bare text), an all-day event stored
+    /// with timed boundaries, and a tab item whose toggle path carries a query.
+    static let mixed = #"""
+    [
+      {"id": "bad1", "title": "Wrong type", "start": 1793000000, "all_day": false, "source": "tab"},
+      {"id": "t1", "title": "Timed all-day", "start": "2027-01-12T00:00:00", "end": "2027-01-13T00:00:00", "all_day": true,
+       "location": "", "description": "", "completed": false, "recurrence": null, "end_exclusive": false, "source": "calendar"},
+      "not an item",
+      {"id": "q-18", "title": "Quote with a query", "start": "2027-01-12T10:00:00+00:00", "end": "2027-01-12T10:00:00+00:00",
+       "all_day": false, "source": "tab", "source_label": "CRM", "toggle_url": "/api/tabs/crm/quotes?id=18"}
+    ]
+    """#
+
     private static func mapped() throws -> [CalEvent] {
         try KJSON.decode([CalEventDTO].self, from: events).compactMap(CalendarWire.event)
     }
@@ -525,9 +616,24 @@ nonisolated enum CalendarSamples {
             let list = try KJSON.decode([GoogleCalendarDTO].self, from: CalendarSamples.calendars)
             let chosen = try KJSON.decode(GoogleCalendarSettingsDTO.self, from: CalendarSamples.settings)
             guard status.calendarConnected == true, status.calendarIds?.count == 2, list.count == 2,
+                  status.calendarEmail == "you@example.com",
                   list[0].accessRole == "owner", list[0].primary == true, CalendarWire.hex(list[1].color) == 0x16A765,
                   chosen.calendarIds == ["shop@example.com"] else { throw SampleMismatch("google fields") }
             return "status, calendars, settings"
+        },
+        DecodeCheck("calendar.lossy") {
+            let list = try KJSON.decode(CalLossyList<CalEventDTO>.self, from: CalendarSamples.mixed)
+            let items = list.items.compactMap(CalendarWire.event)
+            guard list.items.count == 2, list.skipped == 2, items.count == 2,
+                  let whole = items.first(where: { $0.title == "Timed all-day" }), whole.allDay,
+                  CalendarWire.dayText(whole.start) == "2027-01-12", CalendarWire.dayText(whole.end) == "2027-01-13",
+                  let quote = items.first(where: { $0.source == .tab }), quote.live?.toggleURL == nil
+            else { throw SampleMismatch("item by item") }
+            let rule = CalRepeat(freq: .weekly, interval: 2)
+            guard CalendarWire.ruleKey(rule) == CalendarWire.ruleKey(CalRepeat(freq: .weekly, interval: 2)),
+                  CalendarWire.ruleKey(rule) != CalendarWire.ruleKey(CalRepeat()),
+                  CalendarWire.ruleKey(CalRepeat()) == "" else { throw SampleMismatch("rule compare") }
+            return "2 read, 2 left out, timed all-day kept"
         },
     ]
 }
