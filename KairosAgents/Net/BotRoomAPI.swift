@@ -101,6 +101,11 @@ nonisolated struct BotRmReadDTO: Decodable, Sendable {
     var unread: Int?
 }
 
+/// GET /api/bot-rooms (bot_rooms.py: list_rooms, each row `public`), read row by row.
+nonisolated struct BotRmListDTO: Decodable, Sendable {
+    var rooms: [BotRoutineLossy<BotRoomDTO>]?
+}
+
 // MARK: - Who answers
 
 /// A room's `default_responder` (bot_rooms.py: validate_responder).
@@ -148,6 +153,11 @@ nonisolated enum BotRmResponder: Equatable, Sendable {
 // MARK: - Calls
 
 extension APIClient {
+
+    /// GET /api/bot-rooms: this account's rooms that are not archived, decoded row by row.
+    func botRoomList() async throws -> BotRmListDTO {
+        try await get("/api/bot-rooms")
+    }
 
     /// GET /api/bot-rooms/{id}: 404 for a room that is not this account's or no longer exists.
     func botRoomGet(_ id: String) async throws -> BotRoomDTO {
@@ -203,8 +213,9 @@ extension APIClient {
         return try await post("/api/bot-rooms/\(id)/read", json: body)
     }
 
-    /// PATCH /api/bot-rooms/{id}: only the changed fields, with `expected_revision` (409 when stale, or when the
-    /// members change while the room is working).
+    /// PATCH /api/bot-rooms/{id}: only the changed fields, with `expected_revision`. A 409 is one of three
+    /// (bot_rooms.py: update): a stale revision ("The room changed. Reload and try again."), members changed while
+    /// the room works ("This room is working or waiting on a card..."), or a removed member leads a team goal.
     func botRoomUpdate(_ id: String, _ fields: [String: Any]) async throws -> BotRoomDTO {
         try await request("PATCH", "/api/bot-rooms/\(id)", json: fields)
     }
@@ -304,6 +315,23 @@ nonisolated enum BotRoomSamples {
     {"detail": "The room changed. Reload and try again."}
     """#
 
+    static let busy = #"""
+    {"detail": "This room is working or waiting on a card. Try changing who is in it when it is idle."}
+    """#
+
+    static let list = #"""
+    {"rooms": [
+      {"id": "a1b2c3d4e5f60718", "name": "Spring sale", "context": "Shop", "description": "", "bulletin": "",
+       "cwd": null, "default_responder": {"kind": "mentions"}, "turn_timeout_minutes": 5, "setup_state": "done",
+       "pinned_message_id": null, "revision": 2, "created_at": 1792000000.0, "archived_at": null,
+       "members": [{"bot_id": "agent_quill", "name": "Quill", "held": false, "working": false, "waiting": false,
+                    "seat_session_id": null, "last_seen_seq": 0}],
+       "working": false, "unread": 3, "last_seq": 12, "threads": [{"id": "t000000000000001", "title": "", "goal": null}]},
+      {"id": "b2c3d4e5f6071829", "name": "Month end", "setup_state": "pending", "members": [], "unread": 0, "last_seq": 0},
+      {"name": "no id"}
+    ]}
+    """#
+
     static let checks: [DecodeCheck] = [
         DecodeCheck("botrooms.room") {
             let room = try KJSON.decode(BotRoomDTO.self, from: BotRoomSamples.room)
@@ -350,6 +378,21 @@ nonisolated enum BotRoomSamples {
                   BotRoomLiveMap.sendID().count >= 8, BotRoomLiveMap.sendID().count <= 80
             else { throw SampleMismatch("responder wire") }
             return "who answers sent as the desktop takes it"
+        },
+        DecodeCheck("botrooms.list") {
+            let (rooms, skipped) = BotRoutineWire.items(try KJSON.decode(BotRmListDTO.self, from: BotRoomSamples.list).rooms)
+            let busy = try KJSON.decode(APIErrorBody.self, from: BotRoomSamples.busy)
+            let stale = try KJSON.decode(APIErrorBody.self, from: BotRoomSamples.stale)
+            guard rooms.count == 2, skipped == 1, rooms[0].unread == 3, rooms[0].lastSeq == 12,
+                  rooms[0].members?.first?.botId == "agent_quill", rooms[1].setupState == "pending",
+                  BotRoomLiveMap.isStale(stale.text), !BotRoomLiveMap.isStale(busy.text), BotRoomLiveMap.isBusy(busy.text),
+                  BotRoomLiveMap.length("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}") == 5,
+                  BotRoomLiveMap.joins(tail: 100, oldestRead: 171, older: true) == false,
+                  BotRoomLiveMap.joins(tail: 100, oldestRead: 90, older: true),
+                  BotRoomLiveMap.joins(tail: 100, oldestRead: 171, older: false),
+                  BotRoomLiveMap.joins(tail: nil, oldestRead: 1, older: false) == false
+            else { throw SampleMismatch("room list, 409 words, lengths or transcript joins") }
+            return "\(rooms.count) rooms, \(skipped) left out; 409 words; lengths as the desktop counts"
         },
     ]
 }

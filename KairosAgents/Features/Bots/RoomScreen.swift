@@ -1054,13 +1054,9 @@ struct BotRoomLiveOutgoingBubble: View {
         case .unchecked:
             PillButton(title: "Check again", symbol: "arrow.clockwise") { live.sendAgain(item.sendID) }
         case .notSent:
-            HStack(spacing: 8) {
-                PillButton(title: "Copy") {
-                    UIPasteboard.general.string = item.text
-                    BotsStore.shared.say("Copied")
-                }
-                PillButton(title: "Send again", look: .filled) { live.sendAgain(item.sendID) }
-            }
+            // Only Send again: it reuses the send id, so the desktop stores it once even if the first one lands late.
+            // A copy pasted into the composer would be a new message.
+            PillButton(title: "Send again", look: .filled) { live.sendAgain(item.sendID) }
         case .refused:
             HStack(spacing: 8) {
                 PillButton(title: "Edit") { live.edit(item.sendID) }
@@ -1086,12 +1082,18 @@ struct BotRoomLiveSheet: View {
     @State private var sentBase: BotRoomLiveForm?
     @State private var saving = false
     @State private var mustCheck = false
+    /// The room changed on the desktop and could not be read again: read it before the next save.
+    @State private var needsRead = false
+    /// The form the desktop refused: the same save would be refused again, so Save waits for a change.
+    @State private var refusedForm: BotRoomLiveForm?
     @State private var note: String?
     @State private var newTitle = ""
     @State private var creating = false
     @State private var deleting: BotRmThreadDTO?
     @State private var renaming: BotRmThreadDTO?
     @State private var renameText = ""
+    /// The conversation a too-long name was typed for: renaming it again starts from that text.
+    @State private var renameKept: String?
 
     var body: some View {
         ScrollView {
@@ -1124,10 +1126,20 @@ struct BotRoomLiveSheet: View {
         .alert("Rename conversation", isPresented: renameShown) {
             TextField("Name", text: $renameText)
             Button("Save") {
-                if let thread = renaming, renameText.count <= 100 { live.renameThread(roomID, thread.id, title: renameText) }
+                if let thread = renaming {
+                    let clean = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if BotRoomLiveMap.length(clean) <= 100 {
+                        renameKept = nil
+                        live.renameThread(roomID, thread.id, title: renameText)
+                    } else {
+                        // Nothing is sent and nothing typed is lost: renaming this conversation again starts from it.
+                        renameKept = thread.id
+                        note = "A conversation name is at most 100 characters. Nothing was renamed; rename it again to shorten what you typed."
+                    }
+                }
                 renaming = nil
             }
-            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Cancel", role: .cancel) { renaming = nil; renameKept = nil }
         }
     }
 
@@ -1158,13 +1170,14 @@ struct BotRoomLiveSheet: View {
     }
 
     private func save() {
-        guard let form, let base, !saving, !mustCheck else { return }
+        guard let form, let base, !saving, !mustCheck, !needsRead else { return }
         saving = true
         note = nil
+        refusedForm = nil
         sent = form
         sentBase = base
         Task {
-            let outcome = await live.save(roomID, form: form, base: base, revision: revision)
+            let (outcome, read) = await live.save(roomID, form: form, base: base, revision: revision)
             saving = false
             switch outcome {
             case .done(let text):
@@ -1172,15 +1185,43 @@ struct BotRoomLiveSheet: View {
                 store.say(text)
                 dismiss()
             case .refused(let text):
+                // The desktop's own reason. Sending the same again gets the same answer, so Save waits for a change.
+                refusedForm = form
+                note = text
+            case .busy(let text):
+                // Nothing saved; the members stay locked until the room is idle, then the same save can go.
                 note = text
             case .changed:
-                if let room = live.room(roomID) { rebase(room) }
-                note = "This room changed on your desktop. What you typed is still here; check it and save again."
+                // Rebase on the room the store just read, never on an older copy, so the next save has its revision.
+                if let read {
+                    rebase(read)
+                    note = "This room changed on your desktop. What you typed is still here; check it and save again."
+                } else {
+                    needsRead = true
+                    note = "This room changed on your desktop, and it could not be read again. What you typed is still here; read the room again before saving."
+                }
             case .unsure(let text, let checked):
-                if checked, let room = live.room(roomID) { rebase(room) }
+                if checked, let read { rebase(read) }
                 mustCheck = !checked
                 note = text
             }
+        }
+    }
+
+    /// After a 409 for a stale revision that could not be followed by a read: read the room and rebase on it.
+    private func readAgain() {
+        guard !saving else { return }
+        saving = true
+        Task {
+            let room = await live.loadRoom(roomID, force: true)
+            saving = false
+            guard let room else {
+                note = "Your desktop did not answer. What you typed is still here; read the room again in a moment."
+                return
+            }
+            needsRead = false
+            rebase(room)
+            note = "This room now shows what your desktop has. What you typed is still here; check it and save again."
         }
     }
 
@@ -1217,10 +1258,14 @@ struct BotRoomLiveSheet: View {
         if mustCheck {
             GoldButton(title: saving ? "Checking" : "Check again") { checkAgain() }
                 .disabled(saving)
+        } else if needsRead {
+            GoldButton(title: saving ? "Reading" : "Read the room again") { readAgain() }
+                .disabled(saving)
         } else {
+            let blocked = disabled || (refusedForm != nil && refusedForm == form)
             GoldButton(title: saving ? "Saving" : title) { save() }
-                .disabled(saving || disabled)
-                .opacity(disabled ? 0.5 : 1)
+                .disabled(saving || blocked)
+                .opacity(blocked ? 0.5 : 1)
         }
     }
 
@@ -1240,15 +1285,26 @@ struct BotRoomLiveSheet: View {
             (label: "Everyone answers", responder: .everyone),
             (label: "Only mentioned bots answer", responder: .mentions),
         ]
-        let members: [(label: String, responder: BotRmResponder)] = (base?.members ?? []).map { id in
-            (label: "\(live.name(roomID, id)) answers", responder: BotRmResponder.member(id))
+        // Two members with the same name get a number each, so a pick always maps back to the right bot.
+        var seen: [String: Int] = [:]
+        let names = (base?.members ?? []).map { live.name(roomID, $0) }
+        let members: [(label: String, responder: BotRmResponder)] = zip(base?.members ?? [], names).map { pair -> (label: String, responder: BotRmResponder) in
+            let (id, name) = pair
+            let shared = names.filter { $0 == name }.count > 1
+            seen[name, default: 0] += 1
+            let shown = shared ? "\(name) (\(seen[name] ?? 1))" : name
+            return (label: "\(shown) answers", responder: BotRmResponder.member(id))
         }
         return fixed + members
     }
 
     private var responderLabel: Binding<String> {
         Binding(
-            get: { BotRoomLiveMap.whoAnswers(form?.responder ?? .mentions) { live.name(roomID, $0) } },
+            get: {
+                let current = form?.responder ?? .mentions
+                if let found = options.first(where: { $0.responder.sameChoice(current) }) { return found.label }
+                return BotRoomLiveMap.whoAnswers(current) { live.name(roomID, $0) }
+            },
             set: { label in
                 guard let pick = options.first(where: { $0.label == label })?.responder, let current = form?.responder,
                       !pick.sameChoice(current) else { return }
@@ -1279,8 +1335,10 @@ struct BotRoomLiveSheet: View {
     }
 
     private func settingsInvalid(_ form: BotRoomLiveForm) -> Bool {
+        // Counted as the desktop counts (code points), on what is sent (trimmed).
         let name = form.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty || name.count > 100 || form.bulletin.count > 12_000
+        let bulletin = form.bulletin.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || BotRoomLiveMap.length(name) > 100 || BotRoomLiveMap.length(bulletin) > 12_000
     }
 
     private func reload() {
@@ -1359,7 +1417,7 @@ struct BotRoomLiveSheet: View {
     private func create() {
         guard !creating else { return }
         let typed = newTitle
-        guard typed.trimmingCharacters(in: .whitespacesAndNewlines).count <= 100 else {
+        guard BotRoomLiveMap.length(typed.trimmingCharacters(in: .whitespacesAndNewlines)) <= 100 else {
             note = "A conversation name is at most 100 characters."
             return
         }
@@ -1372,7 +1430,7 @@ struct BotRoomLiveSheet: View {
             case .done(let text):
                 newTitle = ""
                 store.say(text)
-            case .refused(let text), .changed(let text), .unsure(let text, _):
+            case .refused(let text), .changed(let text), .busy(let text), .unsure(let text, _):
                 note = text
             }
         }
@@ -1415,6 +1473,8 @@ struct BotRoomLiveSheet: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(scale: 0.98))
+            // Opening a conversation closes the sheet: not while a create is on its way, so its outcome is seen.
+            .disabled(creating)
             if thread.id == shown {
                 Text("Open here").font(KFont.ui(13)).foregroundStyle(Palette.inkFaint)
             }
@@ -1428,7 +1488,7 @@ struct BotRoomLiveSheet: View {
         .padding(.horizontal, 14).frame(minHeight: 54)
         .contextMenu {
             Button {
-                renameText = thread.title ?? ""
+                if renameKept != thread.id { renameText = thread.title ?? "" }
                 renaming = thread
             } label: { Label("Rename", systemImage: "pencil") }
         }
