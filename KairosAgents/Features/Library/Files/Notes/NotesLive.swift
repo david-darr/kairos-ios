@@ -203,6 +203,8 @@ extension NotesStore {
         adding = true
         defer { if liveAccount == account { adding = false } }
         let before = Set(notes.map(\.id))
+        // Only a list that was really read can prove a note is new.
+        let listWasRead = liveLoad == .loaded
         do {
             let made = try await liveClient().notesCreate(text: text, due: due)
             writeSerial += 1
@@ -222,7 +224,7 @@ extension NotesStore {
             // The note may have reached the desktop before the answer was lost: look for it.
             let read = await loadLive()
             guard stillLive(account) else { return .failed(error.plainWords) }
-            if read && notes.contains(where: { !before.contains($0.id) && $0.text == text }) {
+            if read && listWasRead && notes.contains(where: { !before.contains($0.id) && $0.text == text }) {
                 return .saved
             }
             if read {
