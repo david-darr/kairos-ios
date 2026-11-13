@@ -11,6 +11,7 @@ struct LibraryFilesSection: View {
     @State private var uploads = UploadsStore.shared
     @State private var chats = ChatDocsStore.shared
     @State private var drive = DriveStore.shared
+    @State private var live = DocsLiveStore.shared
 
     init(cover: FilesCover? = nil) {
         _cover = State(initialValue: cover)
@@ -27,6 +28,13 @@ struct LibraryFilesSection: View {
         .task(id: VaultStore.connectionKey) {
             vault.followConnection()
             await vault.loadLiveIfNeeded()
+        }
+        .task(id: DocsLiveStore.connectionKey) {
+            await live.loadAll()
+        }
+        .onChange(of: cover == nil) {
+            // Back from a place: the desktop's documents and files are read again.
+            if cover == nil, DocsLiveStore.paired { Task { await live.loadAll() } }
         }
         .onChange(of: chrome.addTick) {
             if router.tab == .library { cover = .document(nil) }
@@ -135,14 +143,36 @@ struct LibraryFilesSection: View {
 
     private var placesCard: some View {
         VStack(spacing: 0) {
-            placeRow("Chat documents", detail: "\(chats.fileCount) files from chats", symbol: "bubble.left.and.text.bubble.right") { cover = .chatDocuments }
+            placeRow("Chat documents", detail: chatDocsDetail, symbol: "bubble.left.and.text.bubble.right") { cover = .chatDocuments }
             placeRow("Google Drive", detail: driveDetail, symbol: "externaldrive") { cover = .drive }
-            placeRow("Uploads", detail: uploads.files.count == 1 ? "1 file" : "\(uploads.files.count) files", symbol: "arrow.up.doc", last: true) { cover = .uploads }
+            placeRow("Uploads", detail: uploadsDetail, symbol: "arrow.up.doc", last: true) { cover = .uploads }
         }
         .kCard(radius: 20)
     }
 
+    private var chatDocsDetail: String {
+        guard DocsLiveStore.paired else { return "\(chats.fileCount) files from chats" }
+        switch live.filesLoad {
+        case .loaded: return "\(live.fileCount) files from chats"
+        case .failed: return "Could not be read"
+        case .idle, .loading: return "Reading…"
+        }
+    }
+
+    private var uploadsDetail: String {
+        let count: Int
+        if DocsLiveStore.paired {
+            guard live.filesLoad == .loaded else { return live.filesLoad == .loading || live.filesLoad == .idle ? "Reading…" : "Could not be read" }
+            count = live.uploads.count
+        } else {
+            count = uploads.files.count
+        }
+        return count == 1 ? "1 file" : "\(count) files"
+    }
+
     private var driveDetail: String {
+        // The Drive sample account is never shown while paired; Drive itself is read when it opens.
+        if DocsLiveStore.paired { return "Your Google files" }
         guard let account = drive.currentAccount else { return "Not connected" }
         return account.broken ? "Reconnect needed" : "Connected · \(account.storage)"
     }
@@ -182,8 +212,15 @@ struct LibraryFilesSection: View {
         FilesGroup(label: "Documents", trailing: "New document") {
             cover = .document(nil)
         } content: {
-            let docs = Array(documents.documents.prefix(4))
-            if docs.isEmpty {
+            let all = DocsLiveStore.paired ? live.documents : documents.documents
+            let docs = Array(all.prefix(4))
+            if DocsLiveStore.paired, docs.isEmpty, live.docsLoad != .loaded {
+                if case .failed(let why) = live.docsLoad {
+                    DocsLiveLine(text: why, action: "Try again") { Task { await live.loadDocuments() } }
+                } else {
+                    DocsLiveLine(text: "Reading your documents…")
+                }
+            } else if docs.isEmpty {
                 FilesEmpty(symbol: "doc.text", title: "No documents yet", detail: "Notes and drafts saved to your Library show up here.", action: "Create a document") { cover = .document(nil) }
                     .kCard(radius: 20)
             } else {
@@ -214,12 +251,12 @@ struct LibraryFilesSection: View {
                         }
                         .buttonStyle(PressStyle(scale: 0.99))
                     }
-                    if documents.documents.count > docs.count {
+                    if all.count > docs.count {
                         Button {
                             Haptics.tap()
                             cover = .chatDocuments
                         } label: {
-                            Text("All \(documents.documents.count) documents")
+                            Text("All \(all.count) documents")
                                 .font(KFont.ui(15, .medium, relativeTo: .subheadline))
                                 .foregroundStyle(Palette.goldText)
                                 .frame(maxWidth: .infinity, minHeight: 48)

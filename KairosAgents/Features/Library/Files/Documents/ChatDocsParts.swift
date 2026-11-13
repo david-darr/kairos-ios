@@ -54,12 +54,15 @@ struct ChatDocsDocumentRow: View {
     let document: LibraryDocument
     let query: String
     let last: Bool
+    /// Paired: the desktop's search snippet for this document, when its text matched.
+    var snippet: String? = nil
     let open: () -> Void
 
     private var detail: String {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return "Updated \(FilesDates.ago(document.updated))" }
         if document.title.localizedCaseInsensitiveContains(needle) { return "Title match" }
+        if let snippet, !snippet.isEmpty { return snippet.replacingOccurrences(of: "\n", with: " ") }
         return DocSnippet.make(document.body, query: needle) ?? "Updated \(FilesDates.ago(document.updated))"
     }
 
@@ -107,6 +110,16 @@ struct ChatDocsFileRow: View {
     let last: Bool
     let open: () -> Void
 
+    /// Size and origin, and (paired) when it joined the chat.
+    private var detail: String {
+        guard file.available else { return "No longer available" }
+        var parts: [String] = []
+        if file.sizeKnown { parts.append(file.size) }
+        parts.append(file.origin.label)
+        if let added = file.added { parts.append(FilesDates.short(added)) }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         Button(action: open) {
             HStack(spacing: 12) {
@@ -117,7 +130,7 @@ struct ChatDocsFileRow: View {
                         .font(KFont.ui(15.5, .medium, relativeTo: .subheadline))
                         .foregroundStyle(file.available ? Palette.ink : Palette.inkFaint)
                         .lineLimit(1)
-                    Text(file.available ? "\(file.size) · \(file.origin.label)" : "No longer available")
+                    Text(detail)
                         .font(KFont.ui(13, relativeTo: .footnote))
                         .foregroundStyle(Palette.inkFaint)
                         .lineLimit(1)

@@ -93,12 +93,15 @@ nonisolated enum DocSnippet {
 
 nonisolated enum ChatDocsOrigin: Hashable, Sendable {
     case sent, created, generated
+    /// An origin this app does not know (a newer desktop).
+    case other
 
     var label: String {
         switch self {
         case .sent: "Sent to chat"
         case .created: "Created by model"
         case .generated: "Generated"
+        case .other: "From a chat"
         }
     }
 }
@@ -110,6 +113,12 @@ nonisolated struct ChatDocsFile: Identifiable, Hashable, Sendable {
     var origin: ChatDocsOrigin
     var look: ChatDocument.Look
     var available = true
+    /// The desktop's link for this file (paired only), used to read its bytes.
+    var url: String? = nil
+    /// When it joined the chat (paired only).
+    var added: Date? = nil
+    /// False when the desktop sent no size.
+    var sizeKnown = true
 
     var ext: String { (name as NSString).pathExtension }
     var size: String { Int64(bytes).formatted(.byteCount(style: .file)) }
@@ -215,6 +224,10 @@ final class UploadsStore {
     }
 
     func shown(matching query: String) -> [UploadedFile] {
+        Self.sorted(files, matching: query, by: sort)
+    }
+
+    static func sorted(_ files: [UploadedFile], matching query: String, by sort: UploadsSort) -> [UploadedFile] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let picked = needle.isEmpty ? files : files.filter { $0.fileName.localizedCaseInsensitiveContains(needle) }
         switch sort {
