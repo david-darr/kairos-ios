@@ -66,7 +66,13 @@ enum WidgetSync {
             WidgetCenter.shared.reloadAllTimelines()
             return
         }
-        WidgetSnapshotStore.write(snapshot ?? NativeSample.snapshot())
+        if let snapshot {
+            WidgetSnapshotStore.write(snapshot)
+        } else if Connection.shared.usesSampleData {
+            // Made-up bots and work only on a phone that is not paired. A paired phone keeps what it last
+            // stored until the connection publishes real numbers.
+            WidgetSnapshotStore.write(NativeSample.snapshot())
+        }
         WidgetCenter.shared.reloadAllTimelines()
     }
 }
