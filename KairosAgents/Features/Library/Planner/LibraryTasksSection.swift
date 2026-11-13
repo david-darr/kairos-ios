@@ -35,6 +35,25 @@ struct LibraryTasksSection: View {
         .onChange(of: chrome.addTick) {
             if router.tab == .library { sheet = .addCard }
         }
+        .task(id: TasksStore.connectionKey) {
+            store.followConnection()
+            await store.loadLiveIfNeeded()
+        }
+        .task(id: "\(TasksStore.connectionKey)-\(store.needsWatching)") {
+            // Paired, while a card or a task is ready or running: read the desktop again every few seconds,
+            // as its own Tasks tab does, so a result shows up without a pull.
+            while store.needsWatching && !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
+                await store.refreshTasks()
+            }
+        }
+        .onChange(of: store.problem) {
+            if let problem = store.problem {
+                say(problem)
+                store.problem = nil
+            }
+        }
     }
 
     // MARK: Parts
@@ -51,9 +70,27 @@ struct LibraryTasksSection: View {
         case .activity:
             TasksActivityCard(store: store)
         case .board:
-            WorkBoardView(store: store, actions: cardActions, onAdd: { sheet = .addCard })
+            if store.isLive {
+                VStack(alignment: .leading, spacing: 12) {
+                    TasksLoadLine(state: store.boardLoad, waiting: "Reading your work board.") {
+                        Task { await store.loadLive() }
+                    }
+                    WorkBoardView(store: store, actions: cardActions, onAdd: { sheet = .addCard })
+                }
+            } else {
+                WorkBoardView(store: store, actions: cardActions, onAdd: { sheet = .addCard })
+            }
         case .routines:
-            JobListView(store: store, onOpen: { sheet = .job($0.id, run: nil, steps: nil) }, onSchedule: { sheet = .schedule })
+            if store.isLive {
+                VStack(alignment: .leading, spacing: 12) {
+                    TasksLoadLine(state: store.jobsLoad, waiting: "Reading your routines.") {
+                        Task { await store.loadLive() }
+                    }
+                    JobListView(store: store, onOpen: { sheet = .job($0.id, run: nil, steps: nil) }, onSchedule: { sheet = .schedule })
+                }
+            } else {
+                JobListView(store: store, onOpen: { sheet = .job($0.id, run: nil, steps: nil) }, onSchedule: { sheet = .schedule })
+            }
         case .triggers:
             TrigListView(store: store,
                          onOpen: { sheet = .trigger($0.id) },
@@ -61,7 +98,16 @@ struct LibraryTasksSection: View {
                          onApprove: { sheet = .approve($0) },
                          say: say)
         case .library:
-            JobLibraryView(store: store, routines: store.routines, say: say)
+            if store.isLive {
+                VStack(alignment: .leading, spacing: 12) {
+                    TasksLoadLine(state: store.libraryLoad, waiting: "Reading the automation library.") {
+                        Task { await store.loadLibrary() }
+                    }
+                    JobLibraryView(store: store, routines: store.routines, say: say)
+                }
+            } else {
+                JobLibraryView(store: store, routines: store.routines, say: say)
+            }
         }
     }
 
@@ -205,11 +251,15 @@ struct LibraryTasksSection: View {
         case .approve(let request):
             TrigApproveSheet(store: store, request: request, onDone: say)
         case .brief:
-            TasksBriefSheet(onStart: say)
+            TasksBriefSheet(onStart: say, paired: store.isLive)
         case .deleteCard(let card):
             TasksConfirmSheet(title: "Delete this card?",
                               message: "\(card.name) and its results will be removed.",
                               button: "Delete card") {
+                if store.isLive {
+                    store.deleteLive(card.id, done: "Card deleted", say: say)
+                    return
+                }
                 withAnimation(Motion.snappy) { store.deleteCard(card.id) }
                 say("Card deleted")
             }
@@ -217,6 +267,10 @@ struct LibraryTasksSection: View {
             TasksConfirmSheet(title: "Delete this task?",
                               message: "\(job.name) and its run history will be permanently deleted.",
                               button: "Delete task") {
+                if store.isLive {
+                    store.deleteLive(job.id, done: "Task deleted", say: say)
+                    return
+                }
                 withAnimation(Motion.snappy) { store.deleteJob(job.id) }
                 say("Task deleted")
             }

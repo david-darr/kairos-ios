@@ -4,6 +4,8 @@ import SwiftUI
 /// builds the automation from the answers.
 struct TasksBriefSheet: View {
     let onStart: (String) -> Void
+    /// Paired: the brief cannot start a chat on the desktop from here yet, so it says so and offers nothing to send.
+    var paired = false
     @Environment(\.dismiss) private var dismiss
     @State private var what = ""
     @State private var when = ""
@@ -22,6 +24,11 @@ struct TasksBriefSheet: View {
                     .foregroundStyle(Palette.inkDim)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if paired {
+                    TasksNotLiveNote(text: "The brief is not connected to your desktop yet. Start it from Build with Kairos in Kairos on your desktop.")
+                    QuietButton(title: "Close") { dismiss() }
+                } else {
+
                 PlannerTextField(label: "What should it do?", placeholder: "Describe the inputs and expected output",
                                  text: $what, multiline: true,
                                  error: missing && blank(what) ? "Say what it should do." : nil)
@@ -37,6 +44,7 @@ struct TasksBriefSheet: View {
                 GoldButton(title: "Start the chat") { start() }
                     .padding(.top, 4)
                 QuietButton(title: "Cancel") { dismiss() }
+                }
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 30)

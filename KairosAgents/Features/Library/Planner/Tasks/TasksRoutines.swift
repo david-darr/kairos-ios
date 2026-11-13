@@ -20,7 +20,14 @@ struct JobListView: View {
                 PlannerRoundButton(symbol: "plus", label: "Schedule a task", size: 40, action: onSchedule)
             }
 
-            if store.jobs.isEmpty {
+            if store.isLive && store.jobRunsFailed {
+                TasksLiveLine(text: "Some run history could not be read. Open a task to try again.")
+            }
+
+            if store.jobs.isEmpty && !store.jobsReady {
+                // Paired and not read yet, or the read failed: the line above the list says which.
+                EmptyView()
+            } else if store.jobs.isEmpty {
                 PlannerEmpty(title: "No scheduled tasks",
                              hint: "Turn on a routine from the library below, or schedule your own. Results can go to Discord too.",
                              actionTitle: "Schedule a task", action: onSchedule)
@@ -129,6 +136,7 @@ struct JobSheet: View {
     let onDelete: (ScheduledJob) -> Void
     let say: (String) -> Void
     @State private var notice: String?
+    @State private var confirmRun = false
 
     var body: some View {
         ScrollView {
@@ -143,6 +151,18 @@ struct JobSheet: View {
         .scrollIndicators(.hidden)
         .kSheet()
         .plannerNotice($notice)
+        .task {
+            if store.isLive { await store.loadJobRuns(jobID) }
+        }
+        .confirmationDialog("Run this task now?", isPresented: $confirmRun, titleVisibility: .visible) {
+            Button("Run now") {
+                Haptics.thud()
+                store.runJobLive(jobID) { result in notice = result }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(store.job(jobID)?.name ?? "This task") runs on your desktop now and can use its model and tools.")
+        }
     }
 
     private func content(_ job: ScheduledJob) -> some View {
@@ -168,6 +188,10 @@ struct JobSheet: View {
                         .foregroundStyle(Palette.working)
                     Spacer()
                     PlannerPill(title: "Stop", symbol: "stop.fill", style: .danger) {
+                        if store.isLive {
+                            store.stopLive(job.id) { notice = $0 }
+                            return
+                        }
                         if let text = store.stopJob(job.id) { notice = text }
                     }
                 }
@@ -178,13 +202,25 @@ struct JobSheet: View {
             }
 
             HStack(spacing: 10) {
-                PlannerPill(title: job.runningSince == nil ? "Run now" : "Running...", symbol: "play.fill", style: .gold, expand: true) {
+                let starting = store.starting.contains(job.id)
+                PlannerPill(title: starting && job.runningSince == nil ? "Starting..." : (job.runningSince == nil ? "Run now" : "Running..."),
+                            symbol: "play.fill", style: .gold, expand: true) {
+                    if store.isLive {
+                        // Real work on the desktop: ask first.
+                        confirmRun = true
+                        return
+                    }
                     Haptics.thud()
                     store.runJob(job.id) { result in notice = result }
                 }
-                .disabled(job.runningSince != nil)
-                .opacity(job.runningSince != nil ? 0.6 : 1)
+                // Paired, it also waits while another change for this task is on its way.
+                .disabled(job.runningSince != nil || starting || (store.isLive && store.busy.contains(job.id)))
+                .opacity(job.runningSince != nil || starting || (store.isLive && store.busy.contains(job.id)) ? 0.6 : 1)
                 PlannerPill(title: job.enabled ? "Turn off" : "Turn on", symbol: job.enabled ? "pause" : "power", style: .quiet, expand: true) {
+                    if store.isLive {
+                        store.toggleJobLive(job.id) { notice = $0 }
+                        return
+                    }
                     if let text = store.toggleJob(job.id) {
                         notice = text
                     } else {
@@ -192,6 +228,7 @@ struct JobSheet: View {
                     }
                 }
                 .opacity(!job.enabled && job.ended ? 0.55 : 1)
+                .disabled(store.busy.contains(job.id))
             }
             if !job.enabled && job.ended {
                 Text("This one-time schedule has ended. Use Run now or schedule a new task.")
@@ -199,27 +236,71 @@ struct JobSheet: View {
                     .foregroundStyle(Palette.inkFaint)
             }
 
-            VStack(spacing: 0) {
-                PlannerMenuRow(title: "Model", symbol: "sparkle", options: TasksOptions.models,
-                               selection: Binding(get: { job.model }, set: { store.setJobModel(job.id, $0) }), label: { $0 })
-                PlannerMenuRow(title: "Deliver to", symbol: "paperplane",
-                               options: TasksOptions.channelOptions(keeping: job.deliver),
-                               selection: Binding(get: { job.deliver }, set: { store.setJobDelivery(job.id, $0) }),
-                               label: TasksOptions.channelLabel, last: true)
+            if store.isLive {
+                VStack(spacing: 0) {
+                    let model = job.endpointID ?? ""
+                    let channel = job.channelID ?? ""
+                    if job.agentID != nil {
+                        // A bot's task runs on its bot's model (core/task_scheduler.py), so there is nothing to choose here.
+                        HStack(spacing: 12) {
+                            Image(systemName: "sparkle")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(Palette.goldText)
+                                .frame(width: 26)
+                            Text("Model").font(KFont.ui(16)).foregroundStyle(Palette.ink)
+                            Spacer(minLength: 8)
+                            Text("Its bot's model")
+                                .font(KFont.ui(15))
+                                .foregroundStyle(Palette.inkDim)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 52)
+                        .overlay(alignment: .bottom) { Palette.line.frame(height: 1).padding(.leading, 54) }
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        PlannerMenuRow(title: "Model", symbol: "sparkle",
+                                       options: store.modelIDs.contains(model) ? store.modelIDs : store.modelIDs + [model],
+                                       selection: Binding(get: { model }, set: { id in store.setJobModelLive(job.id, id) { notice = $0 } }),
+                                       label: { store.modelLabel($0) })
+                    }
+                    PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: store.channelIDs(keeping: channel),
+                                   selection: Binding(get: { channel }, set: { id in store.setJobDeliveryLive(job.id, id) { notice = $0 } }),
+                                   label: { store.channelLabel($0) }, last: true)
+                }
+                .kCard(radius: 18)
+                .disabled(store.busy.contains(job.id))
+            } else {
+                VStack(spacing: 0) {
+                    PlannerMenuRow(title: "Model", symbol: "sparkle", options: TasksOptions.models,
+                                   selection: Binding(get: { job.model }, set: { store.setJobModel(job.id, $0) }), label: { $0 })
+                    PlannerMenuRow(title: "Deliver to", symbol: "paperplane",
+                                   options: TasksOptions.channelOptions(keeping: job.deliver),
+                                   selection: Binding(get: { job.deliver }, set: { store.setJobDelivery(job.id, $0) }),
+                                   label: TasksOptions.channelLabel, last: true)
+                }
+                .kCard(radius: 18)
             }
-            .kCard(radius: 18)
 
             lastRun(job)
 
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel(text: "Run history (\(job.runs.count))")
-                RunHistoryList(runs: job.runs, onSendAgain: { store.sendAgain(run: $0) },
-                               expanded: Set([openRun].compactMap { $0 }),
-                               stepsOpen: Set([openSteps].compactMap { $0 }))
+                if store.isLive {
+                    RunHistoryList(runs: job.runs, onSendAgain: { store.sendAgainLive(run: $0) },
+                                   loadSteps: { try await store.loadSteps($0) })
+                } else {
+                    RunHistoryList(runs: job.runs, onSendAgain: { store.sendAgain(run: $0) },
+                                   expanded: Set([openRun].compactMap { $0 }),
+                                   stepsOpen: Set([openSteps].compactMap { $0 }))
+                }
             }
 
             VStack(spacing: 10) {
-                if job.plain {
+                if store.isLive {
+                    TasksNotLiveNote(text: "Sharing is not connected to your desktop yet. Share it from Kairos on your desktop.")
+                }
+                if job.plain && !store.isLive {
                     PlannerPill(title: "Share with this Kairos", symbol: "person.2", style: .outline, expand: true) {
                         notice = "Shared with everyone on this Kairos."
                     }
@@ -228,12 +309,13 @@ struct JobSheet: View {
                         .foregroundStyle(Palette.inkFaint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if !job.builtin {
+                if !job.builtin && !store.isLive {
                     PlannerPill(title: "Share to the Tool Store", symbol: "bag", style: .outline, expand: true) {
                         notice = "\(job.name) is ready to share in the Tool Store."
                     }
                 }
                 PlannerPill(title: "Delete task", symbol: "trash", style: .danger, expand: true) { onDelete(job) }
+                    .disabled(store.busy.contains(job.id))
             }
         }
         .padding(.horizontal, 18)
@@ -296,6 +378,8 @@ struct JobScheduleSheet: View {
     @Bindable var store: TasksStore
     let onScheduled: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var sending = false
+    @State private var refusal: String?
 
     var body: some View {
         ScrollView {
@@ -323,10 +407,17 @@ struct JobScheduleSheet: View {
                 }
 
                 VStack(spacing: 0) {
-                    PlannerMenuRow(title: "Model", symbol: "sparkle", options: TasksOptions.models,
-                                   selection: $store.draft.model, label: { $0 })
-                    PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: TasksOptions.channels,
-                                   selection: $store.draft.deliver, label: TasksOptions.channelLabel, last: true)
+                    if store.isLive {
+                        PlannerMenuRow(title: "Model", symbol: "sparkle", options: store.modelIDs,
+                                       selection: $store.draft.endpointID, label: { store.modelLabel($0) })
+                        PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: store.channelIDs(),
+                                       selection: $store.draft.channelID, label: { store.channelLabel($0) }, last: true)
+                    } else {
+                        PlannerMenuRow(title: "Model", symbol: "sparkle", options: TasksOptions.models,
+                                       selection: $store.draft.model, label: { $0 })
+                        PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: TasksOptions.channels,
+                                       selection: $store.draft.deliver, label: TasksOptions.channelLabel, last: true)
+                    }
                 }
                 .kCard(radius: 18)
 
@@ -339,7 +430,24 @@ struct JobScheduleSheet: View {
                         .accessibilityAddTraits(.isStaticText)
                 }
 
+                if let refusal {
+                    Label(refusal, systemImage: "exclamationmark.circle")
+                        .font(KFont.ui(14.5, .medium, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if sending {
+                    TasksLiveLine(text: store.scheduleCheck == nil ? "Scheduling it on your desktop." : "Looking for it on your desktop.")
+                } else if store.isLive, let check = store.scheduleCheck, !check.text.isEmpty {
+                    // Its answer was lost: Schedule waits until a read shows whether it landed.
+                    TasksLiveLine(text: check.text, retry: scheduleLive)
+                }
+
                 GoldButton(title: "Schedule") {
+                    if store.isLive {
+                        scheduleLive()
+                        return
+                    }
                     if let field = store.schedule() {
                         Haptics.thud()
                         withAnimation(Motion.snappy) { store.draftError = field }
@@ -350,6 +458,7 @@ struct JobScheduleSheet: View {
                     }
                 }
                 .padding(.top, 4)
+                .disabled(sending || (store.isLive && store.scheduleCheck != nil))
                 Text("Your form is kept if you close this before scheduling.")
                     .font(KFont.ui(13, relativeTo: .footnote))
                     .foregroundStyle(Palette.inkFaint)
@@ -377,6 +486,35 @@ struct JobScheduleSheet: View {
             if cleared { withAnimation(Motion.snappy) { store.draftError = nil } }
         }
         .onDisappear { store.leaveDraft() }
+    }
+
+    private func scheduleLive() {
+        guard !sending else { return }
+        refusal = nil
+        sending = true
+        Task {
+            let result = await store.scheduleLive()
+            sending = false
+            if let field = result.field {
+                Haptics.thud()
+                withAnimation(Motion.snappy) { store.draftError = field }
+                return
+            }
+            switch result.outcome {
+            case .done?:
+                Haptics.success()
+                onScheduled("Scheduled")
+                dismiss()
+            case .refused(let problem)?:
+                Haptics.thud()
+                withAnimation(Motion.snappy) { refusal = problem }
+            case .unsure(_)?:
+                // The line above the button says it and offers Try again, which looks for it.
+                Haptics.thud()
+            case nil:
+                break
+            }
+        }
     }
 
     @ViewBuilder
@@ -455,9 +593,17 @@ struct JobLibraryView: View {
                 TonePill(text: routine.usesModel ? "Uses model" : "No model call", tone: routine.usesModel ? .gold : .muted)
                 TonePill(text: routine.cadence, tone: .muted, symbol: "clock")
             }
-            PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: TasksOptions.channels,
-                           selection: Binding(get: { routine.deliver }, set: { store.setRoutineDelivery(routine.id, $0) }),
-                           label: TasksOptions.channelLabel, last: true)
+            Group {
+                if store.isLive {
+                    PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: store.channelIDs(keeping: routine.channelID),
+                                   selection: Binding(get: { routine.channelID }, set: { store.setRoutineChannel(routine.id, $0) }),
+                                   label: { store.channelLabel($0) }, last: true)
+                } else {
+                    PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: TasksOptions.channels,
+                                   selection: Binding(get: { routine.deliver }, set: { store.setRoutineDelivery(routine.id, $0) }),
+                                   label: TasksOptions.channelLabel, last: true)
+                }
+            }
                 .disabled(routine.enabled)
                 .opacity(routine.enabled ? 0.55 : 1)
                 .background(Palette.ink.opacity(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -465,15 +611,24 @@ struct JobLibraryView: View {
                 Spacer()
                 if routine.enabled {
                     PlannerPill(title: "Disable", style: .danger) {
+                        if store.isLive {
+                            store.disableRoutineLive(routine.id, say: say)
+                            return
+                        }
                         withAnimation(Motion.snappy) { say(store.disableRoutine(routine.id)) }
                     }
                 } else {
                     PlannerPill(title: "Enable", style: .gold) {
                         Haptics.success()
+                        if store.isLive {
+                            store.enableRoutineLive(routine.id, say: say)
+                            return
+                        }
                         withAnimation(Motion.snappy) { say(store.enableRoutine(routine.id)) }
                     }
                 }
             }
+            .disabled(store.busy.contains(routine.id))
         }
         .padding(14)
         .kCard(radius: 20)

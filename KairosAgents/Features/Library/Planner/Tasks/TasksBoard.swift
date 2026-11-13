@@ -35,7 +35,10 @@ struct WorkBoardView: View {
 
             VStack(spacing: 10) {
                 let cards = store.cards(in: store.column)
-                if cards.isEmpty {
+                if cards.isEmpty && !store.boardReady {
+                    // Paired and not read yet, or the read failed: the line above says which.
+                    EmptyView()
+                } else if cards.isEmpty {
                     Text(store.column.emptyLine)
                         .font(KFont.ui(14.5, relativeTo: .subheadline))
                         .foregroundStyle(Palette.inkFaint)
@@ -246,6 +249,7 @@ struct WorkCardControls: View {
     let actions: WorkCardActions
     @State private var note = ""
     @State private var noteError = false
+    @State private var confirmRun = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -275,6 +279,10 @@ struct WorkCardControls: View {
                     }
                 case .running:
                     PlannerPill(title: "Stop", symbol: "stop.fill", style: .danger) {
+                        if store.isLive {
+                            store.stopLive(card.id, say: actions.say)
+                            return
+                        }
                         withAnimation(Motion.snappy) { store.stopCard(card.id) }
                         actions.say("Stopped. The card is in Blocked.")
                     }
@@ -284,6 +292,12 @@ struct WorkCardControls: View {
                         guard !text.isEmpty else {
                             withAnimation(Motion.snappy) { noteError = true }
                             actions.say("Say what should change")
+                            return
+                        }
+                        if store.isLive {
+                            // The note is cleared only once the desktop has it, so a refusal keeps it.
+                            store.moveLive(card.id, to: .ready, note: text, done: "Sent back to Ready with your note",
+                                           onDone: { note = "" }, say: actions.say)
                             return
                         }
                         withAnimation(Motion.snappy) { store.requestChanges(card.id, note: text) }
@@ -296,6 +310,10 @@ struct WorkCardControls: View {
                     }
                 case .blocked:
                     PlannerPill(title: "Retry", symbol: "arrow.clockwise", style: .gold) {
+                        if store.isLive {
+                            store.moveLive(card.id, to: .ready, done: "Back in Ready for another try", say: actions.say)
+                            return
+                        }
                         withAnimation(Motion.snappy) { store.retryCard(card.id) }
                         actions.say("Back in Ready for another try")
                     }
@@ -311,18 +329,41 @@ struct WorkCardControls: View {
                     }
                 }
             }
+            // Paired: a write for this card is on its way, so its buttons wait (Stop stays for a running card).
+            .disabled(store.isLive && (store.busy.contains(card.id) || (store.starting.contains(card.id) && card.column != .running)))
+            .opacity(store.isLive && store.waits(card.id) && card.column != .running ? 0.6 : 1)
+        }
+        .confirmationDialog("Run this card now?", isPresented: $confirmRun, titleVisibility: .visible) {
+            Button("Run now") { startLiveRun() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(card.name) starts on your desktop now and can use its model and tools.")
         }
     }
 
     private func move(_ column: WorkColumn, _ message: String) {
+        if store.isLive {
+            store.moveLive(card.id, to: column, done: message, say: actions.say)
+            return
+        }
         withAnimation(Motion.snappy) { store.move(card.id, to: column) }
         actions.say(message)
     }
 
     private func run() {
+        if store.isLive {
+            // Real work on the desktop: ask first.
+            confirmRun = true
+            return
+        }
         Haptics.thud()
         withAnimation(Motion.snappy) { store.runCard(card.id) }
         actions.say("Running \(card.name)")
+    }
+
+    private func startLiveRun() {
+        Haptics.thud()
+        store.runCardLive(card.id, say: actions.say)
     }
 }
 
@@ -356,7 +397,16 @@ struct WorkCardSheet: View {
                     ), inSheet: true)
                     VStack(alignment: .leading, spacing: 8) {
                         SectionLabel(text: "Run history (\(card.runs.count))")
-                        RunHistoryList(runs: card.runs, onSendAgain: { store.sendAgain(run: $0) })
+                        if store.isLive, card.runs.isEmpty, let state = store.cardRunsLoad[cardID], state != .loaded {
+                            TasksLoadLine(state: state, waiting: "Reading the run history.") {
+                                Task { await store.loadCardRuns(cardID) }
+                            }
+                        } else if store.isLive {
+                            RunHistoryList(runs: card.runs, onSendAgain: { store.sendAgainLive(run: $0) },
+                                           loadSteps: { try await store.loadSteps($0) })
+                        } else {
+                            RunHistoryList(runs: card.runs, onSendAgain: { store.sendAgain(run: $0) })
+                        }
                     }
                 }
                 .padding(.horizontal, 18)
@@ -371,6 +421,9 @@ struct WorkCardSheet: View {
         .scrollDismissesKeyboard(.interactively)
         .kSheet()
         .plannerNotice($notice)
+        .task {
+            if store.isLive { await store.loadCardRuns(cardID) }
+        }
     }
 }
 
@@ -385,6 +438,18 @@ struct WorkAddCardSheet: View {
     @State private var model = TasksOptions.defaultModel
     @State private var waitsFor = "none"
     @State private var notice: String?
+    @State private var endpointID = ""
+    @State private var adding = false
+    /// Paired: an Add whose answer was lost. Add waits until a read shows whether the card landed.
+    @State private var pending: PendingAdd?
+
+    private struct PendingAdd {
+        var text: String
+        var name: String
+        var what: String
+        var ready: Bool
+        var before: Set<String>
+    }
 
     var body: some View {
         ScrollView {
@@ -394,7 +459,12 @@ struct WorkAddCardSheet: View {
                 PlannerTextField(label: "What to do", placeholder: "Say what the card should do and what done looks like",
                                  text: $what, multiline: true)
                 VStack(spacing: 0) {
-                    PlannerMenuRow(title: "Model", symbol: "sparkle", options: TasksOptions.models, selection: $model, label: { $0 })
+                    if store.isLive {
+                        PlannerMenuRow(title: "Model", symbol: "sparkle", options: store.modelIDs, selection: $endpointID,
+                                       label: { store.modelLabel($0) })
+                    } else {
+                        PlannerMenuRow(title: "Model", symbol: "sparkle", options: TasksOptions.models, selection: $model, label: { $0 })
+                    }
                     PlannerMenuRow(title: "Waits for", symbol: "link", options: ["none"] + waitable.map(\.id),
                                    selection: $waitsFor, label: { id in id == "none" ? "Nothing" : (store.card(id)?.name ?? "Nothing") },
                                    last: true)
@@ -402,7 +472,14 @@ struct WorkAddCardSheet: View {
                 .kCard(radius: 18)
                 GoldButton(title: "Add to Ready") { add(ready: true) }
                     .padding(.top, 6)
+                    .disabled(adding || pending != nil)
                 QuietButton(title: "Add to Backlog") { add(ready: false) }
+                    .disabled(adding || pending != nil)
+                if adding {
+                    TasksLiveLine(text: pending == nil ? "Adding the card on your desktop." : "Looking for the card on your desktop.")
+                } else if let pending {
+                    TasksLiveLine(text: pending.text, retry: checkAgain)
+                }
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 30)
@@ -423,11 +500,53 @@ struct WorkAddCardSheet: View {
             notice = "A card needs a name and what to do"
             return
         }
+        if store.isLive {
+            guard !adding, pending == nil else { return }
+            adding = true
+            let waits = waitsFor == "none" ? nil : waitsFor
+            let before = Set(store.cards.map(\.id))
+            Task {
+                let outcome = await store.addCardLive(name: n, instructions: w, endpointID: endpointID, waitsFor: waits,
+                                                      ready: ready, before: before)
+                adding = false
+                finish(outcome, name: n, what: w, ready: ready, before: before)
+            }
+            return
+        }
         Haptics.success()
         withAnimation(Motion.snappy) {
             store.addCard(name: n, instructions: w, model: model, waitsFor: waitsFor == "none" ? nil : waitsFor, ready: ready)
         }
         onAdded(ready ? "Card added; Kairos will pick it up" : "Card added to the backlog")
         dismiss()
+    }
+
+    /// Paired: what the desktop said about an Add. When its answer was lost, the form stays as typed and
+    /// Add waits, so a second tap never makes a second card.
+    private func finish(_ outcome: TasksWriteOutcome, name: String, what: String, ready: Bool, before: Set<String>) {
+        switch outcome {
+        case .done:
+            pending = nil
+            Haptics.success()
+            onAdded(ready ? "Card added; Kairos will pick it up" : "Card added to the backlog")
+            dismiss()
+        case .refused(let problem):
+            pending = nil
+            Haptics.thud()
+            notice = problem
+        case .unsure(let text):
+            Haptics.thud()
+            pending = PendingAdd(text: text, name: name, what: what, ready: ready, before: before)
+        }
+    }
+
+    private func checkAgain() {
+        guard let check = pending, !adding else { return }
+        adding = true
+        Task {
+            let outcome = await store.confirmCardLive(name: check.name, instructions: check.what, ready: check.ready, before: check.before)
+            adding = false
+            finish(outcome, name: check.name, what: check.what, ready: check.ready, before: check.before)
+        }
     }
 }
