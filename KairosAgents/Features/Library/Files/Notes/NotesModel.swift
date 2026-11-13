@@ -11,6 +11,8 @@ nonisolated struct KNote: Identifiable, Hashable, Sendable {
     var pinned: Bool
     var created: Date
     var order: Int
+    /// Imported from the vault's task list on the paired desktop: its text belongs to the vault.
+    var fromVault = false
 }
 
 nonisolated enum NotesSort: String, CaseIterable, Hashable, Sendable {
@@ -44,6 +46,23 @@ final class NotesStore: NotesProviding {
     /// Kept here, not in the view, so they survive switching Library sections.
     var sort: NotesSort = .saved
     var query = ""
+
+    // The paired desktop (NotesLive.swift). Unpaired, none of this is used.
+    /// Showing sample notes. False while the phone shows the paired desktop's notes.
+    var isSample = true
+    var liveLoad: NotesLiveLoad = .idle
+    /// The desktop and account the live notes came from (NotesStore.accountKey when they were read).
+    var liveAccount = "sample"
+    /// Notes with a change on its way to the desktop: one at a time each, and a list read leaves them be.
+    var busy: Set<String> = []
+    /// A new note is on its way to the desktop.
+    var adding = false
+    /// Notes the desktop sent that this app could not read.
+    var skipped = 0
+    /// What last went wrong, in one plain sentence, until the person dismisses it.
+    var problem: String?
+    /// The sample notes, kept aside while the desktop's are shown.
+    var sampleStash: [KNote]?
 
     init(notes: [KNote]) {
         self.notes = notes
