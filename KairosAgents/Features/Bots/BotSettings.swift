@@ -15,8 +15,6 @@ struct BotSettingsList: View {
         VStack(alignment: .leading, spacing: 18) {
             if store.liveMode {
                 liveGlance(bot)
-                HintLine(text: "Memory, skills, what it can reach, conversations and usage are not connected to your desktop yet. They show sample data.", symbol: "info.circle")
-                    .padding(.horizontal, 4)
             } else {
                 glance(bot, s)
             }
@@ -43,26 +41,26 @@ struct BotSettingsList: View {
             }
 
             group("What it knows", [
-                row(.memory, "Memory", "brain", value: s.useMemory ? "\(s.notes.count) notes" : "Off"),
+                row(.memory, "Memory", "brain", value: paired ? nil : (s.useMemory ? "\(s.notes.count) notes" : "Off")),
                 row(.aboutYou, "About you", "person.text.rectangle", value: nil),
-                row(.skills, "Skills", "bolt", value: "\(s.skills.filter { $0.state == .on }.count) on"),
+                row(.skills, "Skills", "bolt", value: paired ? nil : "\(s.skills.filter { $0.state == .on }.count) on"),
                 row(.instructions, "Standing instructions", "text.quote", value: nil),
             ])
 
             group("What it can reach", [
-                row(.access, "Access and grants", "key", value: "\(s.grants.filter { $0.level != .off }.count) apps"),
-                row(.connections, "Connections", "link", value: "\(store.apps.filter { $0.state == .connected }.count)"),
-                row(.browser, "Browser profiles", "globe", value: s.browserEnabled ? s.browserProfile : "Off"),
+                row(.access, "Access and grants", "key", value: paired ? nil : "\(s.grants.filter { $0.level != .off }.count) apps"),
+                row(.connections, "Connections", "link", value: paired ? nil : "\(store.apps.filter { $0.state == .connected }.count)"),
+                row(.browser, "Browser profiles", "globe", value: paired ? nil : (s.browserEnabled ? s.browserProfile : "Off")),
             ])
 
             group("Talking to you", [
                 row(.voice, "Voice and calls", "waveform", value: paired ? Self.liveVoiceLine(agent, voices: live.voices) : s.voice),
                 row(.delivery, "Where it reports", "paperplane", value: paired ? Self.liveChannelLine(agent, channels: live.channels) : s.reportTo),
-                row(.conversations, "Conversations and folders", "bubble.left.and.bubble.right", value: "\(s.conversations.filter { !$0.archived }.count)"),
+                row(.conversations, "Conversations and folders", "bubble.left.and.bubble.right", value: paired ? nil : "\(s.conversations.filter { !$0.archived }.count)"),
             ])
 
             group("Usage", [
-                row(.usage, "Usage and plan", "chart.bar", value: "\(s.runsToday) of \(s.runsPerDay) today"),
+                row(.usage, "Usage and plan", "chart.bar", value: paired ? nil : "\(s.runsToday) of \(s.runsPerDay) today"),
             ])
 
             group("Who it is", [

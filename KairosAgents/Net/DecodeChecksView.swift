@@ -82,7 +82,8 @@ struct DecodeChecksView: View {
         var result: [Outcome] = []
         for check in ChatSamples.checks + BotSamples.checks + VaultSamples.checks
             + NotesSamples.checks + TasksSamples.checks + CalendarSamples.checks + MailSamples.checks + CallSamples.checks
-            + BotInboxSamples.checks + BotRoutineSamples.checks {
+            + BotInboxSamples.checks + BotRoutineSamples.checks
+            + BotSettingsSamples.checks + BotKnowledgeSamples.checks + BotRoomSamples.checks + BotTeamSamples.checks {
             do {
                 result.append(Outcome(id: check.id, passed: true, detail: try check.run()))
             } catch {
