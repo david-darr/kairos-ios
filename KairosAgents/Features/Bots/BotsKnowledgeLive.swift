@@ -730,9 +730,10 @@ final class BotsKnowledgeLive {
         }
     }
 
-    /// Send the text on screen against the desktop's hash read. Never two at once.
+    /// Send the text on screen against the desktop's hash read. Never two at once, and never while an earlier
+    /// save is still unconfirmed: that one is settled against the desktop first (a typing timer can fire late).
     func saveAbout() async {
-        guard active, isCurrent, let base = aboutBase, !aboutSaving else { return }
+        guard active, isCurrent, let base = aboutBase, !aboutSaving, aboutSent == nil else { return }
         let text = aboutDraft
         guard text != (base.text ?? "") else {
             if aboutState == .unsaved { aboutState = .idle }
