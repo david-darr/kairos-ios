@@ -144,7 +144,7 @@ final class SearchLiveModel {
             let found = try await store.searchText(query)
             guard !Task.isCancelled, current(mine) else { return }
             var seen = Set<String>()
-            vault = found.compactMap { hit in
+            vault = found.compactMap { hit -> SearchLiveVaultHit? in
                 guard seen.insert(hit.note.id).inserted else { return nil }
                 return SearchLiveVaultHit(id: hit.note.id, title: hit.note.title, snippet: SearchLiveText.line(hit.snippet))
             }
@@ -442,7 +442,7 @@ struct SearchLiveView: View {
 
     private var botHits: [SearchLiveHit] {
         guard !chats.isSample else { return [] }
-        return chats.bots.map { bot in
+        return chats.bots.map { bot -> SearchLiveHit in
             SearchLiveHit(id: "b-\(bot.id)", title: bot.name, detail: bot.role, symbol: "", bot: bot) {
                 router.push(.bot(bot.id), on: .home)
             }
@@ -451,13 +451,13 @@ struct SearchLiveView: View {
 
     private var chatHits: [SearchLiveHit] {
         guard !chats.isSample else { return [] }
-        var hits = chats.chats.map { conversation in
+        var hits = chats.chats.map { conversation -> SearchLiveHit in
             SearchLiveHit(id: "c-\(conversation.id)", title: conversation.title,
                           detail: [conversation.preview, conversation.time].filter { !$0.isEmpty }.joined(separator: " · "), symbol: "sparkle") {
                 router.open(conversation)
             }
         }
-        hits += chats.projects.map { project in
+        hits += chats.projects.map { project -> SearchLiveHit in
             SearchLiveHit(id: "p-\(project.id)", title: project.name, detail: "Project", symbol: "folder", keywords: "project") {
                 router.push(.project(project.id), on: .home)
             }
@@ -468,7 +468,7 @@ struct SearchLiveView: View {
     /// Bot conversations whose messages match, from the desktop's own chat search.
     private var botChatHits: [SearchLiveHit] {
         guard model.asked.lowercased() == needle else { return [] }
-        return model.chats.compactMap { hit in
+        return model.chats.compactMap { hit -> SearchLiveHit? in
             guard let bot = chats.bots.first(where: { $0.id == hit.botID }) else { return nil }
             let title = hit.title.isEmpty ? bot.name : "\(bot.name) · \(hit.title)"
             return SearchLiveHit(id: "bc-\(hit.id)", title: title, detail: hit.snippet, symbol: "bubble.left.and.text.bubble.right") {
@@ -490,7 +490,7 @@ struct SearchLiveView: View {
         guard bots.liveMode else { section.waiting = true; return section }
         (section.waiting, section.problems) = split(wait(bots.rosterLoad))
         guard bots.rosterLoad == .loaded else { return section }
-        section.hits = picked(bots.teams.map { team in
+        section.hits = picked(bots.teams.map { team -> SearchLiveHit in
             SearchLiveHit(id: "tm-\(team.id)", title: team.name,
                           detail: [team.department, team.members.count == 1 ? "1 bot" : "\(team.members.count) bots"].filter { !$0.isEmpty }.joined(separator: " · "),
                           symbol: "person.3", keywords: "team", stays: true) {
@@ -503,7 +503,7 @@ struct SearchLiveView: View {
     private var roomSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Rooms")
         (section.waiting, section.problems) = split(wait(rooms.roomListState()))
-        section.hits = picked(rooms.shownRoomList().map { room in
+        section.hits = picked(rooms.shownRoomList().map { room -> SearchLiveHit in
             let name = (room.name ?? "").isEmpty ? "Room" : (room.name ?? "Room")
             let count = room.members?.count ?? 0
             return SearchLiveHit(id: "rm-\(room.id)", title: name, detail: count == 1 ? "1 bot" : "\(count) bots",
@@ -548,7 +548,7 @@ struct SearchLiveView: View {
         case .loaded: break
         case .failed(let why): if notes.notes.isEmpty { section.problems = [why] }
         }
-        section.hits = picked(notes.notes.map { note in
+        section.hits = picked(notes.notes.map { note -> SearchLiveHit in
             let detail = note.done ? "Done" : (note.due.map { "Due " + SearchLiveText.day($0) } ?? "Note")
             return SearchLiveHit(id: "n-\(note.id)", title: SearchLiveText.line(note.text), detail: detail, symbol: "note.text", stays: true) {
                 noteSheet = NotesSheetItem(id: note.id)
@@ -567,7 +567,7 @@ struct SearchLiveView: View {
         case .loaded: break
         case .failed(let why): if docs.documents.isEmpty { section.problems = [why] }
         }
-        var hits = picked(docs.documents.map { doc in
+        var hits = picked(docs.documents.map { doc -> SearchLiveHit in
             documentHit(doc.id, title: doc.title, detail: "Updated " + SearchLiveText.day(doc.updated))
         })
         if model.asked.lowercased() == needle {
@@ -614,7 +614,7 @@ struct SearchLiveView: View {
     private var driveSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Google Drive")
         if model.asked.lowercased() == needle {
-            section.hits = model.drive.compactMap { id in
+            section.hits = model.drive.compactMap { id -> SearchLiveHit? in
                 guard let file = driveStore.file(id) else { return nil }
                 return SearchLiveHit(id: "g-\(id)", title: file.name, detail: "Drive · " + SearchLiveText.day(file.modified),
                                      symbol: file.isFolder ? "folder" : "doc", stays: true) {
@@ -641,12 +641,12 @@ struct SearchLiveView: View {
         case .loaded: break
         case .failed(let why): if tasks.cards.isEmpty && tasks.jobs.isEmpty { section.problems = [why] }
         }
-        var hits = tasks.cards.map { card in
+        var hits = tasks.cards.map { card -> SearchLiveHit in
             SearchLiveHit(id: "tc-\(card.id)", title: card.name, detail: "Card · " + card.column.title, symbol: "rectangle.on.rectangle", keywords: "card task") {
                 router.open(.tasks)
             }
         }
-        hits += tasks.jobs.map { job in
+        hits += tasks.jobs.map { job -> SearchLiveHit in
             SearchLiveHit(id: "tj-\(job.id)", title: job.name, detail: "Scheduled task", symbol: "clock", keywords: "scheduled task") {
                 router.open(.tasks)
             }
@@ -664,7 +664,7 @@ struct SearchLiveView: View {
         case .failed(let why): if calendar.events.isEmpty { section.problems = [why] }
         }
         let events = calendar.events.sorted { $0.start < $1.start }
-        section.hits = picked(events.map { event in
+        section.hits = picked(events.map { event -> SearchLiveHit in
             let when = event.allDay ? SearchLiveText.day(event.start)
                 : SearchLiveText.day(event.start) + ", " + event.start.formatted(date: .omitted, time: .shortened)
             return SearchLiveHit(id: "e-\(event.id)", title: event.title, detail: when, symbol: "calendar", keywords: "event") {
@@ -687,7 +687,7 @@ struct SearchLiveView: View {
         let needle = self.needle
         section.hits = Array(mail.items.filter { item in
             item.sender.lowercased().contains(needle) || item.subjectLine.lowercased().contains(needle)
-        }.prefix(8).map { item in
+        }.prefix(8).map { item -> SearchLiveHit in
             SearchLiveHit(id: "m-\(item.id)", title: item.subjectLine,
                           detail: [item.sender, item.time].filter { !$0.isEmpty }.joined(separator: " · "), symbol: "envelope") {
                 router.open(.mail)
@@ -698,7 +698,7 @@ struct SearchLiveView: View {
 
     private var settingHits: [SearchLiveHit] {
         let you = YouStore.shared
-        return YouIndex.all.map { entry in
+        return YouIndex.all.map { entry -> SearchLiveHit in
             SearchLiveHit(id: "s-\(entry.id)", title: entry.title, detail: "Settings", symbol: entry.symbol, keywords: entry.keywords, stays: true) {
                 you.pendingRoute = entry.route
                 router.sheet = .you
@@ -707,7 +707,7 @@ struct SearchLiveView: View {
     }
 
     private var areaHits: [SearchLiveHit] {
-        JumpArea.allCases.map { area in
+        JumpArea.allCases.map { area -> SearchLiveHit in
             SearchLiveHit(id: "j-\(area.rawValue)", title: area.title, detail: area.about, symbol: area.symbol) {
                 router.open(area)
             }
