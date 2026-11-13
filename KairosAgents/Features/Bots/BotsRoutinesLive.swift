@@ -837,9 +837,9 @@ final class BotsRoutinesLive {
     /// The form for a routine on screen, from the desktop's record.
     func form(for routineID: UUID) -> BotRoutineForm? {
         guard isCurrent, let id = desktopIDs[routineID], let record = records[id] else { return nil }
-        var form = Self.form(record, limits: limits)
-        form.account = account
-        return form
+        var found = Self.form(record, limits: limits)
+        found.account = account
+        return found
     }
 
     /// A new routine's form: the desktop's own defaults, so nothing the person did not pick is sent.
@@ -985,9 +985,9 @@ final class BotsRoutinesLive {
             let fresh = try await client().botRoutine(id)
             guard stillLive(account) else { return nil }
             replace(fresh)
-            var form = Self.form(fresh, limits: limits)
-            form.account = account
-            return form
+            var found = Self.form(fresh, limits: limits)
+            found.account = account
+            return found
         } catch {
             Connection.shared.note(error)
             return nil
