@@ -45,8 +45,18 @@ messages, and can be turned off. Lock Screen previews fall back to "Kairos" when
   (`relay/README.md`); an action without a `request_id` opens the link instead. Remote alerts are drawn by iOS, so the
   Private level cannot hide the subtitle on the phone, and the desktop does not know the level yet: titles show.
   The desktop sends "reply ready" only for a turn of 30 seconds or more, or one started from the phone.
-- VoIP (topic `app.kairos-agents.mobile.voip`): `ring_id`, `agent_id`, `bot_name`, `expires_at` (seconds), optional
-  `kind: bot_call_end`. Only for a real ring. Repeats of one ring map to one call id.
+- VoIP (topic `app.kairos-agents.mobile.voip`): the relay sends `{kind: "ring", ring_id, expires_at (unix seconds),
+  caller}` (`relay/src/apns.js` `buildRing`). The phone shows `bot_name ?? caller`. The push has no bot id, so a
+  paired phone takes `agent_id` and `bot_name` from the reply to `POST /api/rings/{id}/answer` (it also reads them
+  from the push if a sender adds them). A push with no usable `ring_id`, an expired one, or `kind: bot_call_end` is
+  still reported to CallKit, then ended at once. Only for a real ring. Repeats of one ring map to one call id.
+- While a ring rings and is not answered on this phone, a paired phone asks `GET /api/rings/{id}` every 3 seconds
+  and ends the call as answered elsewhere, declined elsewhere or unanswered. The connection starts at launch;
+  Answer and Decline keep trying until the ring runs out, and an answer that cannot be sent ends the call as failed.
+  Before the first unlock after a restart the pairing cannot be read: the connection waits and starts on unlock, and
+  an answer waits for it within the ring's life. Hanging up before the answer is confirmed sends a decline. A repeat
+  push for a ring already over on this phone is reported and ended at once. CallKit's own timer starts on Answer
+  (the action must be fulfilled at once), even while the answer is still being sent.
 - Ring ended elsewhere: a background push `{"kind": "bot_call_end", "ring_id", "outcome"}` (not VoIP).
 - Live Activity updates: ActivityKit pushes to each activity's token (sent with `PushBridge.registerActivity`),
   content-state matching `KairosActivityAttributes.ContentState`. A push-to-start token is sent as activity id `push-to-start`.
