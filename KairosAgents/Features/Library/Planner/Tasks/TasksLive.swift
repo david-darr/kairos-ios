@@ -6,6 +6,23 @@ nonisolated enum TasksLiveLoad: Equatable, Sendable {
     case failed(String)
 }
 
+/// How a write the screen waits on came back.
+nonisolated enum TasksWriteOutcome: Equatable, Sendable {
+    case done
+    case refused(String)
+    /// The answer was lost, so the desktop may have done it. The form stays and waits for a check.
+    case unsure(String)
+}
+
+/// What a Schedule whose answer was lost sent, to find it in the next read.
+nonisolated struct TasksScheduleCheck: Equatable, Sendable {
+    var text: String
+    var name: String
+    var prompt: String
+    var kind: JobScheduleKind
+    var before: Set<String>
+}
+
 /// The sample Tasks content, kept aside while the phone shows the paired desktop's.
 struct TasksSampleStash {
     var cards: [WorkCard]
@@ -53,7 +70,16 @@ extension TasksStore {
         }
         guard wantLive != isLive else { return }
         if wantLive {
-            sampleStash = TasksSampleStash(cards: cards, jobs: jobs, routines: routines, triggers: triggers,
+            // A sample run cannot finish while put aside, so a running sample card goes back to Ready.
+            let keptCards = cards.map { card -> WorkCard in
+                var card = card
+                if card.column == .running {
+                    card.column = .ready
+                    card.startedAt = nil
+                }
+                return card
+            }
+            sampleStash = TasksSampleStash(cards: keptCards, jobs: jobs, routines: routines, triggers: triggers,
                                            requests: requests, activity: activity, search: search,
                                            draft: draft, draftError: draftError)
             search = ""
@@ -105,11 +131,55 @@ extension TasksStore {
         busy = []
         starting = []
         problem = nil
+        scheduleCheck = nil
     }
 
     private func liveClient() throws -> APIClient {
         guard let client = Connection.shared.client else { throw APIError.notPaired }
         return client
+    }
+
+    /// Live, and still on the account the live tasks were read for. Every write checks it before sending.
+    private var liveNow: Bool { isLive && Self.accountKey == liveAccount }
+
+    /// A write is on its way: a list read that lands meanwhile may picture the desktop before it.
+    private func beginWrite() {
+        writing += 1
+        writeGeneration += 1
+    }
+
+    /// A write's answer came back, or never will: reads begun before now may be older than it.
+    private func endWrite() {
+        writing = max(0, writing - 1)
+        writeGeneration += 1
+    }
+
+    /// Read every task and card. Nil when a write was sent or answered during the read, since its
+    /// answer could put back what the write changed; then read once more, unless a write is still on its way.
+    /// `force` takes the answer anyway (nothing is on screen yet for it to put back).
+    private func freshList(force: Bool) async throws -> [TaskRecordDTO]? {
+        for _ in 0..<2 {
+            let generation = writeGeneration
+            let all = try await liveClient().tasksList()
+            if force || (writeGeneration == generation && writing == 0) { return all }
+            if writing > 0 { return nil }
+        }
+        return nil
+    }
+
+    /// A write whose answer never came: the desktop may have done it. Errors that mean the request
+    /// never left this iPhone (no network, no such address, no secure connection) are not in doubt.
+    private func unconfirmed(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        guard let api = error as? APIError, api.isOffline else { return false }
+        let neverSent: [URLError.Code] = [.notConnectedToInternet, .cannotFindHost, .secureConnectionFailed,
+                                          .appTransportSecurityRequiresSecureConnection]
+        return !neverSent.contains { APIError.from(URLError($0)) == api }
+    }
+
+    /// The sentence for a write whose answer was lost.
+    private func unsure(_ what: String) -> String {
+        "Your desktop did not answer, so this iPhone could not confirm \(what). This list shows what your desktop has."
     }
 
     // MARK: What the screens ask
@@ -156,8 +226,14 @@ extension TasksStore {
     func loadLiveIfNeeded() async {
         guard isLive else { return }
         switch boardLoad {
-        case .idle, .failed: await loadLive()
-        case .loading, .loaded: break
+        case .idle, .failed:
+            boardLoad = .loading
+            // Its own task: the connection settling (connecting, then connected) restarts the screen's
+            // task, and that must not cut this read short.
+            await Task { await self.loadLive() }.value
+        case .loaded:
+            if libraryLoad == .idle { await Task { await self.loadLibrary() }.value }
+        case .loading: break
         }
     }
 
@@ -187,29 +263,38 @@ extension TasksStore {
                 agentNames = names
                 agentsKnown = true
             }
-            let all = try await client.tasksList()
+            let all = try await freshList(force: cards.isEmpty && jobs.isEmpty)
             guard stillLive(account) else { return }
-            let ran = show(all)
+            // Nil: a write landed meanwhile and its own answer is on screen, newer than this read.
+            let ran = all.map { show($0) } ?? []
             boardLoad = .loaded
             jobsLoad = .loaded
             await loadRuns(ran, account: account)
         } catch {
             Connection.shared.note(error)
             guard stillLive(account) else { return }
-            boardLoad = .failed("Your work board could not be read. " + error.plainWords)
-            jobsLoad = .failed("Your routines could not be read. " + error.plainWords)
+            if error is CancellationError {
+                // Not read is not failed: the next look reads again.
+                if boardLoad == .loading { boardLoad = .idle }
+                if jobsLoad == .loading { jobsLoad = .idle }
+            } else {
+                boardLoad = .failed("Your work board could not be read. " + error.plainWords)
+                jobsLoad = .failed("Your routines could not be read. " + error.plainWords)
+            }
         }
         await loadLibrary()
     }
 
     /// Read the tasks and cards again (after a write, or while something runs). Runs are read again only
-    /// for what just finished.
-    func refreshTasks() async {
-        guard isLive else { return }
+    /// for what just finished. Answers whether the desktop's list was read and shown.
+    @discardableResult
+    func refreshTasks() async -> Bool {
+        guard isLive else { return false }
         let account = liveAccount
         do {
-            let all = try await liveClient().tasksList()
-            guard stillLive(account) else { return }
+            // Nil: a write was sent or answered during the read, so its picture may be older than the screen.
+            guard let all = try await freshList(force: cards.isEmpty && jobs.isEmpty) else { return false }
+            guard stillLive(account) else { return false }
             let before = Dictionary(jobs.map { ($0.id, $0.runningSince) }, uniquingKeysWith: { first, _ in first })
             let beforeCards = Dictionary(cards.map { ($0.id, $0.column) }, uniquingKeysWith: { first, _ in first })
             show(all)
@@ -217,13 +302,19 @@ extension TasksStore {
             jobsLoad = .loaded
             let finishedJobs = jobs.filter { (before[$0.id] ?? nil) != nil && $0.runningSince == nil }.map(\.id)
             let finishedCards = cards.filter { beforeCards[$0.id] == .running && $0.column != .running && cardRunsLoad[$0.id] != nil }.map(\.id)
-            await loadRuns(finishedJobs, account: account)
-            for id in finishedCards { await loadCardRuns(id) }
+            // Their own task: when the last running item finishes, the watch that called this stops,
+            // and stopping it must not cut short the reads of the run that just ended.
+            await Task {
+                await self.loadRuns(finishedJobs, account: account)
+                for id in finishedCards { await self.loadCardRuns(id) }
+            }.value
+            return true
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account) else { return }
+            guard stillLive(account), !(error is CancellationError) else { return false }
             boardLoad = .failed("Your work board could not be read again. " + error.plainWords)
             jobsLoad = .failed("Your routines could not be read again. " + error.plainWords)
+            return false
         }
     }
 
@@ -335,6 +426,7 @@ extension TasksStore {
     private func loadRuns(_ ids: [String], account: String) async {
         guard !ids.isEmpty else { return }
         var failed = false
+        var cutShort = false
         for id in ids {
             do {
                 let runs = try await liveClient().taskRuns(id)
@@ -343,10 +435,15 @@ extension TasksStore {
             } catch {
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
+                if error is CancellationError {
+                    // Cut short (a sheet closed): not read, not failed. What was shown stays.
+                    cutShort = true
+                    break
+                }
                 failed = true
             }
         }
-        jobRunsFailed = failed
+        if failed || !cutShort { jobRunsFailed = failed }
         rebuildActivity()
     }
 
@@ -360,7 +457,8 @@ extension TasksStore {
     func loadCardRuns(_ id: String) async {
         guard isLive else { return }
         let account = liveAccount
-        if cardRunsLoad[id] != .loaded { cardRunsLoad[id] = .loading }
+        let previous = cardRunsLoad[id]
+        if previous != .loaded { cardRunsLoad[id] = .loading }
         do {
             let runs = try await liveClient().taskRuns(id)
             guard stillLive(account) else { return }
@@ -369,6 +467,11 @@ extension TasksStore {
         } catch {
             Connection.shared.note(error)
             guard stillLive(account) else { return }
+            if error is CancellationError {
+                // Cut short (the sheet closed): not read, not failed.
+                if cardRunsLoad[id] == .loading { cardRunsLoad[id] = previous == .loading ? nil : previous }
+                return
+            }
             if case .server(status: 404, _) = error as? APIError {
                 cardRunsLoad[id] = .failed("This card is not on your desktop any more.")
             } else {
@@ -428,11 +531,11 @@ extension TasksStore {
 
     /// Send again on a delivery that failed or was cut off. Shown as sending at once, put back if refused.
     func sendAgainLive(run runID: String) {
-        guard isLive else { return }
+        guard liveNow else { return }
         let account = liveAccount
-        var found: (deliveryID: String, before: RunDelivery)?
-        for job in jobs { if let run = job.runs.first(where: { $0.id == runID }), let id = run.deliveryID { found = (id, run.delivery) } }
-        for card in cards { if let run = card.runs.first(where: { $0.id == runID }), let id = run.deliveryID { found = (id, run.delivery) } }
+        var found: (deliveryID: String, before: RunDelivery, owner: String, isJob: Bool)?
+        for job in jobs { if let run = job.runs.first(where: { $0.id == runID }), let id = run.deliveryID { found = (id, run.delivery, job.id, true) } }
+        for card in cards { if let run = card.runs.first(where: { $0.id == runID }), let id = run.deliveryID { found = (id, run.delivery, card.id, false) } }
         guard let found else {
             problem = "This message cannot be sent again from here."
             return
@@ -452,6 +555,12 @@ extension TasksStore {
             } catch {
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
+                if unconfirmed(error) {
+                    // It may have gone: read the history again rather than offer a second send.
+                    problem = "Your desktop did not answer, so this iPhone could not confirm it was sent again. The history shows what your desktop has."
+                    if found.isJob { await loadRuns([found.owner], account: account) } else { await loadCardRuns(found.owner) }
+                    return
+                }
                 setDelivery(runID, found.before)
                 problem = "It was not sent again. " + error.plainWords
             }
@@ -471,8 +580,9 @@ extension TasksStore {
 
     /// Move a card: shown at once, put back if the desktop refuses. Review to Ready with a note is
     /// "request changes"; Blocked to Ready is a retry.
-    func moveLive(_ id: String, to column: WorkColumn, note: String? = nil, done: String, say: @escaping (String) -> Void) {
-        guard isLive, let index = cards.firstIndex(where: { $0.id == id }), !waits(id) else { return }
+    func moveLive(_ id: String, to column: WorkColumn, note: String? = nil, done: String,
+                  onDone: (() -> Void)? = nil, say: @escaping (String) -> Void) {
+        guard liveNow, let index = cards.firstIndex(where: { $0.id == id }), !waits(id) else { return }
         let account = liveAccount
         let before = cards[index]
         cards[index].column = column
@@ -481,20 +591,30 @@ extension TasksStore {
         if column == .ready && before.column == .blocked { cards[index].error = nil }
         let shown = cards[index]
         busy.insert(id)
+        beginWrite()
         Task {
             defer { if stillLive(account) { busy.remove(id) } }
             do {
                 let saved = try await liveClient().taskCardStatus(id, status: column.rawValue, note: note)
+                endWrite()
                 guard stillLive(account) else { return }
                 if let now = cards.firstIndex(where: { $0.id == id }) {
                     var fresh = liveCard(saved)
                     fresh.runs = cards[now].runs
                     cards[now] = fresh
                 }
+                onDone?()
                 say(done)
             } catch {
+                endWrite()
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
+                if unconfirmed(error) {
+                    // It may have moved: show what the desktop has instead of putting it back.
+                    say(unsure("the card moved"))
+                    await refreshTasks()
+                    return
+                }
                 if let now = cards.firstIndex(where: { $0.id == id }), cards[now] == shown {
                     withAnimation(Motion.snappy) { cards[now] = before }
                 }
@@ -506,7 +626,7 @@ extension TasksStore {
     /// Run a card now. The desktop answers when the run ends, so the board is read again a moment after
     /// asking, to show it running. A timeout is not a failure: the run may well be going.
     func runCardLive(_ id: String, say: @escaping (String) -> Void) {
-        guard isLive, let card = self.card(id), !waits(id) else { return }
+        guard liveNow, let card = self.card(id), !waits(id) else { return }
         let account = liveAccount
         starting.insert(id)
         say("Starting \(card.name)")
@@ -532,6 +652,7 @@ extension TasksStore {
                 guard stillLive(account) else { return }
                 say(runProblem(error, name: card.name))
                 await refreshTasks()
+                await loadCardRuns(id)
             }
         }
     }
@@ -539,11 +660,16 @@ extension TasksStore {
     /// What a Run now that did not come back cleanly means, in plain words.
     private func runProblem(_ error: Error, name: String) -> String {
         let api = error as? APIError
-        if error is CancellationError || api?.isOffline == true {
+        // An answer this app could not read, or a server error, can come after the run ended
+        // (the delivery step raising, task_routes.py send_due), so neither means it did not start.
+        var unclear = false
+        if case .unreadable(_)? = api { unclear = true }
+        if case .server(let status, _)? = api, status >= 500 { unclear = true }
+        if error is CancellationError || api?.isOffline == true || unclear {
             // The run may still be going on the desktop; asking again could start it twice.
             // A long run is not the desktop going away, so a timeout leaves the connection alone.
             if let api, api != APIError.from(URLError(.timedOut)) { Connection.shared.note(api) }
-            return "Your desktop did not say how \(name) went. It may still be running; this list shows what your desktop has."
+            return "Your desktop did not say how \(name) went. It may have run or still be running; this list shows what your desktop has."
         }
         Connection.shared.note(error)
         if case .server(status: 409, _)? = api {
@@ -554,24 +680,29 @@ extension TasksStore {
     }
 
     func stopLive(_ id: String, say: @escaping (String) -> Void) {
-        guard isLive, !busy.contains(id) else { return }
+        guard liveNow, !busy.contains(id) else { return }
         let account = liveAccount
         busy.insert(id)
         let name = card(id)?.name ?? job(id)?.name ?? "It"
+        beginWrite()
         Task {
             defer { if stillLive(account) { busy.remove(id) } }
             do {
                 try await liveClient().taskStop(id)
+                endWrite()
                 guard stillLive(account) else { return }
                 say(card(id) != nil ? "Stopping. The card goes to Blocked." : "Stopping \(name)")
                 try? await Task.sleep(for: .seconds(0.8))
                 guard stillLive(account) else { return }
                 await refreshTasks()
             } catch {
+                endWrite()
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
                 if case .server(status: 409, _) = error as? APIError {
                     say("\(name) was not running.")
+                } else if unconfirmed(error) {
+                    say(unsure("\(name) stopped"))
                 } else {
                     say("\(name) was not stopped. " + error.plainWords)
                 }
@@ -582,13 +713,16 @@ extension TasksStore {
 
     /// Delete a card or a task on the desktop. Removed from the screen only once the desktop has done it.
     func deleteLive(_ id: String, done: String, say: @escaping (String) -> Void) {
-        guard isLive, !busy.contains(id) else { return }
+        guard liveNow, !busy.contains(id) else { return }
         let account = liveAccount
         busy.insert(id)
+        let builtinTask = routines.contains(where: { $0.taskID == id })
+        beginWrite()
         Task {
             defer { if stillLive(account) { busy.remove(id) } }
             do {
                 try await liveClient().taskDelete(id)
+                endWrite()
                 guard stillLive(account) else { return }
                 withAnimation(Motion.snappy) {
                     cards.removeAll { $0.id == id }
@@ -597,13 +731,18 @@ extension TasksStore {
                 }
                 rebuildActivity()
                 say(done)
-                if routines.contains(where: { $0.taskID == id }) { await loadLibrary() }
+                if builtinTask { await loadLibrary() }
             } catch {
+                endWrite()
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
                 if case .server(status: 404, _) = error as? APIError {
                     say("It was already gone from your desktop.")
                     await refreshTasks()
+                } else if unconfirmed(error) {
+                    say(unsure("it was deleted"))
+                    await refreshTasks()
+                    if builtinTask { await loadLibrary() }
                 } else {
                     say("Nothing was deleted. " + error.plainWords)
                 }
@@ -611,31 +750,57 @@ extension TasksStore {
         }
     }
 
-    /// Add a card on the desktop. Answers a plain sentence when it was not added.
-    func addCardLive(name: String, instructions: String, endpointID: String, waitsFor: String?, ready: Bool) async -> String? {
-        guard isLive else { return "Your desktop is not connected." }
+    /// Add a card on the desktop. `before` is the cards on screen when Add was tapped, to find the new
+    /// one if the answer is lost.
+    func addCardLive(name: String, instructions: String, endpointID: String, waitsFor: String?, ready: Bool,
+                     before: Set<String>) async -> TasksWriteOutcome {
+        guard liveNow else { return .refused("Your desktop is not connected.") }
         let account = liveAccount
         var body: [String: Any] = ["name": name, "prompt": instructions, "schedule_kind": "card",
                                    "status": ready ? "ready" : "backlog", "depends_on": waitsFor.map { [$0] } ?? []]
         if !endpointID.isEmpty { body["endpoint_id"] = endpointID }
+        beginWrite()
         do {
             let made = try await liveClient().taskCreate(body)
-            guard stillLive(account) else { return "Your desktop changed while the card was being added." }
+            endWrite()
+            guard stillLive(account) else { return .refused("Your desktop changed while the card was being added.") }
             if !cards.contains(where: { $0.id == made.id }) { cards.append(liveCard(made)) }
             column = ready ? .ready : .backlog
             await refreshTasks()
-            return nil
+            return .done
         } catch {
+            endWrite()
             Connection.shared.note(error)
-            return "The card was not added. " + error.plainWords
+            guard stillLive(account) else { return .refused("Your desktop changed while the card was being added.") }
+            if unconfirmed(error) {
+                return await confirmCardLive(name: name, instructions: instructions, ready: ready, before: before)
+            }
+            return .refused("The card was not added. " + error.plainWords)
         }
+    }
+
+    /// After an Add whose answer was lost: read the board again and look for the new card, so a second
+    /// tap never makes a second card.
+    func confirmCardLive(name: String, instructions: String, ready: Bool, before: Set<String>) async -> TasksWriteOutcome {
+        guard liveNow else { return .refused("Your desktop is not connected.") }
+        let account = liveAccount
+        let read = await refreshTasks()
+        guard stillLive(account) else { return .refused("Your desktop changed while the card was being added.") }
+        guard read else {
+            return .unsure("Your desktop did not answer, so this iPhone could not confirm the card was added. Try again to look for it before adding it a second time.")
+        }
+        if cards.contains(where: { !before.contains($0.id) && $0.name == name && $0.instructions == instructions }) {
+            column = ready ? .ready : .backlog
+            return .done
+        }
+        return .refused("The card was not added. Your desktop has no such card, so you can add it again.")
     }
 
     // MARK: Scheduled tasks
 
     /// Run a scheduled task now. Same as a card: the answer comes when it ends, and a timeout says so plainly.
     func runJobLive(_ id: String, onResult: @escaping (String) -> Void) {
-        guard isLive, let job = self.job(id), !waits(id), job.runningSince == nil else { return }
+        guard liveNow, let job = self.job(id), !waits(id), job.runningSince == nil else { return }
         let account = liveAccount
         starting.insert(id)
         let watch = Task {
@@ -668,23 +833,26 @@ extension TasksStore {
                 guard stillLive(account) else { return }
                 onResult(runProblem(error, name: job.name))
                 await refreshTasks()
+                await loadJobRuns(id)
             }
         }
     }
 
     /// Change one scheduled task's fields: shown at once, put back if the desktop refuses.
     private func updateJobLive(_ id: String, _ fields: [String: Any], change: (inout ScheduledJob) -> Void,
-                               done: String?, failed: String, say: @escaping (String) -> Void) {
-        guard isLive, let index = jobs.firstIndex(where: { $0.id == id }), !busy.contains(id) else { return }
+                               done: String?, failed: String, unsureOf: String, say: @escaping (String) -> Void) {
+        guard liveNow, let index = jobs.firstIndex(where: { $0.id == id }), !busy.contains(id) else { return }
         let account = liveAccount
         let before = jobs[index]
         change(&jobs[index])
         let shown = jobs[index]
         busy.insert(id)
+        beginWrite()
         Task {
             defer { if stillLive(account) { busy.remove(id) } }
             do {
                 let saved = try await liveClient().taskUpdate(id, fields)
+                endWrite()
                 guard stillLive(account) else { return }
                 if let now = jobs.firstIndex(where: { $0.id == id }) {
                     var fresh = liveJob(saved)
@@ -694,8 +862,16 @@ extension TasksStore {
                 if let done { say(done) }
                 if before.builtin { await loadLibrary() }
             } catch {
+                endWrite()
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
+                if unconfirmed(error) {
+                    // It may have been saved: show what the desktop has instead of putting it back.
+                    say(unsure(unsureOf))
+                    await refreshTasks()
+                    if before.builtin { await loadLibrary() }
+                    return
+                }
                 if let now = jobs.firstIndex(where: { $0.id == id }), jobs[now] == shown { jobs[now] = before }
                 say(failed + " " + error.plainWords)
             }
@@ -711,32 +887,36 @@ extension TasksStore {
         let on = !job.enabled
         updateJobLive(id, ["enabled": on], change: { $0.enabled = on },
                       done: on ? "Schedule turned on for its next time." : "Schedule turned off. History kept; an active run can finish.",
-                      failed: on ? "The schedule was not turned on." : "The schedule was not turned off.", say: say)
+                      failed: on ? "The schedule was not turned on." : "The schedule was not turned off.",
+                      unsureOf: on ? "the schedule was turned on" : "the schedule was turned off", say: say)
     }
 
     func setJobModelLive(_ id: String, _ endpointID: String, say: @escaping (String) -> Void) {
         guard job(id)?.endpointID ?? "" != endpointID else { return }
         let label = modelLabel(endpointID)
         updateJobLive(id, ["endpoint_id": endpointID], change: { $0.endpointID = endpointID; $0.model = label },
-                      done: nil, failed: "The model was not changed.", say: say)
+                      done: nil, failed: "The model was not changed.", unsureOf: "the model was changed", say: say)
     }
 
     func setJobDeliveryLive(_ id: String, _ channelID: String, say: @escaping (String) -> Void) {
         guard job(id)?.channelID ?? "" != channelID else { return }
         let label = channelLabel(channelID)
         updateJobLive(id, ["deliver_to_channel": channelID], change: { $0.channelID = channelID; $0.deliver = label },
-                      done: nil, failed: "Where it delivers was not changed.", say: say)
+                      done: nil, failed: "Where it delivers was not changed.", unsureOf: "where it delivers was changed", say: say)
     }
 
-    /// Schedule the form's task on the desktop: the field that is wrong, or a sentence when the desktop
-    /// refused it, or neither when it was scheduled.
-    func scheduleLive() async -> (field: JobDraftField?, problem: String?) {
-        guard isLive else { return (nil, "Your desktop is not connected.") }
+    /// Schedule the form's task on the desktop: the field that is wrong, or how the write came back.
+    func scheduleLive() async -> (field: JobDraftField?, outcome: TasksWriteOutcome?) {
+        guard liveNow else { return (nil, .refused("Your desktop is not connected.")) }
+        // A Schedule whose answer was lost is checked, never sent again blind.
+        if scheduleCheck != nil { return (nil, await confirmScheduleLive()) }
         let account = liveAccount
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let prompt = draft.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return (.name, nil) }
         if prompt.isEmpty { return (.prompt, nil) }
+        let kind = draft.kind
+        let before = Set(jobs.map(\.id))
         var body: [String: Any] = ["name": name, "prompt": prompt, "schedule_kind": draft.kind.rawValue]
         switch draft.kind {
         case .once:
@@ -754,18 +934,48 @@ extension TasksStore {
         }
         if !draft.endpointID.isEmpty { body["endpoint_id"] = draft.endpointID }
         if !draft.channelID.isEmpty { body["deliver_to_channel"] = draft.channelID }
+        let changed = "Your desktop changed while the task was being scheduled."
+        beginWrite()
         do {
             let made = try await liveClient().taskCreate(body)
-            guard stillLive(account) else { return (nil, "Your desktop changed while the task was being scheduled.") }
+            endWrite()
+            guard stillLive(account) else { return (nil, .refused(changed)) }
             if !jobs.contains(where: { $0.id == made.id }) { jobs.insert(liveJob(made), at: 0) }
             draft = JobDraft()
             draftError = nil
             await refreshTasks()
-            return (nil, nil)
+            return (nil, .done)
         } catch {
+            endWrite()
             Connection.shared.note(error)
-            return (nil, "It was not scheduled. " + error.plainWords)
+            guard stillLive(account) else { return (nil, .refused(changed)) }
+            if unconfirmed(error) {
+                scheduleCheck = TasksScheduleCheck(text: "", name: name, prompt: prompt, kind: kind, before: before)
+                return (nil, await confirmScheduleLive())
+            }
+            return (nil, .refused("It was not scheduled. " + error.plainWords))
         }
+    }
+
+    /// After a Schedule whose answer was lost: read the list again and look for the new task. The form
+    /// keeps what was typed and its Schedule button waits until this says whether it landed.
+    func confirmScheduleLive() async -> TasksWriteOutcome {
+        guard liveNow, let check = scheduleCheck else { return .refused("Your desktop is not connected.") }
+        let account = liveAccount
+        let read = await refreshTasks()
+        guard stillLive(account) else { return .refused("Your desktop changed while the task was being scheduled.") }
+        guard read else {
+            let text = "Your desktop did not answer, so this iPhone could not confirm it was scheduled. Try again to look for it before scheduling it a second time."
+            scheduleCheck?.text = text
+            return .unsure(text)
+        }
+        scheduleCheck = nil
+        if jobs.contains(where: { !check.before.contains($0.id) && $0.name == check.name && $0.prompt == check.prompt && $0.kind == check.kind }) {
+            draft = JobDraft()
+            draftError = nil
+            return .done
+        }
+        return .refused("It was not scheduled. Your desktop has no such task, so you can schedule it again.")
     }
 
     // MARK: Automation library
@@ -775,13 +985,19 @@ extension TasksStore {
         let account = liveAccount
         if libraryLoad != .loaded { libraryLoad = .loading }
         do {
+            let generation = writeGeneration
             let list = try await liveClient().tasksBuiltin()
             guard stillLive(account) else { return }
+            // Once shown, a read a write overtook may put back what the write changed, so it is dropped
+            // (the routine writes read the library again once answered).
+            if libraryLoad == .loaded && (writeGeneration != generation || writing > 0) { return }
             let chosen = Dictionary(routines.map { ($0.id, $0.channelID) }, uniquingKeysWith: { first, _ in first })
             routines = list.map { item in
                 let clock = TasksWire.clock(item.defaultDailyTime)
                 let hours = max(1, Int(((item.defaultIntervalSeconds ?? 21_600) / 3600).rounded()))
-                let channel = item.deliverToChannel ?? chosen[item.actionId] ?? ""
+                // A routine whose task exists delivers where that task says; only one never turned on
+                // keeps the choice made on this phone.
+                let channel = item.taskId != nil ? (item.deliverToChannel ?? "") : (chosen[item.actionId] ?? "")
                 return JobRoutine(id: item.actionId, label: item.label ?? item.actionId, about: item.description ?? "",
                                   usesModel: item.usesModel ?? true, hour: clock?.hour,
                                   everyHours: clock == nil ? hours : nil, deliver: channelLabel(channel),
@@ -791,6 +1007,10 @@ extension TasksStore {
         } catch {
             Connection.shared.note(error)
             guard stillLive(account) else { return }
+            if error is CancellationError {
+                if libraryLoad == .loading { libraryLoad = .idle }
+                return
+            }
             libraryLoad = .failed("The automation library could not be read. " + error.plainWords)
         }
     }
@@ -803,30 +1023,61 @@ extension TasksStore {
     }
 
     func enableRoutineLive(_ id: String, say: @escaping (String) -> Void) {
-        guard isLive, let index = routines.firstIndex(where: { $0.id == id }), !busy.contains(id) else { return }
+        guard liveNow, let index = routines.firstIndex(where: { $0.id == id }), !busy.contains(id) else { return }
         let account = liveAccount
         let routine = routines[index]
         routines[index].enabled = true
         busy.insert(id)
+        beginWrite()
         Task {
             defer { if stillLive(account) { busy.remove(id) } }
             do {
-                _ = try await liveClient().taskBuiltinEnable(id, channel: routine.channelID)
+                let task = try await liveClient().taskBuiltinEnable(id, channel: routine.channelID)
+                // Turning on a routine whose task already exists keeps that task's channel
+                // (task_routes.py enable_builtin_task), so a different choice is sent as its own change.
+                if (task.deliverToChannel ?? "") != routine.channelID {
+                    guard stillLive(account) else {
+                        endWrite()
+                        return
+                    }
+                    do {
+                        _ = try await liveClient().taskUpdate(task.id, ["deliver_to_channel": routine.channelID])
+                    } catch {
+                        endWrite()
+                        Connection.shared.note(error)
+                        guard stillLive(account) else { return }
+                        say(unconfirmed(error)
+                            ? "\(routine.label) turned on. " + unsure("where it delivers was changed")
+                            : "\(routine.label) turned on, but where it delivers was not changed. " + error.plainWords)
+                        await refreshTasks()
+                        await loadLibrary()
+                        return
+                    }
+                }
+                endWrite()
                 guard stillLive(account) else { return }
                 say("\(routine.label) turned on")
                 await refreshTasks()
                 await loadLibrary()
             } catch {
+                endWrite()
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
-                if let now = routines.firstIndex(where: { $0.id == id }) { routines[now].enabled = routine.enabled }
+                if unconfirmed(error) {
+                    say(unsure("\(routine.label) turned on"))
+                    await refreshTasks()
+                    await loadLibrary()
+                    return
+                }
+                // Put back only what this tap changed, not newer state a read brought in meanwhile.
+                if let now = routines.firstIndex(where: { $0.id == id }), routines[now].enabled { routines[now].enabled = routine.enabled }
                 say("\(routine.label) was not turned on. " + error.plainWords)
             }
         }
     }
 
     func disableRoutineLive(_ id: String, say: @escaping (String) -> Void) {
-        guard isLive, let index = routines.firstIndex(where: { $0.id == id }), !busy.contains(id) else { return }
+        guard liveNow, let index = routines.firstIndex(where: { $0.id == id }), !busy.contains(id) else { return }
         let routine = routines[index]
         guard let taskID = routine.taskID else {
             say("\(routine.label) cannot be turned off from here. Turn it off in Kairos on your desktop.")
@@ -835,18 +1086,28 @@ extension TasksStore {
         let account = liveAccount
         routines[index].enabled = false
         busy.insert(id)
+        beginWrite()
         Task {
             defer { if stillLive(account) { busy.remove(id) } }
             do {
                 _ = try await liveClient().taskUpdate(taskID, ["enabled": false])
+                endWrite()
                 guard stillLive(account) else { return }
                 say("\(routine.label) turned off. History kept.")
                 await refreshTasks()
                 await loadLibrary()
             } catch {
+                endWrite()
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
-                if let now = routines.firstIndex(where: { $0.id == id }) { routines[now].enabled = routine.enabled }
+                if unconfirmed(error) {
+                    say(unsure("\(routine.label) turned off"))
+                    await refreshTasks()
+                    await loadLibrary()
+                    return
+                }
+                // Put back only what this tap changed, not newer state a read brought in meanwhile.
+                if let now = routines.firstIndex(where: { $0.id == id }), !routines[now].enabled { routines[now].enabled = routine.enabled }
                 say("\(routine.label) was not turned off. " + error.plainWords)
             }
         }

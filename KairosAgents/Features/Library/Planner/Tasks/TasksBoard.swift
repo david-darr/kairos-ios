@@ -295,8 +295,9 @@ struct WorkCardControls: View {
                             return
                         }
                         if store.isLive {
-                            store.moveLive(card.id, to: .ready, note: text, done: "Sent back to Ready with your note", say: actions.say)
-                            note = ""
+                            // The note is cleared only once the desktop has it, so a refusal keeps it.
+                            store.moveLive(card.id, to: .ready, note: text, done: "Sent back to Ready with your note",
+                                           onDone: { note = "" }, say: actions.say)
                             return
                         }
                         withAnimation(Motion.snappy) { store.requestChanges(card.id, note: text) }
@@ -439,6 +440,16 @@ struct WorkAddCardSheet: View {
     @State private var notice: String?
     @State private var endpointID = ""
     @State private var adding = false
+    /// Paired: an Add whose answer was lost. Add waits until a read shows whether the card landed.
+    @State private var pending: PendingAdd?
+
+    private struct PendingAdd {
+        var text: String
+        var name: String
+        var what: String
+        var ready: Bool
+        var before: Set<String>
+    }
 
     var body: some View {
         ScrollView {
@@ -461,11 +472,13 @@ struct WorkAddCardSheet: View {
                 .kCard(radius: 18)
                 GoldButton(title: "Add to Ready") { add(ready: true) }
                     .padding(.top, 6)
-                    .disabled(adding)
+                    .disabled(adding || pending != nil)
                 QuietButton(title: "Add to Backlog") { add(ready: false) }
-                    .disabled(adding)
+                    .disabled(adding || pending != nil)
                 if adding {
-                    TasksLiveLine(text: "Adding the card on your desktop.")
+                    TasksLiveLine(text: pending == nil ? "Adding the card on your desktop." : "Looking for the card on your desktop.")
+                } else if let pending {
+                    TasksLiveLine(text: pending.text, retry: checkAgain)
                 }
             }
             .padding(.horizontal, 18)
@@ -488,20 +501,15 @@ struct WorkAddCardSheet: View {
             return
         }
         if store.isLive {
-            guard !adding else { return }
+            guard !adding, pending == nil else { return }
             adding = true
             let waits = waitsFor == "none" ? nil : waitsFor
+            let before = Set(store.cards.map(\.id))
             Task {
-                let problem = await store.addCardLive(name: n, instructions: w, endpointID: endpointID, waitsFor: waits, ready: ready)
+                let outcome = await store.addCardLive(name: n, instructions: w, endpointID: endpointID, waitsFor: waits,
+                                                      ready: ready, before: before)
                 adding = false
-                if let problem {
-                    Haptics.thud()
-                    notice = problem
-                    return
-                }
-                Haptics.success()
-                onAdded(ready ? "Card added; Kairos will pick it up" : "Card added to the backlog")
-                dismiss()
+                finish(outcome, name: n, what: w, ready: ready, before: before)
             }
             return
         }
@@ -511,5 +519,34 @@ struct WorkAddCardSheet: View {
         }
         onAdded(ready ? "Card added; Kairos will pick it up" : "Card added to the backlog")
         dismiss()
+    }
+
+    /// Paired: what the desktop said about an Add. When its answer was lost, the form stays as typed and
+    /// Add waits, so a second tap never makes a second card.
+    private func finish(_ outcome: TasksWriteOutcome, name: String, what: String, ready: Bool, before: Set<String>) {
+        switch outcome {
+        case .done:
+            pending = nil
+            Haptics.success()
+            onAdded(ready ? "Card added; Kairos will pick it up" : "Card added to the backlog")
+            dismiss()
+        case .refused(let problem):
+            pending = nil
+            Haptics.thud()
+            notice = problem
+        case .unsure(let text):
+            Haptics.thud()
+            pending = PendingAdd(text: text, name: name, what: what, ready: ready, before: before)
+        }
+    }
+
+    private func checkAgain() {
+        guard let check = pending, !adding else { return }
+        adding = true
+        Task {
+            let outcome = await store.confirmCardLive(name: check.name, instructions: check.what, ready: check.ready, before: check.before)
+            adding = false
+            finish(outcome, name: check.name, what: check.what, ready: check.ready, before: check.before)
+        }
     }
 }

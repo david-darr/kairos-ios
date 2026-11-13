@@ -213,8 +213,9 @@ struct JobSheet: View {
                     Haptics.thud()
                     store.runJob(job.id) { result in notice = result }
                 }
-                .disabled(job.runningSince != nil || starting)
-                .opacity(job.runningSince != nil || starting ? 0.6 : 1)
+                // Paired, it also waits while another change for this task is on its way.
+                .disabled(job.runningSince != nil || starting || (store.isLive && store.busy.contains(job.id)))
+                .opacity(job.runningSince != nil || starting || (store.isLive && store.busy.contains(job.id)) ? 0.6 : 1)
                 PlannerPill(title: job.enabled ? "Turn off" : "Turn on", symbol: job.enabled ? "pause" : "power", style: .quiet, expand: true) {
                     if store.isLive {
                         store.toggleJobLive(job.id) { notice = $0 }
@@ -239,10 +240,30 @@ struct JobSheet: View {
                 VStack(spacing: 0) {
                     let model = job.endpointID ?? ""
                     let channel = job.channelID ?? ""
-                    PlannerMenuRow(title: "Model", symbol: "sparkle",
-                                   options: store.modelIDs.contains(model) ? store.modelIDs : store.modelIDs + [model],
-                                   selection: Binding(get: { model }, set: { id in store.setJobModelLive(job.id, id) { notice = $0 } }),
-                                   label: { store.modelLabel($0) })
+                    if job.agentID != nil {
+                        // A bot's task runs on its bot's model (core/task_scheduler.py), so there is nothing to choose here.
+                        HStack(spacing: 12) {
+                            Image(systemName: "sparkle")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(Palette.goldText)
+                                .frame(width: 26)
+                            Text("Model").font(KFont.ui(16)).foregroundStyle(Palette.ink)
+                            Spacer(minLength: 8)
+                            Text("Its bot's model")
+                                .font(KFont.ui(15))
+                                .foregroundStyle(Palette.inkDim)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 52)
+                        .overlay(alignment: .bottom) { Palette.line.frame(height: 1).padding(.leading, 54) }
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        PlannerMenuRow(title: "Model", symbol: "sparkle",
+                                       options: store.modelIDs.contains(model) ? store.modelIDs : store.modelIDs + [model],
+                                       selection: Binding(get: { model }, set: { id in store.setJobModelLive(job.id, id) { notice = $0 } }),
+                                       label: { store.modelLabel($0) })
+                    }
                     PlannerMenuRow(title: "Deliver to", symbol: "paperplane", options: store.channelIDs(keeping: channel),
                                    selection: Binding(get: { channel }, set: { id in store.setJobDeliveryLive(job.id, id) { notice = $0 } }),
                                    label: { store.channelLabel($0) }, last: true)
@@ -416,7 +437,10 @@ struct JobScheduleSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if sending {
-                    TasksLiveLine(text: "Scheduling it on your desktop.")
+                    TasksLiveLine(text: store.scheduleCheck == nil ? "Scheduling it on your desktop." : "Looking for it on your desktop.")
+                } else if store.isLive, let check = store.scheduleCheck, !check.text.isEmpty {
+                    // Its answer was lost: Schedule waits until a read shows whether it landed.
+                    TasksLiveLine(text: check.text, retry: scheduleLive)
                 }
 
                 GoldButton(title: "Schedule") {
@@ -434,7 +458,7 @@ struct JobScheduleSheet: View {
                     }
                 }
                 .padding(.top, 4)
-                .disabled(sending)
+                .disabled(sending || (store.isLive && store.scheduleCheck != nil))
                 Text("Your form is kept if you close this before scheduling.")
                     .font(KFont.ui(13, relativeTo: .footnote))
                     .foregroundStyle(Palette.inkFaint)
@@ -469,18 +493,26 @@ struct JobScheduleSheet: View {
         refusal = nil
         sending = true
         Task {
-            let outcome = await store.scheduleLive()
+            let result = await store.scheduleLive()
             sending = false
-            if let field = outcome.field {
+            if let field = result.field {
                 Haptics.thud()
                 withAnimation(Motion.snappy) { store.draftError = field }
-            } else if let problem = outcome.problem {
-                Haptics.thud()
-                withAnimation(Motion.snappy) { refusal = problem }
-            } else {
+                return
+            }
+            switch result.outcome {
+            case .done?:
                 Haptics.success()
                 onScheduled("Scheduled")
                 dismiss()
+            case .refused(let problem)?:
+                Haptics.thud()
+                withAnimation(Motion.snappy) { refusal = problem }
+            case .unsure(_)?:
+                // The line above the button says it and offers Try again, which looks for it.
+                Haptics.thud()
+            case nil:
+                break
             }
         }
     }

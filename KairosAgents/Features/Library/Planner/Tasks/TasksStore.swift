@@ -41,6 +41,12 @@ final class TasksStore {
     var starting: Set<String> = []
     /// One plain sentence for the person, said once and cleared.
     var problem: String?
+    /// Writes on their way, and a count that moves whenever one is sent or answered: a list read that
+    /// began before the last move may picture the desktop before that write, so it is not shown.
+    var writing = 0
+    var writeGeneration = 0
+    /// A Schedule whose answer was lost: the form waits until a read shows whether it landed.
+    var scheduleCheck: TasksScheduleCheck?
 
     init(provider: TasksProviding) {
         cards = provider.loadCards()
