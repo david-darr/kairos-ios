@@ -72,11 +72,11 @@ final class LiveActivities {
         Task { await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(Date().addingTimeInterval(linger))) }
     }
 
-    /// The person opened the chat these activities open: they end and leave at once, running or done.
-    /// Answers the ids it ended.
+    /// The person opened the chat or thread these activities follow (`matches` says which): they end and leave
+    /// at once, running or done. A call's activity is never one of them. Answers the ids it ended.
     @discardableResult
-    func dismiss(link: String) -> [String] {
-        let found = Activity<KairosActivityAttributes>.activities.filter { $0.attributes.link == link && $0.attributes.kind != .call }
+    func dismiss(where matches: (KairosActivityAttributes) -> Bool) -> [String] {
+        let found = Activity<KairosActivityAttributes>.activities.filter { $0.attributes.kind != .call && matches($0.attributes) }
         for activity in found {
             let id = activity.attributes.id
             running[id] = nil

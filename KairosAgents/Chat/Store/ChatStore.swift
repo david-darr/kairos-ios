@@ -1280,9 +1280,13 @@ extension View {
             .onDisappear { ChatStore.shared.chatOnScreen(chatID: chat.id, botID: nil, false) }
     }
 
-    /// While this bot's chat is on screen it reads as read, and opening it ends its Live Activity.
+    /// While this bot's chat is on screen it reads as read, and opening a thread ends that thread's Live Activity
+    /// (and only that thread's), including when the person moves to another thread of the same bot.
     func readsWhileOpen(_ chat: BotChatState) -> some View {
-        onAppear { ChatStore.shared.chatOnScreen(chatID: nil, botID: chat.botID, true) }
-            .onDisappear { ChatStore.shared.chatOnScreen(chatID: nil, botID: chat.botID, false) }
+        onAppear { ChatStore.shared.chatOnScreen(chatID: chat.threadID, botID: chat.botID, true) }
+            .onChange(of: chat.threadID) {
+                if let threadID = chat.threadID { ChatStore.shared.chatOnScreen(chatID: threadID, botID: chat.botID, true) }
+            }
+            .onDisappear { ChatStore.shared.chatOnScreen(chatID: chat.threadID, botID: chat.botID, false) }
     }
 }
