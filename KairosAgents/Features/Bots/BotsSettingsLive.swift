@@ -139,6 +139,69 @@ nonisolated enum BotSetChange {
     }
 }
 
+/// An open form over the bot record: the desktop values and the revision it was filled from. A save sends only
+/// the fields the person edited since then, with that revision. A later read of the desktop moves every field the
+/// person did not touch to the desktop's value. A field the person edited and the desktop changed too keeps the
+/// person's text; until a refused save (409) has shown that clash, the old revision is kept, so a save is refused
+/// and said, never silent.
+nonisolated struct BotSetForm: Equatable, Sendable {
+    /// The account the form was filled for: another account starts it again.
+    let account: String
+    private(set) var revision: Int
+    private(set) var base: [String: String]
+    /// Fields the person edited that the desktop changed too.
+    private(set) var clashed: Set<String> = []
+
+    init(account: String, revision: Int, values: [String: String]) {
+        self.account = account
+        self.revision = revision
+        self.base = values
+    }
+
+    /// The fields where the form differs from what it was filled from.
+    func edited(_ form: [String: String]) -> Set<String> {
+        Set(form.keys.filter { form[$0] != base[$0] })
+    }
+
+    /// Take a newer read of the desktop. Answers the fields to fill again from the desktop.
+    mutating func rebase(form: [String: String], desktop: [String: String], revision new: Int, acknowledge: Bool) -> [String] {
+        var refill: [String] = []
+        for (key, now) in desktop {
+            let mine = form[key]
+            let was = base[key]
+            if mine == now {
+                base[key] = now
+                clashed.remove(key)
+            } else if mine == was {
+                base[key] = now
+                clashed.remove(key)
+                refill.append(key)
+            } else if now != was {
+                clashed.insert(key)
+                if acknowledge { base[key] = now }
+            }
+        }
+        // Every field now starts from this read (no clash left unseen): the form is on this revision.
+        if desktop.allSatisfy({ base[$0.key] == $0.value }) { revision = new }
+        return refill
+    }
+
+    /// A name as the desktop stores it (agent_service.py: _clean_name collapses every run of spaces).
+    static func name(_ text: String?) -> String {
+        (text ?? "").split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    /// A job as the desktop stores it (agent_service.py: _profile_text strips a role).
+    static func job(_ text: String?) -> String {
+        (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Text length as the desktop counts it (Python len: code points, not what the eye sees as one letter).
+    static func length(_ text: String) -> Int {
+        text.unicodeScalars.count
+    }
+}
+
 @Observable
 final class BotsSettingsLive {
     static let shared = BotsSettingsLive()
@@ -187,6 +250,8 @@ final class BotsSettingsLive {
     @ObservationIgnored private var seqs: [String: Int] = [:]
     @ObservationIgnored private var writing: [String: Int] = [:]
     @ObservationIgnored private var writeGeneration: [String: Int] = [:]
+    /// Moves each time the bot record shown is replaced by a read or a write's answer.
+    @ObservationIgnored private var recordStamp: [String: Int] = [:]
 
     // MARK: Which desktop
 
@@ -248,6 +313,13 @@ final class BotsSettingsLive {
         seqs = seqs.mapValues { $0 + 1 }
         writing = [:]
         writeGeneration = writeGeneration.mapValues { $0 + 1 }
+        recordStamp = recordStamp.mapValues { $0 + 1 }
+    }
+
+    /// Show this record of the bot, and note that the shown record moved.
+    private func show(_ agent: AgentDTO, _ botID: String) {
+        records[botID] = agent
+        recordStamp[botID, default: 0] += 1
     }
 
     private func stillLive(_ account: String) -> Bool {
@@ -349,18 +421,29 @@ final class BotsSettingsLive {
                 self.recordLoad[botID] = .failed("This bot is not on your desktop.")
                 return
             }
-            self.records[botID] = agent
+            self.show(agent, botID)
             self.recordLoad[botID] = .loaded
             self.unsure[botID] = nil
+            // The same answer carries the instructions file, read with this record.
+            if let file = detail.soulFile, file.object != nil {
+                self.takeSoul(BotSetSoulDTO(soul: BotSetWire.field(file, "soul")?.string,
+                                            fileText: BotSetWire.field(file, "file_text")?.string,
+                                            inSync: BotSetWire.field(file, "in_sync")?.bool,
+                                            revision: BotSetWire.field(file, "revision")?.int,
+                                            bytes: BotSetWire.field(file, "bytes")?.int,
+                                            limit: BotSetWire.field(file, "limit")?.int), botID)
+            }
         }, failed: { error in
             self.recordLoad[botID] = self.failure(error, "This bot could not be read.", was: self.recordLoad[botID])
         })
     }
 
-    func loadRecordIfNeeded(_ botID: String) async {
-        followConnection()
-        guard active, records[botID] == nil || recordLoad[botID] != .loaded else { return }
-        await loadRecord(botID)
+    /// The instructions file as read. One read with an older profile revision than the one shown is left out:
+    /// the record read and the file read are separate, and the older must not replace the newer.
+    private func takeSoul(_ soul: BotSetSoulDTO, _ botID: String) {
+        if let shown = souls[botID]?.revision, let read = soul.revision, read < shown { return }
+        souls[botID] = soul
+        soulLoad[botID] = .loaded
     }
 
     @discardableResult
@@ -369,8 +452,7 @@ final class BotsSettingsLive {
         guard active else { return false }
         prepare(&soulLoad, botID)
         return await run("soul|\(botID)", bot: botID, first: souls[botID] == nil, { try await $0.botSettingsSoul(botID) }, apply: { soul in
-            self.souls[botID] = soul
-            self.soulLoad[botID] = .loaded
+            self.takeSoul(soul, botID)
         }, failed: { error in
             self.soulLoad[botID] = self.failure(error, "The instructions could not be read.", was: self.soulLoad[botID])
         })
@@ -472,7 +554,7 @@ final class BotsSettingsLive {
     }
 
     func loadModel(_ botID: String) async {
-        await loadRecordIfNeeded(botID)
+        await loadRecord(botID)
         await loadChoices()
         if let endpoint = records[botID]?.endpointId { await loadCatalog(endpoint) }
         await loadOtherModel(botID)
@@ -508,9 +590,10 @@ final class BotsSettingsLive {
 
     // MARK: Changing the bot
 
-    /// Send only these fields, with the revision this page read. Shown at once; put back on a refusal; on a
-    /// lost answer the desktop is read again and compared with what was sent, and nothing is sent twice.
-    func patch(_ botID: String, _ changes: [String: Any], what: String, done: String) async -> BotSetOutcome {
+    /// Send only these fields, with `revision`: the desktop revision the screen showed when the person chose them
+    /// (a form: the one it was filled from). Shown at once; put back on a refusal; on a lost answer the desktop
+    /// is read again and compared with what was sent, and nothing is sent twice.
+    func patch(_ botID: String, _ changes: [String: Any], revision: Int, what: String, done: String) async -> BotSetOutcome {
         followConnection()
         guard isCurrent, let before = records[botID] else {
             return .refused("Still reading this bot from your desktop. Try again in a moment.")
@@ -520,8 +603,14 @@ final class BotsSettingsLive {
         }
         let account = self.account
         var fields = changes
-        if let revision = before.revision { fields["expected_revision"] = revision }
-        records[botID] = BotSetChange.applying(changes, to: before)
+        // Always checked: a record with no revision is revision 0 on the desktop (agent_service.py: update).
+        fields["expected_revision"] = revision
+        show(BotSetChange.applying(changes, to: before), botID)
+        let stamp = recordStamp[botID] ?? 0
+        // Put the record from before back, unless a newer read of the desktop has replaced it since.
+        func putBack() {
+            if (recordStamp[botID] ?? 0) == stamp { show(before, botID) }
+        }
         busy.insert(botID)
         unsure[botID] = nil
         beginWrite(botID)
@@ -529,7 +618,8 @@ final class BotsSettingsLive {
             let saved = try await client().agentUpdate(botID, fields: fields)
             endWrite(botID)
             guard stillLive(account) else { return .refused("") }
-            records[botID] = saved
+            // The desktop's answer is its record after the write.
+            show(saved, botID)
             recordLoad[botID] = .loaded
             busy.remove(botID)
             Task { await BotsStore.shared.loadDetail(botID) }
@@ -541,13 +631,14 @@ final class BotsSettingsLive {
                 let read = await loadRecord(botID)
                 guard stillLive(account) else { return .refused("") }
                 busy.remove(botID)
-                if read {
+                // This read, or a newer one that replaced it, shows what the desktop has.
+                if read || (recordStamp[botID] ?? 0) != stamp {
                     Task { await BotsStore.shared.loadDetail(botID) }
                     return BotSetChange.has(records[botID], changes)
                         ? .done("Your desktop's answer was lost, but it has \(what) now.")
                         : .unsure("Your desktop did not answer, and it does not have \(what). Nothing was sent again. This page shows what it has.")
                 }
-                records[botID] = before
+                putBack()
                 let note = "Your desktop did not answer, so this iPhone could not confirm \(what). This page shows what your desktop had before. Read it again to check."
                 unsure[botID] = note
                 return .unsure(note)
@@ -555,23 +646,25 @@ final class BotsSettingsLive {
             if status(error) == 409 {
                 let read = await loadRecord(botID)
                 guard stillLive(account) else { return .refused("") }
-                if !read { records[botID] = before }
+                if !read { putBack() }
                 busy.remove(botID)
                 Task { await BotsStore.shared.loadDetail(botID) }
                 return .changed("This bot changed on your desktop, so \(what) was not saved. This page now shows what your desktop has.")
             }
-            records[botID] = before
+            putBack()
             busy.remove(botID)
             return .refused("That change was not saved. " + error.plainWords)
         }
     }
 
     /// Lower the bot's approval level. Raising is never sent from the phone: the desktop refuses it.
-    func lower(_ botID: String, to level: ApprovalLevel) async -> BotSetOutcome {
+    /// `revision` is the approval revision the screen showed when the person chose the level.
+    func lower(_ botID: String, to level: ApprovalLevel, revision: Int?) async -> BotSetOutcome {
         followConnection()
         guard isCurrent, let policy = policies[botID] else {
             return .refused("Still reading approval from your desktop. Try again in a moment.")
         }
+        // Checked against the newest read, whatever the screen showed: only ever lower.
         guard let current = Self.botLevel(policy), level.rank < current.rank else {
             return .refused("Raise it in Kairos on your desktop.")
         }
@@ -579,11 +672,12 @@ final class BotsSettingsLive {
             return .refused("Another change to this bot is still on its way. Try again in a moment.")
         }
         let account = self.account
+        let sent = revision ?? policy.revision
         busy.insert(botID)
         unsure[botID] = nil
         beginWrite(botID)
         do {
-            let answer = try await client().botApprovalSetMode(botID, mode: level.rawValue, scope: "bot", expectedRevision: policy.revision)
+            let answer = try await client().botApprovalSetMode(botID, mode: level.rawValue, scope: "bot", expectedRevision: sent)
             endWrite(botID)
             guard stillLive(account) else { return .refused("") }
             policies[botID] = answer
@@ -592,7 +686,14 @@ final class BotsSettingsLive {
                 await self.loadRecord(botID)
                 await BotsStore.shared.loadDetail(botID)
             }
-            return .done("Approval is now \(level.title).")
+            let kept = await keptHigher(botID, than: level, account: account)
+            guard stillLive(account) else { return .refused("") }
+            let line = "Approval is now \(level.title)."
+            switch kept {
+            case 0: return .done(line)
+            case 1: return .done(line + " 1 conversation keeps a higher level confirmed on your desktop.")
+            default: return .done(line + " \(kept) conversations keep a higher level confirmed on your desktop.")
+            }
         } catch {
             endWrite(botID)
             guard stillLive(account) else { return .refused("") }
@@ -612,13 +713,41 @@ final class BotsSettingsLive {
                 return .unsure(note)
             }
             if status(error) == 409 {
-                await loadPolicy(botID)
+                // The desktop answers 409 for a stale revision, but also when the level would be a raise, the
+                // account has no machine access, or its approval state is damaged (core/bot_policy.py). Only a
+                // revision that moved is "changed on your desktop"; otherwise its own words are shown.
+                let read = await loadPolicy(botID)
+                guard stillLive(account) else { return .refused("") }
                 busy.remove(botID)
-                return .changed("Approval changed on your desktop, so it was not lowered. This page now shows what your desktop has.")
+                if read, let now = policies[botID]?.revision, now != sent {
+                    return .changed("Approval changed on your desktop, so it was not lowered. This page now shows what your desktop has.")
+                }
+                return .refused("Approval was not changed. " + error.plainWords)
             }
             busy.remove(botID)
             return .refused("Approval was not changed. " + error.plainWords)
         }
+    }
+
+    /// The desktop's order of levels (core/bot_policy.py: RANK).
+    private static let desktopRank: [String: Double] = ["ask": 0, "custom": 0.5, "edits": 1, "auto": 2, "full": 3]
+
+    /// After the bot was lowered: how many of its open conversations still run above the new level. A
+    /// conversation raised through the desktop's confirmation keeps its level (bot_policy.py: effective_policy),
+    /// and the change's answer does not say which. Read from the desktop: its conversation list for the levels
+    /// stored, then the level in force for each one stored higher. A read that fails counts nothing.
+    private func keptHigher(_ botID: String, than level: ApprovalLevel, account: String) async -> Int {
+        let floor = Self.desktopRank[level.rawValue] ?? 0
+        guard let list = try? await client().agentThreads(botID), stillLive(account) else { return 0 }
+        let stored = (list.threads ?? []).filter { row in
+            row.thread?.archivedAt == nil && (Self.desktopRank[row.thread?.approvalMode ?? ""] ?? -1) > floor
+        }
+        var count = 0
+        for row in stored.prefix(20) {
+            guard let view = try? await client().botApprovalPolicy(botID, threadId: row.id), stillLive(account) else { continue }
+            if (Self.desktopRank[view.mode ?? ""] ?? 0) > floor { count += 1 }
+        }
+        return count
     }
 
     /// The bot's own level, or nil for one the phone cannot show (Custom).
@@ -702,8 +831,8 @@ final class BotsSettingsLive {
             let answer = try await client().botSettingsRollback(botID, rowID: row.id, expectedRevision: revision, expectedFileText: soul.fileText)
             endWrite(botID)
             guard stillLive(account) else { return .refused("") }
-            if let agent = answer.agent { records[botID] = agent }
-            if let file = answer.soulFile { souls[botID] = file }
+            if let agent = answer.agent { show(agent, botID) }
+            if let file = answer.soulFile { takeSoul(file, botID) }
             busy.remove(botID)
             Task {
                 await self.loadHistory(botID)

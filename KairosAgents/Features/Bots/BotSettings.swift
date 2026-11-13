@@ -83,7 +83,8 @@ struct BotSettingsList: View {
         .task(id: BotsSettingsLive.connectionKey) {
             live.followConnection()
             guard live.active else { return }
-            await live.loadRecordIfNeeded(botID)
+            // Read each time the list appears or the connection becomes ready: never a first read kept as fact.
+            await live.loadRecord(botID)
             await routinesLive.loadIfNeeded()
         }
     }
@@ -1090,13 +1091,13 @@ private struct BotSetModelScreen: View {
                 BotsSection(title: "Connection") {
                     BotSetChoiceRow(title: "Kairos default", detail: "The first Claude connection on your desktop.", on: agent.endpointId == nil) {
                         guard agent.endpointId != nil else { return }
-                        send(["endpoint_id": NSNull()], what: "the connection", done: "It uses the default connection now.")
+                        send(["endpoint_id": NSNull()], on: agent, what: "the connection", done: "It uses the default connection now.")
                     }
                     ForEach(live.choices) { option in
                         RowLine()
                         BotSetChoiceRow(title: name(option), detail: option.model, on: option.id == agent.endpointId) {
                             guard option.id != agent.endpointId else { return }
-                            send(["endpoint_id": option.id], what: "the connection", done: "It uses \(name(option)) now.")
+                            send(["endpoint_id": option.id], on: agent, what: "the connection", done: "It uses \(name(option)) now.")
                         }
                     }
                 }
@@ -1120,7 +1121,7 @@ private struct BotSetModelScreen: View {
                         set: { title in
                             guard let id = BotSetWords.keepWarm.first(where: { $0.title == title })?.id,
                                   id != (agent.cacheKeepWarm ?? "follow") else { return }
-                            send(["cache_keep_warm": id], what: "keep warm", done: "Keep warm is \(title.lowercased()).")
+                            send(["cache_keep_warm": id], on: agent, what: "keep warm", done: "Keep warm is \(title.lowercased()).")
                         }
                     ))
                 }
@@ -1168,13 +1169,13 @@ private struct BotSetModelScreen: View {
         return BotsSection(title: "Model") {
             BotSetChoiceRow(title: "Connection default", detail: choice.model, on: current.isEmpty) {
                 guard !current.isEmpty else { return }
-                send(["model_override": NSNull()], what: "the model", done: "It uses the connection's default model now.")
+                send(["model_override": NSNull()], on: agent, what: "the model", done: "It uses the connection's default model now.")
             }
             ForEach(catalog) { entry in
                 RowLine()
                 BotSetChoiceRow(title: entry.displayName ?? entry.id, detail: entry.description, on: entry.id == current) {
                     guard entry.id != current else { return }
-                    send(["model_override": entry.id], what: "the model", done: "It uses \(entry.displayName ?? entry.id) now.")
+                    send(["model_override": entry.id], on: agent, what: "the model", done: "It uses \(entry.displayName ?? entry.id) now.")
                 }
             }
             if !current.isEmpty, !catalog.contains(where: { $0.id == current }) {
@@ -1204,7 +1205,7 @@ private struct BotSetModelScreen: View {
                     set: { value in
                         guard value != now else { return }
                         let sent: Any = value == "default" ? NSNull() as Any : value as Any
-                        send(["model_effort": sent], what: "the effort",
+                        send(["model_effort": sent], on: agent, what: "the effort",
                              done: value == "default" ? "Effort follows the model's default." : "Effort is \(BotSetWords.effort(value)).")
                     }
                 ), title: { $0 == "default" ? "Default" : BotSetWords.effort($0) })
@@ -1231,7 +1232,7 @@ private struct BotSetModelScreen: View {
                         Haptics.tap()
                         var next = list
                         next.remove(at: index)
-                        send(["fallback": next.map(\.plain)], what: "the fallback models", done: "\(fallbackName(item)) is no longer a fallback.")
+                        send(["fallback": next.map(\.plain)], on: agent, what: "the fallback models", done: "\(fallbackName(item)) is no longer a fallback.")
                     } label: {
                         Image(systemName: "minus.circle.fill").font(.system(size: 20)).foregroundStyle(Palette.danger)
                             .frame(width: 44, height: 44)
@@ -1247,7 +1248,7 @@ private struct BotSetModelScreen: View {
                     ForEach(open) { option in
                         Button(name(option)) {
                             send(["fallback": (list + [BotSetFallback(endpointID: option.id)]).map(\.plain)],
-                                 what: "the fallback models", done: "\(name(option)) is a fallback now.")
+                                 on: agent, what: "the fallback models", done: "\(name(option)) is a fallback now.")
                         }
                     }
                 } label: {
@@ -1268,9 +1269,10 @@ private struct BotSetModelScreen: View {
         return "\(base), \(model)"
     }
 
-    private func send(_ changes: [String: Any], what: String, done: String) {
+    /// One choice, sent with the revision of the record it was made on.
+    private func send(_ changes: [String: Any], on agent: AgentDTO, what: String, done: String) {
         Task {
-            let outcome = await live.patch(botID, changes, what: what, done: done)
+            let outcome = await live.patch(botID, changes, revision: agent.revision ?? 0, what: what, done: done)
             if !outcome.text.isEmpty { store.say(outcome.text) }
             if let endpoint = live.records[botID]?.endpointId, live.catalogs[endpoint] == nil { await live.loadCatalog(endpoint) }
             await live.loadOtherModel(botID)
@@ -1313,7 +1315,7 @@ private struct BotSetApprovalScreen: View {
             commands()
         }
         .task(id: BotsSettingsLive.connectionKey) {
-            await live.loadRecordIfNeeded(botID)
+            await live.loadRecord(botID)
             await live.loadApproval(botID)
         }
     }
@@ -1365,7 +1367,8 @@ private struct BotSetApprovalScreen: View {
                 set: { value in
                     guard value == "Ask", policy == "allow" else { return }
                     Task {
-                        let outcome = await live.patch(botID, ["outbound": ["policy": "ask"]], what: "the outside-message setting",
+                        let outcome = await live.patch(botID, ["outbound": ["policy": "ask"]], revision: agent.revision ?? 0,
+                                                       what: "the outside-message setting",
                                                        done: "It asks before each outside message.")
                         if !outcome.text.isEmpty { store.say(outcome.text) }
                         await live.loadOutbound(botID)
@@ -1402,7 +1405,7 @@ private struct BotSetApprovalScreen: View {
             guard !on, !higher, !unavailable else { return }
             Haptics.select()
             Task {
-                let outcome = await live.lower(botID, to: level)
+                let outcome = await live.lower(botID, to: level, revision: policy.revision)
                 if !outcome.text.isEmpty { store.say(outcome.text) }
             }
         } label: {
@@ -1463,14 +1466,14 @@ private struct BotSetVoiceScreen: View {
                 BotsSection(title: "Alerts") {
                     ToggleRow(title: "Tell me when it needs me", detail: "A notification when it waits for an answer or an OK.", symbol: "bell.badge", isOn: Binding(
                         get: { agent.notifications != false },
-                        set: { on in send(["notifications": on], what: "alerts", done: on ? "It tells you when it needs you." : "It no longer sends alerts.") }
+                        set: { on in send(["notifications": on], on: agent, what: "alerts", done: on ? "It tells you when it needs you." : "It no longer sends alerts.") }
                     ))
                 }
                 .disabled(busy)
             }
         }
         .task(id: BotsSettingsLive.connectionKey) {
-            await live.loadRecordIfNeeded(botID)
+            await live.loadRecord(botID)
             await live.loadVoices()
         }
     }
@@ -1483,13 +1486,13 @@ private struct BotSetVoiceScreen: View {
                 set: { title in
                     guard let id = options.first(where: { $0.title == title })?.id, id != (agent.voiceId ?? "") else { return }
                     let sent: Any = id.isEmpty ? NSNull() as Any : id as Any
-                    send(["voice_id": sent], what: "the voice", done: "It speaks with \(title) now.")
+                    send(["voice_id": sent], on: agent, what: "the voice", done: "It speaks with \(title) now.")
                 }
             ))
             RowLine(inset: 54)
             ToggleRow(title: "Speak its replies", detail: "It reads each reply aloud in its voice.", symbol: "text.bubble", isOn: Binding(
                 get: { agent.speakReplies == true },
-                set: { on in send(["speak_replies": on], what: "speaking replies", done: on ? "It speaks its replies." : "It no longer speaks its replies.") }
+                set: { on in send(["speak_replies": on], on: agent, what: "speaking replies", done: on ? "It speaks its replies." : "It no longer speaks its replies.") }
             ))
         }
         .disabled(busy)
@@ -1501,7 +1504,7 @@ private struct BotSetVoiceScreen: View {
                 get: { BotSetWords.callModes.first { $0.id == (agent.callMode ?? "turns") }?.title ?? "Same as Settings" },
                 set: { title in
                     guard let id = BotSetWords.callModes.first(where: { $0.title == title })?.id, id != (agent.callMode ?? "turns") else { return }
-                    send(["call_mode": id], what: "the call mode", done: "Call mode is \(title.lowercased()).")
+                    send(["call_mode": id], on: agent, what: "the call mode", done: "Call mode is \(title.lowercased()).")
                 }
             ))
             .disabled(busy)
@@ -1547,9 +1550,10 @@ private struct BotSetVoiceScreen: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func send(_ changes: [String: Any], what: String, done: String) {
+    /// One choice, sent with the revision of the record it was made on.
+    private func send(_ changes: [String: Any], on agent: AgentDTO, what: String, done: String) {
         Task {
-            let outcome = await live.patch(botID, changes, what: what, done: done)
+            let outcome = await live.patch(botID, changes, revision: agent.revision ?? 0, what: what, done: done)
             if !outcome.text.isEmpty { store.say(outcome.text) }
         }
     }
@@ -1578,7 +1582,7 @@ private struct BotSetDeliveryScreen: View {
             }
         }
         .task(id: BotsSettingsLive.connectionKey) {
-            await live.loadRecordIfNeeded(botID)
+            await live.loadRecord(botID)
             await live.loadChannels()
         }
     }
@@ -1592,7 +1596,8 @@ private struct BotSetDeliveryScreen: View {
                     guard let id = options.first(where: { $0.title == title })?.id, id != (agent.deliverToChannel ?? "") else { return }
                     let sent: Any = id.isEmpty ? NSNull() as Any : id as Any
                     Task {
-                        let outcome = await live.patch(botID, ["deliver_to_channel": sent], what: "where it reports",
+                        let outcome = await live.patch(botID, ["deliver_to_channel": sent], revision: agent.revision ?? 0,
+                                                       what: "where it reports",
                                                        done: id.isEmpty ? "Reports stay in the app." : "It reports to \(title) now.")
                         if !outcome.text.isEmpty { store.say(outcome.text) }
                     }
@@ -1637,21 +1642,30 @@ private struct BotSetDeliveryScreen: View {
     }
 }
 
-/// Settings > Limits: on or off, and runs per day. Turning it off is confirmed first.
+/// Settings > Limits: on or off, and runs per day. Turning it off is confirmed first. Runs per day is a small form:
+/// it remembers the desktop value and revision it was filled from (BotSetForm), and a read never makes it look changed.
 private struct BotSetLimitsScreen: View {
     let botID: String
     let store = BotsStore.shared
     var live = BotsSettingsLive.shared
     @State private var confirmOff = false
-    /// Runs per day as changed here and not saved yet.
-    @State private var cap: Int?
+    /// The revision the screen showed when the person turned the switch off.
+    @State private var offRevision = 0
+    @State private var runs = 12
+    @State private var form: BotSetForm?
+    @State private var saving = false
 
     var body: some View {
         let agent = live.record(botID)
         let busy = live.busy.contains(botID)
         BotsPage("Limits", live: true) {
             BotSetUnsureNote(botID: botID)
-            BotsLoadNote(state: live.shown(live.recordLoad[botID])) { Task { await live.loadRecord(botID) } }
+            BotsLoadNote(state: live.shown(live.recordLoad[botID])) {
+                Task {
+                    await live.loadRecord(botID)
+                    sync()
+                }
+            }
             if let agent {
                 let on = agent.enabled != false
                 BotsSection(footer: on ? nil : "Off, it takes no new work and its routines do not run.") {
@@ -1659,50 +1673,55 @@ private struct BotSetLimitsScreen: View {
                         get: { on },
                         set: { value in
                             if value {
-                                send(["enabled": true], what: "turning it on", done: "\(store.bot(botID).name) is on.")
+                                send(["enabled": true], revision: agent.revision ?? 0, what: "turning it on", done: "\(store.bot(botID).name) is on.")
                             } else {
+                                offRevision = agent.revision ?? 0
                                 confirmOff = true
                             }
                         }
                     ))
                 }
-                .disabled(busy)
-                runs(agent, busy: busy)
+                .disabled(busy || saving)
+                if let form {
+                    runsSection(agent, form: form, busy: busy)
+                }
                 HintLine(text: "Your desktop has no monthly spend cap for one bot. Usage and plan shows what it spends.", symbol: "info.circle")
                     .padding(.horizontal, 4)
             }
         }
         .sheet(isPresented: $confirmOff) {
             ConfirmSheet(title: "Turn \(store.bot(botID).name) off?", detail: "Its routines stop until you turn it on.", confirm: "Turn off") {
-                send(["enabled": false], what: "turning it off", done: "\(store.bot(botID).name) is off.")
+                send(["enabled": false], revision: offRevision, what: "turning it off", done: "\(store.bot(botID).name) is off.")
             }
         }
         .task(id: BotsSettingsLive.connectionKey) {
-            await live.loadRecordIfNeeded(botID)
+            sync()
+            await live.loadRecord(botID)
+            sync()
         }
+        .onChange(of: live.record(botID)) { sync() }
+        .onChange(of: busy) { sync() }
     }
 
-    private func runs(_ agent: AgentDTO, busy: Bool) -> some View {
+    private func runsSection(_ agent: AgentDTO, form: BotSetForm, busy: Bool) -> some View {
         let stored = agent.dailyRunCap ?? 12
-        let draft = cap ?? stored
+        let edited = !form.edited(values()).isEmpty
         let today = agent.runsToday ?? 0
         return BotsSection(title: "Runs") {
-            StepperRow(title: "Runs per day", value: Binding(get: { draft }, set: { cap = $0 }), range: 1...200)
-            if draft != stored {
+            StepperRow(title: "Runs per day", value: $runs, range: 1...200)
+            if edited {
                 RowLine()
                 HStack(spacing: 10) {
-                    Text("Not saved yet.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                    Text(form.clashed.isEmpty ? "Not saved yet." : "Your desktop changed it to \(stored). Not saved yet.")
+                        .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer()
-                    PillButton(title: "Keep \(stored)") { cap = nil }
-                    PillButton(title: "Save", look: .filled) {
-                        Haptics.tap()
-                        Task {
-                            let outcome = await live.patch(botID, ["daily_run_cap": draft], what: "runs per day", done: "It runs up to \(draft) times a day.")
-                            if !outcome.text.isEmpty { store.say(outcome.text) }
-                            // Saved, or the desktop has it: the stepper follows the desktop again. Otherwise the number stays.
-                            if outcome.isDone || live.records[botID]?.dailyRunCap == draft { cap = nil }
-                        }
+                    PillButton(title: "Keep \(stored)") {
+                        runs = stored
+                        sync()
                     }
+                    PillButton(title: saving ? "Saving" : "Save", look: .filled) { save() }
+                        .disabled(saving)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
@@ -1715,18 +1734,65 @@ private struct BotSetLimitsScreen: View {
             }
             .padding(14)
         }
-        .disabled(busy)
+        .disabled(busy || saving)
     }
 
-    private func send(_ changes: [String: Any], what: String, done: String) {
+    private static func values(_ agent: AgentDTO) -> [String: String] {
+        ["daily_run_cap": String(agent.dailyRunCap ?? 12)]
+    }
+
+    private func values() -> [String: String] {
+        ["daily_run_cap": String(runs)]
+    }
+
+    /// Fill the form from the desktop, or bring an open one up to the newest read. Waits while a change is on its way.
+    private func sync(acknowledge: Bool = false) {
+        guard live.isCurrent, let agent = live.record(botID), !saving, !live.busy.contains(botID) else { return }
+        let desktop = Self.values(agent)
+        let revision = agent.revision ?? 0
+        guard var next = form, next.account == BotsSettingsLive.accountKey else {
+            runs = agent.dailyRunCap ?? 12
+            form = BotSetForm(account: BotsSettingsLive.accountKey, revision: revision, values: desktop)
+            return
+        }
+        for key in next.rebase(form: values(), desktop: desktop, revision: revision, acknowledge: acknowledge)
+        where key == "daily_run_cap" {
+            runs = agent.dailyRunCap ?? 12
+        }
+        form = next
+    }
+
+    private func save() {
+        guard let form, !saving, form.edited(values()).contains("daily_run_cap") else { return }
+        let draft = runs
+        Haptics.tap()
+        saving = true
         Task {
-            let outcome = await live.patch(botID, changes, what: what, done: done)
+            let outcome = await live.patch(botID, ["daily_run_cap": draft], revision: form.revision,
+                                           what: "runs per day", done: "It runs up to \(draft) times a day.")
+            saving = false
+            if case .changed = outcome {
+                sync(acknowledge: true)
+                store.say("This bot changed on your desktop, so runs per day was not saved. Your number is kept here; save again to use it.")
+            } else {
+                sync()
+                if !outcome.text.isEmpty { store.say(outcome.text) }
+            }
+        }
+    }
+
+    /// One switch, sent with the revision of the record it was made on.
+    private func send(_ changes: [String: Any], revision: Int, what: String, done: String) {
+        Task {
+            let outcome = await live.patch(botID, changes, revision: revision, what: what, done: done)
             if !outcome.text.isEmpty { store.say(outcome.text) }
         }
     }
 }
 
-/// Settings > Standing instructions. Sent with the revision read, and never over a hand edit of the file.
+/// Settings > Standing instructions. A form over the bot record (BotSetForm): it remembers the desktop text and
+/// revision it was filled from, sends only what the person edited with that revision, and never saves over a hand
+/// edit of the instructions file.
 private struct BotSetInstructionsScreen: View {
     let botID: String
     let store = BotsStore.shared
@@ -1734,40 +1800,47 @@ private struct BotSetInstructionsScreen: View {
     @State private var text = ""
     @State private var intro = ""
     @State private var style = "Default"
-    @State private var filled = false
+    @State private var form: BotSetForm?
     @State private var saving = false
 
     private static let soulLimit = 24_000
+    private static let introLimit = 4_000
 
     var body: some View {
         let agent = live.record(botID)
         let soul = live.isCurrent ? live.souls[botID] : nil
         let handEdited = soul?.inSync == false
-        let changes = changed(agent, soul)
-        let tooLong = text.utf8.count > (soul?.limit ?? Self.soulLimit) || intro.count > 4_000
+        let edited = form?.edited(values()) ?? []
+        let tooLong = text.utf8.count > (soul?.limit ?? Self.soulLimit) || BotSetForm.length(intro) > Self.introLimit
         BotsPage("Standing instructions", live: true) {
             BotSetUnsureNote(botID: botID)
             BotsLoadNote(state: live.shown(soul == nil ? live.soulLoad[botID] : live.recordLoad[botID])) {
                 Task {
                     await live.loadRecord(botID)
                     await live.loadSoul(botID)
-                    fill()
+                    sync()
                 }
             }
-            if filled, agent != nil, soul != nil {
+            if let form, agent != nil, soul != nil {
                 if handEdited {
                     HintLine(text: "The instructions file was edited by hand on your desktop, so nothing here can be saved. Keep or discard that edit in Kairos on your desktop first.", symbol: "exclamationmark.triangle", color: Palette.goldText)
                         .padding(14)
                         .kCard(radius: 18)
                 }
                 FieldCard(title: "Standing instructions", text: $text, placeholder: "How it should work, always", limit: Self.soulLimit, lines: 6...14)
-                FieldCard(title: "Introduction", text: $intro, placeholder: "A short line about who it is.", limit: 4_000, lines: 2...5)
+                FieldCard(title: "Introduction", text: $intro, placeholder: "A short line about who it is.", limit: Self.introLimit, lines: 2...5)
                 BotsSection(title: "Reply style") {
                     GoldSegmented(items: ["Default", "Conversational"], selection: $style) { $0 }.padding(8)
                 }
-                GoldButton(title: saving ? "Saving" : "Save instructions") { save(changes) }
-                    .disabled(changes.isEmpty || saving || handEdited || tooLong || live.busy.contains(botID))
-                if !changes.isEmpty && !saving {
+                let clashed = form.clashed.intersection(edited)
+                if !clashed.isEmpty {
+                    HintLine(text: "Your desktop changed \(Self.list(clashed)) while you were editing. Your text is kept here; saving puts it in place of your desktop's.", symbol: "exclamationmark.triangle", color: Palette.goldText)
+                }
+                GoldButton(title: saving ? "Saving" : "Save instructions") { save() }
+                    .disabled(edited.isEmpty || saving || handEdited || tooLong || live.busy.contains(botID))
+                if tooLong {
+                    HintLine(text: "This is longer than your desktop keeps. Shorten it to save.", symbol: "exclamationmark.circle", color: Palette.danger)
+                } else if !edited.isEmpty && !saving {
                     HintLine(text: "Changes are not saved yet.", symbol: "circle.dotted")
                 }
                 NavigationLink(value: BotsRoute.settings(botID, .history)) {
@@ -1775,44 +1848,77 @@ private struct BotSetInstructionsScreen: View {
                 }
             }
         }
+        // Read each time the page appears (coming back from History too) and when the connection becomes ready.
         .task(id: BotsSettingsLive.connectionKey) {
+            sync()
             await live.loadRecord(botID)
             await live.loadSoul(botID)
-            fill()
+            sync()
+        }
+        .onChange(of: live.record(botID)) { sync() }
+        .onChange(of: live.busy.contains(botID)) { sync() }
+    }
+
+    private static func list(_ fields: Set<String>) -> String {
+        let order = ["soul", "blurb", "reply_style"]
+        let words = order.filter { fields.contains($0) }.map { BotSetWords.field($0) }
+        return words.count > 1 ? words.dropLast().joined(separator: ", ") + " and " + (words.last ?? "") : (words.first ?? "")
+    }
+
+    /// The desktop's values, from one record read (text and revision together).
+    private static func values(_ agent: AgentDTO) -> [String: String] {
+        ["soul": agent.soul ?? "", "blurb": agent.blurb ?? "",
+         "reply_style": agent.replyStyle == "conversational" ? "conversational" : "default"]
+    }
+
+    private func values() -> [String: String] {
+        ["soul": text, "blurb": intro, "reply_style": style == "Conversational" ? "conversational" : "default"]
+    }
+
+    private func refill(_ key: String, from agent: AgentDTO) {
+        switch key {
+        case "soul": text = agent.soul ?? ""
+        case "blurb": intro = agent.blurb ?? ""
+        case "reply_style": style = agent.replyStyle == "conversational" ? "Conversational" : "Default"
+        default: break
         }
     }
 
-    /// The form starts from the desktop's text once, then keeps what the person types.
-    private func fill() {
-        guard !filled, live.isCurrent, let agent = live.records[botID], let soul = live.souls[botID] else { return }
-        text = soul.soul ?? agent.soul ?? ""
-        intro = agent.blurb ?? ""
-        style = agent.replyStyle == "conversational" ? "Conversational" : "Default"
-        filled = true
+    /// Fill the form from the desktop, or bring an open one up to the newest read: untouched fields take the
+    /// desktop's values, edited ones stay. Waits while a change is on its way.
+    private func sync(acknowledge: Bool = false) {
+        guard live.isCurrent, let agent = live.record(botID), !saving, !live.busy.contains(botID) else { return }
+        let desktop = Self.values(agent)
+        let revision = agent.revision ?? 0
+        guard var next = form, next.account == BotsSettingsLive.accountKey else {
+            for key in desktop.keys { refill(key, from: agent) }
+            form = BotSetForm(account: BotsSettingsLive.accountKey, revision: revision, values: desktop)
+            return
+        }
+        for key in next.rebase(form: values(), desktop: desktop, revision: revision, acknowledge: acknowledge) {
+            refill(key, from: agent)
+        }
+        form = next
     }
 
-    /// Only the fields that differ from the desktop's.
-    private func changed(_ agent: AgentDTO?, _ soul: BotSetSoulDTO?) -> [String: Any] {
-        guard let agent, filled else { return [:] }
-        var out: [String: Any] = [:]
-        if text != (soul?.soul ?? agent.soul ?? "") { out["soul"] = text }
-        if intro != (agent.blurb ?? "") { out["blurb"] = intro }
-        let wanted = style == "Conversational" ? "conversational" : "default"
-        if wanted != (agent.replyStyle ?? "default") { out["reply_style"] = wanted }
-        return out
-    }
-
-    private func save(_ changes: [String: Any]) {
-        guard !changes.isEmpty, !saving else { return }
+    private func save() {
+        guard let form, !saving else { return }
+        let now = values()
+        let edited = form.edited(now)
+        guard !edited.isEmpty else { return }
+        var changes: [String: Any] = [:]
+        for key in edited { changes[key] = now[key] }
         saving = true
         Task {
-            let outcome = await live.patch(botID, changes, what: "the instructions", done: "Instructions saved.")
+            let outcome = await live.patch(botID, changes, revision: form.revision, what: "the instructions", done: "Instructions saved.")
             await live.loadSoul(botID)
             saving = false
             if case .changed = outcome {
-                store.say("They changed on your desktop. Your text is kept here; save again to replace them.")
-            } else if !outcome.text.isEmpty {
-                store.say(outcome.text)
+                sync(acknowledge: true)
+                store.say("They changed on your desktop, so nothing was saved. Your edits are kept here and the rest shows what your desktop has. Save again to use yours.")
+            } else {
+                sync()
+                if !outcome.text.isEmpty { store.say(outcome.text) }
             }
             if outcome.isDone { Haptics.success() }
         }

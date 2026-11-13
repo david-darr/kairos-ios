@@ -445,5 +445,31 @@ nonisolated enum BotSettingsSamples {
             else { throw SampleMismatch("voices, live voice or follow model") }
             return "voices, live voice, follow model"
         },
+        DecodeCheck("botsettings.form") {
+            // Filled at revision 5. The person edits only the introduction.
+            var form = BotSetForm(account: "a", revision: 5, values: ["soul": "T0", "blurb": "B0"])
+            var mine = ["soul": "T0", "blurb": "B1"]
+            // The instructions were put back on the desktop (6): the untouched field follows, the revision moves.
+            let refill = form.rebase(form: mine, desktop: ["soul": "T-1", "blurb": "B0"], revision: 6, acknowledge: false)
+            mine["soul"] = "T-1"
+            guard refill == ["soul"], form.revision == 6, form.edited(mine) == ["blurb"]
+            else { throw SampleMismatch("an untouched field after a read") }
+            // The desktop changed the introduction too (7): the person's text stays and the old revision is kept.
+            _ = form.rebase(form: mine, desktop: ["soul": "T-1", "blurb": "B2"], revision: 7, acknowledge: false)
+            guard form.revision == 6, form.clashed == ["blurb"], form.edited(mine) == ["blurb"]
+            else { throw SampleMismatch("a clash before a refusal") }
+            // After the refusal (409): only the edit is sent, with the new revision.
+            _ = form.rebase(form: mine, desktop: ["soul": "T-1", "blurb": "B2"], revision: 7, acknowledge: true)
+            guard form.revision == 7, form.edited(mine) == ["blurb"]
+            else { throw SampleMismatch("a clash after a refusal") }
+            // Saved: the desktop has the person's text.
+            _ = form.rebase(form: mine, desktop: ["soul": "T-1", "blurb": "B1"], revision: 8, acknowledge: false)
+            guard form.revision == 8, form.edited(mine).isEmpty, form.clashed.isEmpty
+            else { throw SampleMismatch("a saved form") }
+            guard BotSetForm.name("  Scout   Two ") == "Scout Two", BotSetForm.job(" Finds parts \n") == "Finds parts",
+                  BotSetForm.length("e\u{301}") == 2
+            else { throw SampleMismatch("tidying and counting like the desktop") }
+            return "untouched, clashed, refused, saved; names, jobs and lengths as the desktop has them"
+        },
     ]
 }
