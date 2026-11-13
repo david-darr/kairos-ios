@@ -72,8 +72,6 @@ extension MailStore {
     /// Move between sample mail and the paired desktop to match the connection.
     func followConnection() {
         let wantLive = !Connection.shared.usesSampleData
-        // Unpaired: no desktop and no account, so no send from one can be waiting. Every saved hold goes.
-        if !wantLive { Self.forgetAllHolds() }
         if wantLive && !isSample && liveAccount != Self.accountKey {
             // Another desktop or account: nothing read from the last one may stay on screen.
             resetLive()
@@ -231,7 +229,7 @@ extension MailStore {
         // the list after triage stops listing it, so the reply and its warning can still be reached.
         // A hold saved before the app last closed comes back on its message. The typed reply did not survive.
         for item in fresh where unconfirmedSends[item.id] == nil {
-            if let when = savedHolds[Self.hashed(item.id)] {
+            if let when = savedHolds[Self.holdKey(item.id)] {
                 unconfirmedSends[item.id] = when
                 restoredHolds.insert(item.id)
             }
@@ -525,7 +523,7 @@ extension MailStore {
                 drafts[draft.itemID] = nil
                 unconfirmedSends[draft.itemID] = nil
                 restoredHolds.remove(draft.itemID)
-                savedHolds[Self.hashed(draft.itemID)] = nil
+                savedHolds[Self.holdKey(draft.itemID)] = nil
                 sentIDs.insert(draft.itemID)
             }
             // Confirmed: no hold stays saved for it, even when the account changed meanwhile.
@@ -559,7 +557,7 @@ extension MailStore {
         writeSerial += 1
         unconfirmedSends[draft.itemID] = started
         restoredHolds.remove(draft.itemID)
-        savedHolds[Self.hashed(draft.itemID)] = started
+        savedHolds[Self.holdKey(draft.itemID)] = started
         drafts[draft.itemID] = draft
         let found = await lookInSent(draft, sender: sender, after: started)
         switch found {
@@ -607,6 +605,17 @@ extension MailStore {
     private static let holdsKey = "mailUnconfirmedSends"
     private static let holdLife: TimeInterval = 7 * 24 * 60 * 60
 
+    /// The saved name of one message's hold. Rows that repeat on the list carry a "#2" style ending that can
+    /// change between reads, so it is left out: rows that look the same share one hold, the careful way round.
+    private static func holdKey(_ itemID: String) -> String {
+        var base = itemID
+        if let mark = base.lastIndex(of: "#") {
+            let tail = base[base.index(after: mark)...]
+            if !tail.isEmpty && tail.allSatisfy(\.isNumber) { base = String(base[..<mark]) }
+        }
+        return hashed(base)
+    }
+
     private static func hashed(_ text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
@@ -629,13 +638,9 @@ extension MailStore {
         var all = readAllHolds()
         let slot = hashed(account)
         var marks = all[slot] ?? [:]
-        marks[hashed(itemID)] = when?.timeIntervalSince1970
+        marks[holdKey(itemID)] = when?.timeIntervalSince1970
         all[slot] = marks.isEmpty ? nil : marks
         writeAllHolds(all)
-    }
-
-    private static func forgetAllHolds() {
-        UserDefaults.standard.removeObject(forKey: holdsKey)
     }
 
     /// On launch and on pairing: this account's saved holds, with anything older than 7 days dropped everywhere.
@@ -653,15 +658,15 @@ extension MailStore {
         savedHolds = (all[Self.hashed(liveAccount)] ?? [:]).mapValues { Date(timeIntervalSince1970: $0) }
     }
 
-    /// After a triage read: a hold goes when its message is no longer on the list, or after 7 days.
+    /// After a triage read: a hold goes after 7 days. It never goes because a read did not list its message:
+    /// an empty or failed read would then wipe the very warning that stops a second send.
     private func pruneHolds() {
         let cutoff = Date().addingTimeInterval(-Self.holdLife)
         for (id, when) in unconfirmedSends where when <= cutoff {
             unconfirmedSends[id] = nil
             restoredHolds.remove(id)
         }
-        let listed = Set(items.map { Self.hashed($0.id) })
-        let kept = savedHolds.filter { listed.contains($0.key) && $0.value > cutoff }
+        let kept = savedHolds.filter { $0.value > cutoff }
         guard kept != savedHolds else { return }
         savedHolds = kept
         var all = Self.readAllHolds()
@@ -672,7 +677,7 @@ extension MailStore {
     /// The person tapped "I have checked Sent": the saved hold goes. This session still warns in the confirm.
     func checkedSent(_ itemID: String) {
         guard !isSample else { return }
-        savedHolds[Self.hashed(itemID)] = nil
+        savedHolds[Self.holdKey(itemID)] = nil
         Self.writeHold(itemID, at: nil, account: liveAccount)
     }
 }
