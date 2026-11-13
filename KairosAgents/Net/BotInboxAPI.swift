@@ -361,8 +361,8 @@ nonisolated enum BotInboxSamples {
             let sorted = BotsInboxWire.workRows(mine)
             guard all.items.count == 4, all.skipped == 1, mine[1].latestNote == "Could not sign in.",
                   mine[2].latestNote == "Report sent.", sorted.working.count == 3, sorted.done.count == 1,
-                  sorted.working.contains { $0.id == "c2b3c4d5e6f1" && $0.state == .failed },
-                  sorted.working.contains { $0.id == "t4d5e6f1a2b3" && $0.canStop }
+                  sorted.working.contains(where: { $0.id == "c2b3c4d5e6f1" && $0.state == .failed }),
+                  sorted.working.contains(where: { $0.id == "t4d5e6f1a2b3" && $0.canStop })
             else { throw SampleMismatch("work records") }
             return "3 working or stuck, 1 done, 1 left out"
         },

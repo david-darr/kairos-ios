@@ -778,7 +778,7 @@ struct InboxRowCard: View {
                     .transition(.scale(scale: 0.85).combined(with: .opacity))
             } else if row.revision == nil || actions.filter({ $0 != "open" }).isEmpty {
                 HintLine(text: "Answer this one on your desktop.", symbol: "desktopcomputer")
-            } else if replying || writing {
+            } else if replying {
                 replyBox
             } else {
                 HStack(spacing: 8) {
@@ -798,10 +798,10 @@ struct InboxRowCard: View {
                         }
                     }
                 }
-                .disabled(busy)
-                .opacity(busy ? 0.5 : 1)
+                .disabled(busy || writing)
+                .opacity(busy || writing ? 0.5 : 1)
             }
-            if busy {
+            if busy || writing {
                 HintLine(text: "Sending to your desktop.", symbol: "arrow.up.circle")
             }
         }
