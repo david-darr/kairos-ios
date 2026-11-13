@@ -3,7 +3,7 @@ import UIKit
 
 // Routines and triggers for one bot, their editors, and the next-run wording.
 
-enum RoutineTiming {
+nonisolated enum RoutineTiming {
     static func weekday(of date: Date) -> Weekday {
         Weekday(rawValue: (Calendar.current.component(.weekday, from: date) + 5) % 7) ?? .mon
     }
@@ -206,7 +206,11 @@ struct RoutinesScreen: View {
                   stored.hour != briefHour || stored.minute != briefMinute else { return }
             try? await Task.sleep(for: .seconds(0.8))
             guard !Task.isCancelled else { return }
-            live.setMorning(time: String(format: "%02d:%02d", briefHour, briefMinute), say: store.say)
+            if !live.setMorning(time: String(format: "%02d:%02d", briefHour, briefMinute), say: store.say) {
+                // Another change was on its way: the chip goes back to the desktop's time, never shows one unsent.
+                syncMorning()
+                store.say("The morning time was not sent while another change was on its way. Pick it again.")
+            }
         }
     }
 
@@ -494,18 +498,47 @@ struct RoutineEditorScreen: View {
     @State private var limitSet = false
     @State private var saving = false
     @State private var outcome: String?
+    /// Parts changed both here and on the desktop since this was opened, with both values.
+    @State private var conflict: String?
     @State private var missing = false
     @State private var check: BotRoutinePreview = .checking
+    @State private var startMinute = 0
+    @State private var endMinute = 0
 
     private var isLive: Bool { !Connection.shared.usesSampleData }
 
     /// The desktop allows 8,000 characters of instructions.
     private var instructionLimit: Int { isLive ? 8_000 : 20_000 }
 
+    /// What is on screen, over the desktop's routine it was read from (`base`).
     private var form: BotRoutineForm {
-        BotRoutineForm(draft: draft, onceDate: onceDate, stopAfter: stopAfter, stopDate: stopDate, endpointID: endpointID,
-                       zone: base?.zone, limitSet: limitSet, revision: base?.revision)
+        var out = BotRoutineForm(draft: draft, onceDate: onceDate, stopAfter: stopAfter, stopDate: stopDate, endpointID: endpointID,
+                                 zone: base?.zone, limitSet: limitSet, revision: base?.revision)
+        out.account = base?.account ?? ""
+        out.startMinute = startMinute
+        out.endMinute = endMinute
+        out.stored = base?.stored
+        out.exact = base?.exact ?? true
+        out.sentence = base?.sentence
+        return out
     }
+
+    /// Paired, a stored schedule this editor cannot show exactly is changed on the desktop only.
+    private var scheduleLocked: Bool { isLive && base?.exact == false }
+
+    /// The schedule's time zone in one quiet line, when the phone's differs or it is new.
+    private var zoneLine: String? {
+        guard isLive, let base, base.exact, draft.mode != .once, draft.mode != .limitReset, draft.mode != .custom else { return nil }
+        let phone = TimeZone.current.identifier
+        if routineID == nil { return "Times are in this iPhone's time zone, \(phone)." }
+        if let zone = base.zone { return zone == phone ? nil : "Times are in \(zone), the time zone this routine keeps." }
+        // No zone stored: the desktop uses its own. Quiet when its offset is known to match this iPhone's.
+        if case .shown(_, _, let shown?) = check, shown.secondsFromGMT() == TimeZone.current.secondsFromGMT() { return nil }
+        return "Times are in your desktop's own time zone."
+    }
+
+    /// The calendar a stop date is picked in: the schedule's own zone.
+    private var stopZone: TimeZone { BotRoutineMap.calendar(form).timeZone }
 
     var body: some View {
         BotsPage(routineID == nil ? "New routine" : "Edit routine", subtitle: store.bot(draft.botID).name, live: isLive) {
@@ -529,19 +562,41 @@ struct RoutineEditorScreen: View {
                 base = nil
                 missing = false
                 outcome = nil
+                conflict = nil
             }
             await live.loadIfNeeded()
             loadLive()
             await live.loadLimits()
             if base != nil && endpointID.isEmpty, let first = live.shownLimits.first { endpointID = first.endpointId }
         }
-        .task(id: isLive && base != nil ? BotsRoutinesLive.signature(form) : "") {
-            guard isLive, base != nil else { return }
+        .onChange(of: live.routinesLoad) {
+            // A read another screen started has landed: the routine can be shown now.
+            if isLive && base == nil { loadLive() }
+        }
+        .task(id: isLive && base != nil ? BotRoutineMap.signature(form) : "") {
+            guard isLive, let base else { return }
+            let untouched = !BotRoutineMap.scheduleTouched(form, from: base)
+            if base.stored == nil && routineID != nil {
+                // Nothing this iPhone can read: the desktop's own words, and no preview.
+                check = .unknown("This schedule can only be changed in Kairos on your desktop.")
+                return
+            }
+            if untouched && draft.mode == .once, base.stored != nil, onceHasPassed(base) {
+                // A one-time routine that has had its time: nothing to check, nothing will run.
+                check = .shown(sentence: base.sentence ?? draft.sentence, next: [], zone: nil)
+                return
+            }
             check = .checking
             try? await Task.sleep(for: .seconds(0.4))
-            guard !Task.isCancelled, let answer = await live.preview(form, base: base, routineID: routineID), !Task.isCancelled else { return }
+            guard !Task.isCancelled, let answer = await live.preview(form, base: base), !Task.isCancelled else { return }
             check = answer
         }
+    }
+
+    /// Whether a stored one-time schedule's time has passed.
+    private func onceHasPassed(_ base: BotRoutineForm) -> Bool {
+        guard let at = TasksWire.date(BotRoutineWire.field(base.stored, "at")?.string) else { return false }
+        return at <= Date()
     }
 
     @ViewBuilder
@@ -558,17 +613,26 @@ struct RoutineEditorScreen: View {
                 ))
             }
         }
-        repeatSection
-        if isLive, let zone = base?.zone, routineID != nil {
-            HintLine(text: "This schedule uses \(zone). Changing it here sets it to this iPhone's time zone, \(TimeZone.current.identifier).", symbol: "globe")
+        if scheduleLocked {
+            // The stored schedule has a shape this editor cannot show exactly: sending anything back could change it.
+            HintLine(text: "Change this schedule in Kairos on your desktop. Everything else can be changed here.", symbol: "desktopcomputer")
                 .padding(.horizontal, 4)
+        } else {
+            repeatSection
+            if let zoneLine {
+                HintLine(text: zoneLine, symbol: "globe").padding(.horizontal, 4)
+            }
+            whenSection
         }
-        whenSection
         FieldCard(title: "Instructions", text: $draft.instructions, placeholder: "What should the bot do each time?", limit: instructionLimit, lines: 3...10)
         if tried && draft.instructions.trimmingCharacters(in: .whitespaces).isEmpty { problem("Say what the bot should do.") }
         runSection
         if let outcome {
             HintLine(text: outcome, symbol: "exclamationmark.circle", color: Palette.goldText)
+                .padding(.horizontal, 4)
+        }
+        if let conflict {
+            HintLine(text: conflict, symbol: "arrow.triangle.2.circlepath", color: Palette.goldText)
                 .padding(.horizontal, 4)
         }
         GoldButton(title: saving ? "Saving" : (routineID == nil ? "Schedule" : "Save")) { save() }
@@ -585,19 +649,19 @@ struct RoutineEditorScreen: View {
         VStack(alignment: .leading, spacing: 6) {
             switch check {
             case .checking:
-                Text(live.record(draft).flatMap(\.sentence) ?? draft.sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
+                Text(base?.sentence ?? draft.sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
                 Text("Checking the schedule with your desktop.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
-            case .shown(let sentence, let next):
+            case .shown(let sentence, let next, let zone):
                 Text(sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
                     .contentTransition(.opacity)
                 Text(next.isEmpty ? (draft.mode == .limitReset ? "It runs once your desktop knows when the limit resets." : "Nothing is scheduled.")
-                     : "Next: " + next.map { RoutineTiming.label($0, now: Date()) }.joined(separator: ", "))
+                     : "Next: " + next.map { label($0, in: zone) }.joined(separator: ", "))
                     .font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
             case .refused(let text):
                 Text("Your desktop cannot use this schedule").font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
                 Text(text).font(KFont.ui(14)).foregroundStyle(Palette.danger)
             case .unknown(let text):
-                Text(draft.sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
+                Text(base?.sentence ?? draft.sentence).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
                 Text(text).font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
             }
         }
@@ -605,6 +669,19 @@ struct RoutineEditorScreen: View {
         .padding(14)
         .kCard(radius: 20, raised: true)
         .animation(Motion.snappy, value: check)
+    }
+
+    /// "Today 9:00 AM" in the schedule's own zone (nil: this iPhone's).
+    private func label(_ time: Date, in zone: TimeZone?) -> String {
+        guard let zone else { return RoutineTiming.label(time, now: Date()) }
+        var calendar = Calendar.current
+        calendar.timeZone = zone
+        let now = Date()
+        let clock = clockText(calendar.component(.hour, from: time), calendar.component(.minute, from: time))
+        if calendar.isDate(time, inSameDayAs: now) { return "Today \(clock)" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(time, inSameDayAs: tomorrow) { return "Tomorrow \(clock)" }
+        let weekday = Weekday(rawValue: (calendar.component(.weekday, from: time) + 5) % 7) ?? .mon
+        return "\(weekday.short) \(clock)"
     }
 
     private var samplePreview: some View {
@@ -671,9 +748,10 @@ struct RoutineEditorScreen: View {
                 ToggleRow(title: "Only between certain hours", isOn: $draft.onlyBetween)
                 if draft.onlyBetween {
                     HStack(spacing: 10) {
-                        TimeChip(hour: $draft.startHour, minute: .constant(0), label: "Start")
+                        // Paired, the window keeps its minutes (a 09:30 start stays 09:30).
+                        TimeChip(hour: $draft.startHour, minute: isLive ? $startMinute : .constant(0), label: "Start")
                         Text("to").font(KFont.ui(15)).foregroundStyle(Palette.inkFaint)
-                        TimeChip(hour: $draft.endHour, minute: .constant(0), label: "End")
+                        TimeChip(hour: $draft.endHour, minute: isLive ? $endMinute : .constant(0), label: "End")
                         Spacer()
                     }
                     .padding(.horizontal, 16)
@@ -685,6 +763,8 @@ struct RoutineEditorScreen: View {
                     DatePicker("Stop after", selection: $stopDate, in: Date()..., displayedComponents: .date)
                         .font(KFont.ui(16)).foregroundStyle(Palette.ink).tint(Palette.gold)
                         .padding(.horizontal, 16).frame(minHeight: 56)
+                        // The day is the schedule's own (its zone), as the desktop reads it.
+                        .environment(\.timeZone, isLive ? stopZone : .current)
                 }
             }
             if tried && draft.days.isEmpty { problem("Pick the days.") }
@@ -701,7 +781,7 @@ struct RoutineEditorScreen: View {
                     .padding(12)
                 RowLine()
                 if isLive {
-                    HintLine(text: "It uses this iPhone's time zone, \(TimeZone.current.identifier).", symbol: "globe")
+                    HintLine(text: customZoneLine, symbol: "globe")
                         .padding(.horizontal, 16).frame(minHeight: 52)
                 } else {
                     MenuRow(title: "Time zone", options: ["Your time zone", "UTC", "Eastern Time", "Central European Time"], selection: .constant("Your time zone"))
@@ -714,9 +794,15 @@ struct RoutineEditorScreen: View {
                         HintLine(text: live.limitsLoad == .loaded ? "Your desktop has no usage limit to follow right now." : "Reading usage limits from your desktop.", symbol: "info.circle")
                             .padding(.horizontal, 16).frame(minHeight: 52)
                     } else {
-                        MenuRow(title: "Which limit", options: live.shownLimits.map { $0.name ?? $0.endpointId }, selection: Binding(
-                            get: { live.shownLimits.first { $0.endpointId == endpointID }.map { $0.name ?? $0.endpointId } ?? "Pick one" },
-                            set: { name in endpointID = live.shownLimits.first { ($0.name ?? $0.endpointId) == name }?.endpointId ?? endpointID }
+                        // Matched by the connection's id: two connections can share a name, or have none.
+                        let labels = limitLabels
+                        MenuRow(title: "Which limit", options: labels.map(\.label), selection: Binding(
+                            get: { labels.first { $0.id == endpointID }?.label ?? "Pick one" },
+                            set: { picked in
+                                guard let found = labels.first(where: { $0.label == picked }) else { return }
+                                endpointID = found.id
+                                draft.limitName = found.name
+                            }
                         ))
                     }
                 } else {
@@ -726,6 +812,25 @@ struct RoutineEditorScreen: View {
                 GoldSegmented(items: [false, true], selection: $draft.afterEveryReset) { $0 ? "After every reset" : "Once, after the next" }
                     .padding(8)
             }
+        }
+    }
+
+    /// The zone a custom schedule runs in: the routine's own, or this iPhone's when it needs one and has none.
+    private var customZoneLine: String {
+        let zone = BotRoutineMap.sendZone(form) ?? TimeZone.current.identifier
+        if routineID != nil, base?.zone == nil {
+            return "A custom schedule needs a named time zone, so it uses this iPhone's, \(zone)."
+        }
+        return zone == TimeZone.current.identifier ? "It uses this iPhone's time zone, \(zone)." : "It runs in \(zone), the time zone this routine keeps."
+    }
+
+    /// One unique label per usage limit the desktop reads.
+    private var limitLabels: [(id: String, name: String, label: String)] {
+        let limits = live.shownLimits
+        return limits.map { limit in
+            let name = (limit.name ?? "").trimmingCharacters(in: .whitespaces)
+            let shared = name.isEmpty || limits.filter { ($0.name ?? "").trimmingCharacters(in: .whitespaces) == name }.count > 1
+            return (limit.endpointId, name.isEmpty ? limit.endpointId : name, shared ? (name.isEmpty ? limit.endpointId : "\(name) (\(limit.endpointId))") : name)
         }
     }
 
@@ -836,14 +941,21 @@ struct RoutineEditorScreen: View {
             start = live.newForm(botID: botID)
         }
         missing = false
-        draft = start.draft
-        onceDate = start.onceDate
-        stopAfter = start.stopAfter
-        stopDate = start.stopDate
-        endpointID = start.endpointID
-        limitSet = start.limitSet
+        show(start)
         base = start
         if RepeatMode.more.contains(draft.mode) { moreOptions = true }
+    }
+
+    /// Put a form on screen.
+    private func show(_ shown: BotRoutineForm) {
+        draft = shown.draft
+        onceDate = shown.onceDate
+        stopAfter = shown.stopAfter
+        stopDate = shown.stopDate
+        endpointID = shown.endpointID
+        limitSet = shown.limitSet
+        startMinute = shown.startMinute
+        endMinute = shown.endMinute
     }
 
     private func save() {
@@ -886,15 +998,20 @@ struct RoutineEditorScreen: View {
         }
         saving = true
         outcome = nil
+        conflict = nil
         let sent = form
         Task {
             let result: BotRoutineOutcome
             if let routineID {
                 let (answer, fresh) = await live.update(routineID, sent, base: start)
-                // The desktop's current version: what was typed stays, and the next save goes against it.
                 if let fresh {
+                    // The desktop's current version, with only what the person changed here kept on top: everything
+                    // they did not touch shows the desktop's value, and the next save sends only their changes.
+                    let (merged, conflicts) = BotRoutineMap.rebase(sent, from: start, onto: fresh)
+                    show(merged)
                     base = fresh
-                    if !limitSet { draft.runLimit = fresh.draft.runLimit }
+                    conflict = BotRoutineMap.conflictLine(conflicts, mine: sent, desktop: fresh)
+                    if RepeatMode.more.contains(draft.mode) { moreOptions = true }
                 }
                 result = answer
             } else {

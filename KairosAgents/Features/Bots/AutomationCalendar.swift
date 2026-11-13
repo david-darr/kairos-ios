@@ -868,13 +868,15 @@ struct AutomationsScreen: View {
                     HStack {
                         Text(routine.name).font(KFont.ui(15)).foregroundStyle(Palette.ink)
                         Spacer()
-                        if desk.desktopID(routine).map({ desk.moved.contains($0) }) == true {
-                            Text("Moved").font(KFont.ui(13.5, .medium)).foregroundStyle(Palette.success)
-                        } else {
-                            PillButton(title: "Move to after reset") { desk.moveAfterReset(routine, say: store.say) }
-                                .disabled(desk.waits(routine))
+                        if let next = desk.nextLabel(routine) {
+                            Text(next).font(KFont.ui(13.5)).foregroundStyle(Palette.inkDim)
                         }
                     }
+                }
+                if !due.isEmpty {
+                    // The desktop moves a routine to its own account's reset, which may not be this one, and the
+                    // phone cannot tell which account a routine uses: the move is made on the desktop.
+                    HintLine(text: "To move a run until after a reset, use Kairos on your desktop. It moves each routine to the reset of the account it runs on.", symbol: "desktopcomputer")
                 }
             }
             .padding(14)

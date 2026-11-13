@@ -343,11 +343,6 @@ extension APIClient {
         try await get("/api/bot-limit-resets")
     }
 
-    /// POST /api/bot-limit-resets/after-reset: only this routine's next run moves to just after the reset.
-    func botRoutineAfterReset(_ id: String) async throws -> BotRoutineDTO {
-        try await post("/api/bot-limit-resets/after-reset", json: ["routine_id": id])
-    }
-
     /// GET /api/front-desk/watch: only the account that owns Kip.
     func botWatch() async throws -> BotWatchDTO {
         try await get("/api/front-desk/watch")
@@ -519,6 +514,75 @@ nonisolated enum BotRoutineSamples {
                   BotRoutineWire.snakeCase("everyMinutes") == "every_minutes", BotRoutineWire.camelCase("time_zone") == "timeZone"
             else { throw SampleMismatch("wire helpers") }
             return "schedule sent back as it came"
+        },
+        DecodeCheck("botroutines.schedules") {
+            // An interval with a 09:30 window, an exact end, an anchor and no zone (the desktop machine's own).
+            let interval = BotRoutineMap.form(try KJSON.decode(BotRoutineDTO.self, from: #"""
+            {"id": "s1", "bot_id": "agent_scout", "name": "Stock", "instructions": "Count it.", "enabled": true,
+             "schedule": {"kind": "interval", "every_minutes": 15, "anchor_at": "2027-01-04T08:07:00+00:00",
+                          "time_zone": null, "weekdays": [0, 1, 2, 3, 4], "window": {"start": "09:30", "end": "17:45"},
+                          "ends_at": "2027-03-01T16:20:00+00:00"},
+             "revision": "r2", "timeout_minutes": null}
+            """#), limits: [])
+            guard interval.exact, interval.zone == nil, interval.startMinute == 30, interval.endMinute == 45,
+                  BotRoutineMap.changes(interval, from: interval).isEmpty
+            else { throw SampleMismatch("interval read") }
+            var saturday = interval
+            saturday.draft.days.insert(.sat)
+            let sent = BotRoutineMap.changes(saturday, from: interval)
+            let window = (sent["schedule"] as? [String: Any])?["window"] as? [String: Any]
+            guard sent.count == 1, let schedule = sent["schedule"] as? [String: Any],
+                  schedule["anchor_at"] as? String == "2027-01-04T08:07:00+00:00",
+                  window?["start"] as? String == "09:30", window?["end"] as? String == "17:45",
+                  schedule["ends_at"] as? String == "2027-03-01T16:20:00+00:00",
+                  schedule["time_zone"] == nil, schedule["every_minutes"] as? Int == 15,
+                  schedule["weekdays"] as? [Int] == [0, 1, 2, 3, 4, 5]
+            else { throw SampleMismatch("interval days change") }
+
+            // A daily schedule in a named zone keeps that zone when its time changes.
+            let list = BotRoutineWire.items(try KJSON.decode(BotRoutineListDTO.self, from: BotRoutineSamples.list).routines).items
+            let daily = BotRoutineMap.form(list[0], limits: [])
+            guard daily.zone == "America/New_York", BotRoutineMap.changes(daily, from: daily).isEmpty else { throw SampleMismatch("daily read") }
+            var later = daily
+            later.draft.hour = 10
+            let moved = BotRoutineMap.changes(later, from: daily)["schedule"] as? [String: Any]
+            guard moved?["time"] as? String == "10:00", moved?["time_zone"] as? String == "America/New_York",
+                  moved?["weekdays"] as? [Int] == [0, 1, 2, 3, 4] else { throw SampleMismatch("daily time change") }
+
+            // After a 409: the desktop moved it to 10:00, the phone changed only the name.
+            var renamed = daily
+            renamed.draft.name = "Morning notes"
+            let (merged, none) = BotRoutineMap.rebase(renamed, from: daily, onto: later)
+            let resent = BotRoutineMap.changes(merged, from: later)
+            guard merged.draft.hour == 10, merged.draft.name == "Morning notes", none.isEmpty,
+                  Set(resent.keys) == ["name"] else { throw SampleMismatch("rebase keeps the desktop's time") }
+            // Both changed the time: the phone's stays, and it is named as a conflict.
+            var eleven = daily
+            eleven.draft.hour = 11
+            let (kept, both) = BotRoutineMap.rebase(eleven, from: daily, onto: later)
+            guard kept.draft.hour == 11, both == [.time],
+                  BotRoutineMap.conflictLine(both, mine: eleven, desktop: later)?.contains("10:00 AM") == true
+            else { throw SampleMismatch("rebase conflict") }
+
+            // Weekly on all seven days is stored as daily: that save landed.
+            var everyDay = daily
+            everyDay.draft.mode = .weekly
+            everyDay.draft.days = Set(Weekday.allCases)
+            var stored = daily
+            stored.draft.mode = .daily
+            guard BotRoutineMap.landed(everyDay, from: daily, in: stored) else { throw SampleMismatch("weekly as daily") }
+
+            // A schedule the editor cannot show exactly is never sent.
+            let odd = BotRoutineMap.form(try KJSON.decode(BotRoutineDTO.self, from: #"""
+            {"id": "s2", "name": "Odd", "schedule": {"kind": "interval", "every_minutes": 7, "anchor_at": "2027-01-04T08:00:00+00:00"}}
+            """#), limits: [])
+            var oddEdit = odd
+            oddEdit.draft.intervalMinutes = 10
+            oddEdit.draft.name = "Odd one"
+            let oddSent = BotRoutineMap.changes(oddEdit, from: odd)
+            guard !odd.exact, oddSent["schedule"] == nil, oddSent["name"] as? String == "Odd one"
+            else { throw SampleMismatch("inexact schedule") }
+            return "unchanged sends nothing, a change keeps anchor, window, end and zone, a re-read keeps the desktop's"
         },
     ]
 }

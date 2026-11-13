@@ -22,7 +22,9 @@ nonisolated struct BotRoutineForm: Equatable, Sendable {
     var stopDate: Date
     /// The model connection a limit reset routine follows.
     var endpointID: String
-    /// The schedule's own time zone, when it names one that is not this iPhone's.
+    /// The schedule's own time zone as the desktop keeps it. Nil for a stored schedule with no zone (the desktop
+    /// then uses its own machine's zone, core/bot_schedules.py: zone_of) and for once and limit reset.
+    /// A new routine: this iPhone's zone.
     var zone: String?
     /// Whether the run limit is set on the desktop (nil there means its own default).
     var limitSet: Bool
@@ -30,12 +32,23 @@ nonisolated struct BotRoutineForm: Equatable, Sendable {
     var revision: String?
     /// The desktop and account it was read from.
     var account = ""
+    /// The minutes of an interval window's start and end (the Routine model keeps hours only).
+    var startMinute = 0
+    var endMinute = 0
+    /// The schedule exactly as the desktop stored it. Nil for a new routine. A changed schedule is this one
+    /// with only the changed parts replaced, so its anchor, zone and exact end stay.
+    var stored: JSONValue? = nil
+    /// Whether this editor can show the stored schedule exactly. If not, the schedule is read only here.
+    var exact = true
+    /// The desktop's own sentence for the stored schedule.
+    var sentence: String? = nil
 }
 
 /// The editor's schedule line while paired: what the desktop says the schedule means.
 nonisolated enum BotRoutinePreview: Equatable, Sendable {
     case checking
-    case shown(sentence: String, next: [Date])
+    /// `zone`: the zone the next times are shown in (nil: this iPhone's).
+    case shown(sentence: String, next: [Date], zone: TimeZone?)
     case refused(String)
     case unknown(String)
 }
@@ -75,8 +88,6 @@ final class BotsRoutinesLive {
     var nextTimes: [String: [Date]] = [:]
     /// Routines and triggers (desktop ids) with a write on its way: their controls wait.
     var busy: Set<String> = []
-    /// Routines moved to after a limit reset from this phone.
-    var moved: Set<String> = []
 
     // The calendar: one week of occurrences.
     var calendarWeek: Date?
@@ -106,6 +117,7 @@ final class BotsRoutinesLive {
     @ObservationIgnored private var triggerSeq = 0
     @ObservationIgnored private var calendarSeq = 0
     @ObservationIgnored private var watchSeq = 0
+    @ObservationIgnored private var limitsSeq = 0
     @ObservationIgnored private var detailSeq: [String: Int] = [:]
     @ObservationIgnored private var runRequests: [String: (id: String, at: Date)] = [:]
 
@@ -146,7 +158,6 @@ final class BotsRoutinesLive {
         detailLoad = [:]
         nextTimes = [:]
         busy = []
-        moved = []
         calendarWeek = nil
         calendarLoad = .idle
         occurrences = [:]
@@ -166,6 +177,7 @@ final class BotsRoutinesLive {
         triggerSeq += 1
         calendarSeq += 1
         watchSeq += 1
+        limitsSeq += 1
         listKey = ""
         runRequests = [:]
     }
@@ -246,11 +258,25 @@ final class BotsRoutinesLive {
         return RoutineTiming.label(date, now: Date())
     }
 
-    /// The run to mark seen when a routine asks for a look (not one waiting for an answer).
+    /// The run to mark seen when a routine asks for a look (not one waiting for an answer). The desktop's
+    /// "needs you" is any unseen run with attention among its last 10 (bot_routines.py: view), so the runs read
+    /// for the detail sheet are looked at first, then the last run.
     func seenRunID(_ routine: Routine) -> String? {
-        guard let record = record(routine), record.state == "needs_you", record.waiting != true else { return nil }
-        guard let last = record.lastRun?.value, last.attention.map({ !$0.isNull }) == true, last.seen != true else { return nil }
+        guard let id = desktopID(routine), let record = records[id], record.state == "needs_you", record.waiting != true else { return nil }
+        let runs = (details[id]?.recentRuns ?? []).compactMap(\.value).prefix(10)
+        if let run = runs.first(where: Self.asksForALook) { return run.id }
+        guard let last = record.lastRun?.value, Self.asksForALook(last) else { return nil }
         return last.id
+    }
+
+    private static func asksForALook(_ run: BotRoutineRunDTO) -> Bool {
+        guard run.seen != true, let attention = run.attention else { return false }
+        switch attention {
+        case .null: return false
+        case .bool(let flag): return flag
+        case .string(let text): return !text.isEmpty
+        default: return true
+        }
     }
 
     var routinesReady: Bool { isCurrent && (routinesLoad == .loaded || !routines.isEmpty) }
@@ -287,7 +313,13 @@ final class BotsRoutinesLive {
         listSeq += 1
         let seq = listSeq
         listKey = Self.connectionKey
+        let prior = routinesLoad
         if routinesLoad != .loaded { routinesLoad = .loading }
+        // A read dropped because a write is on its way leaves the list as it was, never stuck on "Reading".
+        func dropped() -> Bool {
+            if routinesLoad == .loading { routinesLoad = prior == .loading ? .idle : prior }
+            return false
+        }
         do {
             for _ in 0..<2 {
                 let generation = writeGeneration
@@ -301,9 +333,9 @@ final class BotsRoutinesLive {
                     routinesLoad = .loaded
                     return true
                 }
-                if writing > 0 { return false }
+                if writing > 0 { return dropped() }
             }
-            return false
+            return dropped()
         } catch {
             Connection.shared.note(error)
             guard stillLive(account), seq == listSeq else { return false }
@@ -321,17 +353,17 @@ final class BotsRoutinesLive {
         var fresh: [String: BotRoutineDTO] = [:]
         for item in items {
             fresh[item.id] = item
-            desktopIDs[Self.uuid(item.id)] = item.id
+            desktopIDs[BotRoutineMap.uuid(item.id)] = item.id
         }
         records = fresh
-        routines = items.map(Self.routine)
+        routines = items.map(BotRoutineMap.routine)
     }
 
     /// Put one routine the desktop answered with on screen.
     private func replace(_ item: BotRoutineDTO) {
         records[item.id] = item
-        desktopIDs[Self.uuid(item.id)] = item.id
-        let fresh = Self.routine(item)
+        desktopIDs[BotRoutineMap.uuid(item.id)] = item.id
+        let fresh = BotRoutineMap.routine(item)
         if let index = routines.firstIndex(where: { $0.id == fresh.id }) {
             routines[index] = fresh
         } else {
@@ -475,15 +507,17 @@ final class BotsRoutinesLive {
     func loadLimits() async {
         guard active else { return }
         let account = self.account
+        limitsSeq += 1
+        let seq = limitsSeq
         if limitsLoad != .loaded { limitsLoad = .loading }
         do {
             let list = try await client().botLimitResets()
-            guard stillLive(account) else { return }
+            guard stillLive(account), seq == limitsSeq else { return }
             limits = BotRoutineWire.items(list.limits).items
             limitsLoad = .loaded
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account) else { return }
+            guard stillLive(account), seq == limitsSeq else { return }
             if error is CancellationError {
                 if limitsLoad == .loading { limitsLoad = .idle }
             } else {
@@ -544,7 +578,12 @@ final class BotsRoutinesLive {
                 guard stillLive(account) else { return }
                 if unconfirmed(error) {
                     say(unsure(on ? "\(name) was turned on" : "\(name) was paused"))
-                    await refreshRoutines(force: false)
+                    let read = await refreshRoutines(force: false)
+                    // Not read either: the switch shows the desktop's last known state, never the unconfirmed tap.
+                    if !read, stillLive(account), let known = records[id]?.enabled,
+                       let now = routines.firstIndex(where: { $0.id == routine.id }), routines[now].on == on {
+                        routines[now].on = known
+                    }
                     return
                 }
                 if status(error) == 409 || status(error) == 404 {
@@ -562,9 +601,13 @@ final class BotsRoutinesLive {
     /// Start a run now. Asked first on screen. A repeat after a lost answer sends the same request id,
     /// so the desktop starts it once.
     func runNow(_ routine: Routine, say: @escaping (String) -> Void) {
-        guard active, let id = desktopID(routine), !busy.contains(id) else { return }
-        let account = self.account
+        guard active, let id = desktopID(routine) else { return }
         let name = routine.name
+        guard !busy.contains(id) else {
+            say("\(name) did not start: another change to it is still on its way. Try again in a moment.")
+            return
+        }
+        let account = self.account
         let kept = runRequests[id].flatMap { Date().timeIntervalSince($0.at) < 270 ? $0.id : nil }
         let request = kept ?? UUID().uuidString
         runRequests[id] = (id: request, at: kept == nil ? Date() : (runRequests[id]?.at ?? Date()))
@@ -602,9 +645,13 @@ final class BotsRoutinesLive {
 
     /// Delete on the desktop (kept there seven days). Off the screen only once the desktop has done it.
     func delete(_ routine: Routine, onDeleted: @escaping (Routine) -> Void, say: @escaping (String) -> Void) {
-        guard active, let id = desktopID(routine), !busy.contains(id) else { return }
-        let account = self.account
+        guard active, let id = desktopID(routine) else { return }
         let name = routine.name
+        guard !busy.contains(id) else {
+            say("\(name) was not deleted: another change to it is still on its way. Try again in a moment.")
+            return
+        }
+        let account = self.account
         let revision = records[id]?.revision
         busy.insert(id)
         beginWrite()
@@ -680,6 +727,7 @@ final class BotsRoutinesLive {
                 try await client().botRoutineRunSeen(runID)
                 guard stillLive(account) else { return }
                 await refreshRoutines(force: false)
+                if details[id] != nil { await loadDetail(routine) }
             } catch {
                 Connection.shared.note(error)
                 guard stillLive(account) else { return }
@@ -689,34 +737,9 @@ final class BotsRoutinesLive {
         }
     }
 
-    /// Move only the next run to just after the account's usage limit resets.
-    func moveAfterReset(_ routine: Routine, say: @escaping (String) -> Void) {
-        guard active, let id = desktopID(routine), !busy.contains(id) else { return }
-        let account = self.account
-        busy.insert(id)
-        beginWrite()
-        Task {
-            defer { if stillLive(account) { busy.remove(id) } }
-            do {
-                let saved = try await client().botRoutineAfterReset(id)
-                endWrite()
-                guard stillLive(account) else { return }
-                replace(saved)
-                moved.insert(id)
-                say("Moved to after the reset.")
-            } catch {
-                endWrite()
-                Connection.shared.note(error)
-                guard stillLive(account) else { return }
-                if unconfirmed(error) {
-                    say(unsure("it was moved"))
-                    await refreshRoutines(force: false)
-                } else {
-                    say("It was not moved. " + error.plainWords)
-                }
-            }
-        }
-    }
+    // Move to after reset is not offered here: the desktop moves a routine to its own account's reset
+    // (routes/bot_routine_routes.py: after-reset), and the routine view does not say which account that is,
+    // so the phone cannot show the time it would move to.
 
     // MARK: Trigger writes
 
@@ -801,9 +824,10 @@ final class BotsRoutinesLive {
         }
     }
 
-    /// Change the morning brief: only what the person changed is sent.
-    func setMorning(on: Bool? = nil, time: String? = nil, say: @escaping (String) -> Void) {
-        guard active, watch != nil, !watchBusy, on != nil || time != nil else { return }
+    /// Change the morning brief: only what the person changed is sent. False when nothing was sent.
+    @discardableResult
+    func setMorning(on: Bool? = nil, time: String? = nil, say: @escaping (String) -> Void) -> Bool {
+        guard active, watch != nil, !watchBusy, on != nil || time != nil else { return false }
         let account = self.account
         var fields: [String: Any] = [:]
         if let on { fields["morning_on"] = on }
@@ -830,6 +854,7 @@ final class BotsRoutinesLive {
                 }
             }
         }
+        return true
     }
 
     // MARK: The editor
@@ -837,12 +862,13 @@ final class BotsRoutinesLive {
     /// The form for a routine on screen, from the desktop's record.
     func form(for routineID: UUID) -> BotRoutineForm? {
         guard isCurrent, let id = desktopIDs[routineID], let record = records[id] else { return nil }
-        var found = Self.form(record, limits: limits)
+        var found = BotRoutineMap.form(record, limits: limits)
         found.account = account
         return found
     }
 
     /// A new routine's form: the desktop's own defaults, so nothing the person did not pick is sent.
+    /// Its times are in this iPhone's time zone.
     func newForm(botID: String) -> BotRoutineForm {
         var draft = Routine(botID: botID, name: "", instructions: "", mode: .weekdays)
         draft.rememberLast = false
@@ -852,24 +878,28 @@ final class BotsRoutinesLive {
                               onceDate: calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date(),
                               stopAfter: false,
                               stopDate: calendar.date(byAdding: .month, value: 1, to: Date()) ?? Date(),
-                              endpointID: limits.first?.endpointId ?? "", zone: nil, limitSet: false, revision: nil,
-                              account: account)
+                              endpointID: limits.first?.endpointId ?? "", zone: TimeZone.current.identifier,
+                              limitSet: false, revision: nil, account: account)
     }
 
     /// What the desktop says a schedule means. Untouched, the routine's own stored schedule is asked about.
-    func preview(_ form: BotRoutineForm, base: BotRoutineForm?, routineID: UUID?) async -> BotRoutinePreview? {
+    func preview(_ form: BotRoutineForm, base: BotRoutineForm?) async -> BotRoutinePreview? {
         guard active else { return nil }
         let account = self.account
-        var schedule = Self.schedule(form)
-        if let base, Self.signature(form) == Self.signature(base), let routineID, let id = desktopIDs[routineID],
-           let stored = records[id]?.schedule, let plain = BotRoutineWire.plain(stored) as? [String: Any] {
-            schedule = plain
+        var built: [String: Any]?
+        if let base, let stored = base.stored, !BotRoutineMap.scheduleTouched(form, from: base) {
+            built = BotRoutineWire.plain(stored) as? [String: Any]
+        } else {
+            built = BotRoutineMap.schedule(form, base: base)
         }
-        guard let schedule else { return .refused("Pick which usage limit it follows.") }
+        guard var schedule = built else { return .refused("Pick which usage limit it follows.") }
+        if schedule["time_zone"] is NSNull { schedule.removeValue(forKey: "time_zone") }
         do {
             let answer = try await client().botRoutinePreview(schedule, count: 3)
             guard stillLive(account) else { return nil }
-            return .shown(sentence: answer.sentence ?? "", next: (answer.next ?? []).compactMap { TasksWire.date($0) })
+            let next = (answer.next ?? []).compactMap { TasksWire.date($0) }
+            return .shown(sentence: answer.sentence ?? "", next: next,
+                          zone: BotRoutineMap.shownZone(schedule: schedule, next: next))
         } catch {
             guard stillLive(account), !(error is CancellationError) else { return nil }
             if let code = status(error), (400..<500).contains(code) { return .refused(error.plainWords) }
@@ -881,12 +911,16 @@ final class BotsRoutinesLive {
     func create(_ form: BotRoutineForm, base: BotRoutineForm) async -> BotRoutineOutcome {
         guard active else { return .refused("Your desktop is not connected.") }
         guard base.account == self.account, isCurrent else { return .refused("Your desktop changed. Open this again to start over.") }
-        if createCheck != nil { return await confirmCreate() }
-        guard let schedule = Self.schedule(form) else { return .refused("Pick which usage limit it follows.") }
-        let account = self.account
         let botID = form.draft.botID
-        let name = Self.cleanName(form.draft.name)
-        var body = Self.changes(form, from: base)
+        let name = BotRoutineMap.cleanName(form.draft.name)
+        if let check = createCheck, check.botID == botID, check.name == name {
+            // This same routine was sent before and its answer was lost: look for it first. Any other routine is
+            // sent as usual, and never answered for by that earlier look.
+            return await confirmCreate()
+        }
+        guard let schedule = BotRoutineMap.schedule(form, base: nil) else { return .refused("Pick which usage limit it follows.") }
+        let account = self.account
+        var body = BotRoutineMap.changes(form, from: base)
         body["bot_id"] = botID
         body["name"] = name
         body["instructions"] = form.draft.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -922,28 +956,27 @@ final class BotsRoutinesLive {
             return .unsure("Your desktop did not answer, so this iPhone could not confirm it was scheduled. Try again to look for it before scheduling it a second time.")
         }
         createCheck = nil
-        if records.values.contains(where: { !check.before.contains($0.id) && $0.botId == check.botID && Self.cleanName($0.name ?? "") == check.name }) {
+        if records.values.contains(where: { !check.before.contains($0.id) && $0.botId == check.botID && BotRoutineMap.cleanName($0.name ?? "") == check.name }) {
             return .done("Scheduled.")
         }
         return .refused("It was not scheduled. Your desktop has no such routine, so you can schedule it again.")
     }
 
-    /// Save a routine's changed fields. The second value is the desktop's current form when it was read again
-    /// (the form keeps what was typed and saves against it next time).
+    /// Save only the parts the person changed. The second value is the desktop's current form when it was read
+    /// again: the editor then shows it with the person's own changes on top (`BotRoutineMap.rebase`).
     func update(_ routineID: UUID, _ form: BotRoutineForm, base: BotRoutineForm) async -> (BotRoutineOutcome, BotRoutineForm?) {
         guard active, let id = desktopIDs[routineID] else { return (.refused("Your desktop is not connected."), nil) }
         guard base.account == self.account, isCurrent else { return (.refused("Your desktop changed. Open this again to start over."), nil) }
         let account = self.account
+        let couldNotConfirm = "Your desktop did not answer, so this iPhone could not confirm the changes were saved. Try again to look before saving a second time."
         if recheck.contains(id) {
             // The last save got no answer: look first, never send it again blind.
-            guard let fresh = await readOne(id, account: account) else {
-                return (.unsure("Your desktop did not answer, so this iPhone could not confirm the changes were saved. Try again to look before saving a second time."), nil)
-            }
+            guard let fresh = await readOne(id, account: account) else { return (.unsure(couldNotConfirm), nil) }
             recheck.remove(id)
-            if Self.changes(form, from: fresh).isEmpty { return (.done("Saved."), fresh) }
-            return (.unsure("Your desktop does not have these changes. They are kept here; save again to send them."), fresh)
+            if BotRoutineMap.landed(form, from: base, in: fresh) { return (.done("Saved."), fresh) }
+            return (.unsure("Your desktop does not have these changes. This shows what it has now, with your changes kept on top. Save again to send them."), fresh)
         }
-        var fields = Self.changes(form, from: base)
+        var fields = BotRoutineMap.changes(form, from: base)
         if fields.isEmpty { return (.done("Nothing changed."), nil) }
         if let schedule = fields["schedule"], schedule is NSNull { return (.refused("Pick which usage limit it follows."), nil) }
         if let revision = base.revision ?? records[id]?.revision { fields["expected_revision"] = revision }
@@ -960,16 +993,16 @@ final class BotsRoutinesLive {
             guard stillLive(account) else { return (.refused("Your desktop changed while this was being saved."), nil) }
             if unconfirmed(error) {
                 recheck.insert(id)
-                guard let fresh = await readOne(id, account: account) else {
-                    return (.unsure("Your desktop did not answer, so this iPhone could not confirm the changes were saved. Try again to look before saving a second time."), nil)
-                }
+                guard let fresh = await readOne(id, account: account) else { return (.unsure(couldNotConfirm), nil) }
                 recheck.remove(id)
-                if Self.changes(form, from: fresh).isEmpty { return (.done("Saved."), fresh) }
-                return (.unsure("Your desktop did not answer, and it does not show these changes. They are kept here; save again to send them."), fresh)
+                if BotRoutineMap.landed(form, from: base, in: fresh) { return (.done("Saved."), fresh) }
+                return (.unsure("Your desktop did not answer, and it does not show these changes. This shows what it has now, with your changes kept on top. Save again to send them."), fresh)
             }
             if status(error) == 409 {
-                let fresh = await readOne(id, account: account)
-                return (.refused("This routine changed on your desktop. Your changes are kept here. Check them and save again."), fresh)
+                guard let fresh = await readOne(id, account: account) else {
+                    return (.refused("This routine changed on your desktop, so nothing was saved, and it could not be read again. Try again."), nil)
+                }
+                return (.refused("This routine changed on your desktop, so nothing was saved. This shows what it has now, with your changes kept on top. Check it and save again."), fresh)
             }
             if status(error) == 404 {
                 await refreshRoutines(force: false)
@@ -985,7 +1018,7 @@ final class BotsRoutinesLive {
             let fresh = try await client().botRoutine(id)
             guard stillLive(account) else { return nil }
             replace(fresh)
-            var found = Self.form(fresh, limits: limits)
+            var found = BotRoutineMap.form(fresh, limits: limits)
             found.account = account
             return found
         } catch {
@@ -994,126 +1027,7 @@ final class BotsRoutinesLive {
         }
     }
 
-    // MARK: Desktop to phone
-
-    /// The same UUID for the same desktop id every time, so routes and rows keep pointing at it.
-    static func uuid(_ text: String) -> UUID {
-        var b = Array(SHA256.hash(data: Data(("routine:" + text).utf8)).prefix(16))
-        b[6] = (b[6] & 0x0F) | 0x50
-        b[8] = (b[8] & 0x3F) | 0x80
-        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
-    }
-
-    static func cleanName(_ text: String) -> String {
-        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-    }
-
-    static func routine(_ item: BotRoutineDTO) -> Routine {
-        form(item, limits: []).draft
-    }
-
-    /// A desktop routine in the editor's shape.
-    static func form(_ item: BotRoutineDTO, limits: [BotLimitDTO]) -> BotRoutineForm {
-        let calendar = Calendar.current
-        var draft = Routine(id: uuid(item.id), botID: item.botId ?? "", name: item.name ?? "Untitled routine",
-                            instructions: item.instructions ?? "")
-        draft.on = item.enabled ?? false
-        draft.queueIfRunning = item.overlap == "queue"
-        draft.readOnly = item.access == "read-and-draft"
-        draft.runOnStart = item.runOnStartup ?? false
-        draft.rememberLast = item.continuity ?? false
-        draft.showAsCall = item.call ?? false
-        draft.blockMinutes = item.durationMinutes ?? 30
-        draft.runLimit = item.timeoutMinutes ?? 30
-        draft.failedInARow = item.status?.failureStreak ?? 0
-        draft.lastRun = lastRunText(item)
-        draft.needsYou = needsYouText(item)
-        var onceDate = calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date()
-        var stopAfter = false
-        var stopDate = calendar.date(byAdding: .month, value: 1, to: Date()) ?? Date()
-        var endpoint = ""
-        let schedule = item.schedule
-        var zone = BotRoutineWire.field(schedule, "time_zone")?.string
-        let weekdays = Set((BotRoutineWire.field(schedule, "weekdays")?.array ?? []).compactMap { $0.int }.compactMap { Weekday(rawValue: $0) })
-        switch BotRoutineWire.field(schedule, "kind")?.string {
-        case "once":
-            draft.mode = .once
-            if let at = TasksWire.date(BotRoutineWire.field(schedule, "at")?.string) {
-                onceDate = at
-                draft.hour = calendar.component(.hour, from: at)
-                draft.minute = calendar.component(.minute, from: at)
-            }
-        case "daily":
-            if weekdays.isEmpty || weekdays.count == 7 {
-                draft.mode = .daily
-            } else if weekdays == Set([.mon, .tue, .wed, .thu, .fri]) {
-                draft.mode = .weekdays
-            } else {
-                draft.mode = .weekly
-                draft.days = weekdays
-            }
-            if let clock = TasksWire.clock(BotRoutineWire.field(schedule, "time")?.string) {
-                draft.hour = clock.hour
-                draft.minute = clock.minute
-            }
-        case "interval":
-            draft.mode = .interval
-            draft.intervalMinutes = BotRoutineWire.field(schedule, "every_minutes")?.int ?? 60
-            draft.days = weekdays.isEmpty ? Set(Weekday.allCases) : weekdays
-            if let window = BotRoutineWire.field(schedule, "window"),
-               let start = TasksWire.clock(BotRoutineWire.field(window, "start")?.string),
-               let end = TasksWire.clock(BotRoutineWire.field(window, "end")?.string) {
-                draft.onlyBetween = true
-                draft.startHour = start.hour
-                draft.endHour = end.hour
-            }
-            if let ends = TasksWire.date(BotRoutineWire.field(schedule, "ends_at")?.string) {
-                stopAfter = true
-                stopDate = ends
-            }
-        case "cron":
-            draft.mode = .custom
-            draft.cron = BotRoutineWire.field(schedule, "expression")?.string ?? draft.cron
-        case "limit_reset":
-            draft.mode = .limitReset
-            draft.afterEveryReset = BotRoutineWire.field(schedule, "repeat")?.string == "every_reset"
-            endpoint = BotRoutineWire.field(schedule, "endpoint_id")?.string ?? ""
-            draft.limitName = limits.first { $0.endpointId == endpoint }?.name ?? "usage"
-            zone = nil
-        default:
-            break
-        }
-        if zone == TimeZone.current.identifier { zone = nil }
-        return BotRoutineForm(draft: draft, onceDate: onceDate, stopAfter: stopAfter, stopDate: stopDate,
-                              endpointID: endpoint, zone: zone, limitSet: item.timeoutMinutes != nil, revision: item.revision)
-    }
-
-    static func lastRunText(_ item: BotRoutineDTO) -> String {
-        if item.waiting == true { return "Waiting for you" }
-        if item.running == true { return "Running now" }
-        guard let last = item.lastRun?.value else { return "Has not run yet" }
-        let when = (last.finishedAt?.date ?? last.startedAt?.date ?? TasksWire.date(last.scheduledFor)).map { BotRoutineText.past($0) }
-        switch last.status {
-        case "running": return "Running now"
-        case "queued": return "Queued to run"
-        case "waiting": return "Waiting for you"
-        case "missed": return when.map { "Missed a run \($0)" } ?? "Missed a run"
-        case "cancelled": return when.map { "Last run stopped \($0)" } ?? "Last run stopped"
-        case "failed": return when.map { "Last run failed \($0)" } ?? "Last run failed"
-        default: return when.map { "Last ran \($0)" } ?? "Has run"
-        }
-    }
-
-    static func needsYouText(_ item: BotRoutineDTO) -> String? {
-        if item.waiting == true { return "A run is waiting for you in this bot's inbox." }
-        if item.state == "needs_you" {
-            let last = item.lastRun?.value
-            let text = [last?.summary, last?.error].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
-            return text.map { String($0.prefix(140)) } ?? "A run needs a look."
-        }
-        if !(item.status?.checkTrouble ?? []).isEmpty { return "A check before each run needs fixing on your desktop." }
-        return nil
-    }
+    // MARK: Triggers from the desktop
 
     private static let appNames = ["mail": "Email", "calendar": "Calendar", "kairos": "Kairos activity"]
     private static let eventNames = [
@@ -1153,99 +1067,597 @@ final class BotsRoutinesLive {
             }
         }
     }
+}
+
+// MARK: - The editor's form and the desktop's routine
+
+/// One thing the editor can change. The schedule is split into its parts, so a save sends only what the person
+/// changed on this iPhone, and a re-read keeps every change the desktop made to the rest.
+nonisolated enum BotRoutinePart: CaseIterable, Sendable {
+    case name, instructions, kind, time, onceDay, days, every, window, stop, cron, limit, afterEvery
+    case overlap, access, runOnStart, continuity, call, block, runLimit
+
+    var isSchedule: Bool {
+        switch self {
+        case .kind, .time, .onceDay, .days, .every, .window, .stop, .cron, .limit, .afterEvery: true
+        default: false
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .name: "Name"
+        case .instructions: "Instructions"
+        case .kind: "Schedule"
+        case .time: "Time"
+        case .onceDay: "Date"
+        case .days: "Days"
+        case .every: "How often"
+        case .window: "Hours"
+        case .stop: "Stop date"
+        case .cron: "Custom schedule"
+        case .limit: "Usage limit"
+        case .afterEvery: "After a reset"
+        case .overlap: "If the last run is still going"
+        case .access: "Read and draft only"
+        case .runOnStart: "Also run when Kairos starts"
+        case .continuity: "Remember the last report"
+        case .call: "Show as a call"
+        case .block: "Block length"
+        case .runLimit: "Run limit"
+        }
+    }
+}
+
+/// The desktop's routine in the editor's shape, and back. Pure: no state, no network.
+nonisolated enum BotRoutineMap {
+
+    // MARK: Desktop to phone
+
+    /// The same UUID for the same desktop id every time, so routes and rows keep pointing at it.
+    static func uuid(_ text: String) -> UUID {
+        var b = Array(SHA256.hash(data: Data(("routine:" + text).utf8)).prefix(16))
+        b[6] = (b[6] & 0x0F) | 0x50
+        b[8] = (b[8] & 0x3F) | 0x80
+        return UUID(uuid: (b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]))
+    }
+
+    static func cleanName(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    static func routine(_ item: BotRoutineDTO) -> Routine {
+        form(item, limits: []).draft
+    }
+
+    /// A desktop routine in the editor's shape. Wall-clock times (daily time, interval window) are kept as the
+    /// desktop stores them, in the schedule's own zone; nothing is moved into this iPhone's zone.
+    static func form(_ item: BotRoutineDTO, limits: [BotLimitDTO]) -> BotRoutineForm {
+        let calendar = Calendar.current
+        var draft = Routine(id: uuid(item.id), botID: item.botId ?? "", name: item.name ?? "Untitled routine",
+                            instructions: item.instructions ?? "")
+        draft.on = item.enabled ?? false
+        draft.queueIfRunning = item.overlap == "queue"
+        draft.readOnly = item.access == "read-and-draft"
+        draft.runOnStart = item.runOnStartup ?? false
+        draft.rememberLast = item.continuity ?? false
+        draft.showAsCall = item.call ?? false
+        draft.blockMinutes = item.durationMinutes ?? 30
+        draft.runLimit = item.timeoutMinutes ?? 30
+        draft.failedInARow = item.status?.failureStreak ?? 0
+        draft.lastRun = lastRunText(item)
+        draft.needsYou = needsYouText(item)
+        var onceDate = calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        var stopAfter = false
+        var stopDate = calendar.date(byAdding: .month, value: 1, to: Date()) ?? Date()
+        var startMinute = 0
+        var endMinute = 0
+        var endpoint = ""
+        let schedule = item.schedule
+        var exact = schedule.map { !$0.isNull } ?? false
+        var zone = BotRoutineWire.field(schedule, "time_zone")?.string
+        if zone?.isEmpty == true { zone = nil }
+        let weekdays = Set((BotRoutineWire.field(schedule, "weekdays")?.array ?? []).compactMap { $0.int }.compactMap { Weekday(rawValue: $0) })
+        switch BotRoutineWire.field(schedule, "kind")?.string {
+        case "once":
+            draft.mode = .once
+            zone = nil
+            if let at = TasksWire.date(BotRoutineWire.field(schedule, "at")?.string) {
+                onceDate = at
+                draft.hour = calendar.component(.hour, from: at)
+                draft.minute = calendar.component(.minute, from: at)
+            } else {
+                exact = false
+            }
+        case "daily":
+            if weekdays.isEmpty || weekdays.count == 7 {
+                draft.mode = .daily
+            } else if weekdays == Set([.mon, .tue, .wed, .thu, .fri]) {
+                draft.mode = .weekdays
+            } else {
+                draft.mode = .weekly
+                draft.days = weekdays
+            }
+            if let clock = TasksWire.clock(BotRoutineWire.field(schedule, "time")?.string) {
+                draft.hour = clock.hour
+                draft.minute = clock.minute
+            } else {
+                exact = false
+            }
+        case "interval":
+            draft.mode = .interval
+            // The editor steps by 5 minutes from 5 to 1440; anything else it cannot show exactly.
+            if let every = BotRoutineWire.field(schedule, "every_minutes")?.int, every % 5 == 0, (5...1440).contains(every) {
+                draft.intervalMinutes = every
+            } else {
+                exact = false
+            }
+            draft.days = weekdays.isEmpty ? Set(Weekday.allCases) : weekdays
+            if let window = BotRoutineWire.field(schedule, "window") {
+                if let start = TasksWire.clock(BotRoutineWire.field(window, "start")?.string),
+                   let end = TasksWire.clock(BotRoutineWire.field(window, "end")?.string) {
+                    draft.onlyBetween = true
+                    draft.startHour = start.hour
+                    draft.endHour = end.hour
+                    startMinute = start.minute
+                    endMinute = end.minute
+                } else {
+                    exact = false
+                }
+            }
+            if let text = BotRoutineWire.field(schedule, "ends_at")?.string {
+                if let ends = TasksWire.date(text) {
+                    stopAfter = true
+                    stopDate = ends
+                } else {
+                    exact = false
+                }
+            }
+        case "cron":
+            draft.mode = .custom
+            if let expression = BotRoutineWire.field(schedule, "expression")?.string {
+                draft.cron = expression
+            } else {
+                exact = false
+            }
+        case "limit_reset":
+            draft.mode = .limitReset
+            draft.afterEveryReset = BotRoutineWire.field(schedule, "repeat")?.string == "every_reset"
+            endpoint = BotRoutineWire.field(schedule, "endpoint_id")?.string ?? ""
+            draft.limitName = limits.first { $0.endpointId == endpoint }?.name ?? "usage"
+            zone = nil
+        default:
+            exact = false
+        }
+        var out = BotRoutineForm(draft: draft, onceDate: onceDate, stopAfter: stopAfter, stopDate: stopDate,
+                                 endpointID: endpoint, zone: zone, limitSet: item.timeoutMinutes != nil, revision: item.revision)
+        out.startMinute = startMinute
+        out.endMinute = endMinute
+        out.stored = schedule
+        out.exact = exact
+        out.sentence = item.sentence
+        return out
+    }
+
+    static func lastRunText(_ item: BotRoutineDTO) -> String {
+        if item.waiting == true { return "Waiting for you" }
+        if item.running == true { return "Running now" }
+        guard let last = item.lastRun?.value else { return "Has not run yet" }
+        let when = (last.finishedAt?.date ?? last.startedAt?.date ?? TasksWire.date(last.scheduledFor)).map { BotRoutineText.past($0) }
+        switch last.status {
+        case "running": return "Running now"
+        case "queued": return "Queued to run"
+        case "waiting": return "Waiting for you"
+        case "missed": return when.map { "Missed a run \($0)" } ?? "Missed a run"
+        case "cancelled": return when.map { "Last run stopped \($0)" } ?? "Last run stopped"
+        case "failed": return when.map { "Last run failed \($0)" } ?? "Last run failed"
+        default: return when.map { "Last ran \($0)" } ?? "Has run"
+        }
+    }
+
+    static func needsYouText(_ item: BotRoutineDTO) -> String? {
+        if item.waiting == true { return "A run is waiting for you in this bot's inbox." }
+        if item.state == "needs_you" {
+            let last = item.lastRun?.value
+            let text = [last?.summary, last?.error].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+            return text.map { String($0.prefix(140)) } ?? "A run needs a look."
+        }
+        if !(item.status?.checkTrouble ?? []).isEmpty { return "A check before each run needs fixing on your desktop." }
+        return nil
+    }
+
+    // MARK: The parts
+
+    /// The desktop's schedule kind for an editor mode.
+    static func kind(_ mode: RepeatMode) -> String {
+        switch mode {
+        case .once: "once"
+        case .daily, .weekdays, .weekly: "daily"
+        case .interval: "interval"
+        case .custom: "cron"
+        case .limitReset: "limit_reset"
+        }
+    }
+
+    /// The days it runs, Monday=0, as the desktop counts them.
+    static func effectiveDays(_ form: BotRoutineForm) -> [Int] {
+        switch form.draft.mode {
+        case .daily: return Array(0...6)
+        case .weekdays: return [0, 1, 2, 3, 4]
+        default: return Weekday.allCases.filter { form.draft.days.contains($0) }.map(\.rawValue)
+        }
+    }
+
+    /// The calendar of the schedule's own zone (this iPhone's when it names none).
+    static func calendar(_ form: BotRoutineForm) -> Calendar {
+        var calendar = Calendar.current
+        if let name = form.zone, let zone = TimeZone(identifier: name) { calendar.timeZone = zone }
+        return calendar
+    }
+
+    private static func dayText(_ date: Date, _ calendar: Calendar) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return "\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)"
+    }
+
+    /// One part as plain comparable text. Two forms that mean the same schedule give the same text
+    /// ("weekly" on all seven days is the desktop's "daily").
+    static func value(_ part: BotRoutinePart, _ form: BotRoutineForm) -> String {
+        let d = form.draft
+        let k = kind(d.mode)
+        switch part {
+        case .name: return cleanName(d.name)
+        case .instructions: return d.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .kind: return k
+        case .time: return k == "once" || k == "daily" ? "\(d.hour):\(d.minute)" : "-"
+        case .onceDay: return k == "once" ? dayText(form.onceDate, Calendar.current) : "-"
+        case .days:
+            guard k == "daily" || k == "interval" else { return "-" }
+            let days = effectiveDays(form)
+            return days.count == 7 ? "all" : (days.isEmpty ? "none" : days.map(String.init).joined(separator: ","))
+        case .every: return k == "interval" ? String(d.intervalMinutes) : "-"
+        case .window:
+            return k == "interval" && d.onlyBetween ? "\(d.startHour):\(form.startMinute)-\(d.endHour):\(form.endMinute)" : "-"
+        case .stop: return k == "interval" && form.stopAfter ? dayText(form.stopDate, calendar(form)) : "-"
+        case .cron: return k == "cron" ? d.cron.trimmingCharacters(in: .whitespaces) : "-"
+        case .limit: return k == "limit_reset" ? form.endpointID : "-"
+        case .afterEvery: return k == "limit_reset" ? String(d.afterEveryReset) : "-"
+        case .overlap: return String(d.queueIfRunning)
+        case .access: return String(d.readOnly)
+        case .runOnStart: return String(d.runOnStart)
+        case .continuity: return String(d.rememberLast)
+        case .call: return String(d.showAsCall)
+        case .block: return String(d.blockMinutes)
+        case .runLimit: return form.limitSet ? String(d.runLimit) : "-"
+        }
+    }
+
+    /// Copy one part from `source` into `target`. `.kind` copies the whole schedule.
+    static func copy(_ part: BotRoutinePart, from source: BotRoutineForm, into target: inout BotRoutineForm) {
+        let s = source.draft
+        switch part {
+        case .name: target.draft.name = s.name
+        case .instructions: target.draft.instructions = s.instructions
+        case .kind:
+            target.draft.mode = s.mode
+            target.draft.days = s.days
+            target.draft.hour = s.hour
+            target.draft.minute = s.minute
+            target.draft.intervalMinutes = s.intervalMinutes
+            target.draft.onlyBetween = s.onlyBetween
+            target.draft.startHour = s.startHour
+            target.draft.endHour = s.endHour
+            target.draft.cron = s.cron
+            target.draft.afterEveryReset = s.afterEveryReset
+            target.draft.limitName = s.limitName
+            target.onceDate = source.onceDate
+            target.stopAfter = source.stopAfter
+            target.stopDate = source.stopDate
+            target.endpointID = source.endpointID
+            target.startMinute = source.startMinute
+            target.endMinute = source.endMinute
+        case .time:
+            target.draft.hour = s.hour
+            target.draft.minute = s.minute
+        case .onceDay: target.onceDate = source.onceDate
+        case .days:
+            target.draft.days = s.days
+            if kind(target.draft.mode) == "daily" && kind(s.mode) == "daily" { target.draft.mode = s.mode }
+        case .every: target.draft.intervalMinutes = s.intervalMinutes
+        case .window:
+            target.draft.onlyBetween = s.onlyBetween
+            target.draft.startHour = s.startHour
+            target.draft.endHour = s.endHour
+            target.startMinute = source.startMinute
+            target.endMinute = source.endMinute
+        case .stop:
+            target.stopAfter = source.stopAfter
+            target.stopDate = source.stopDate
+        case .cron: target.draft.cron = s.cron
+        case .limit:
+            target.endpointID = source.endpointID
+            target.draft.limitName = s.limitName
+        case .afterEvery: target.draft.afterEveryReset = s.afterEveryReset
+        case .overlap: target.draft.queueIfRunning = s.queueIfRunning
+        case .access: target.draft.readOnly = s.readOnly
+        case .runOnStart: target.draft.runOnStart = s.runOnStart
+        case .continuity: target.draft.rememberLast = s.rememberLast
+        case .call: target.draft.showAsCall = s.showAsCall
+        case .block: target.draft.blockMinutes = s.blockMinutes
+        case .runLimit:
+            target.draft.runLimit = s.runLimit
+            target.limitSet = source.limitSet
+        }
+    }
+
+    /// The parts the person changed on this iPhone since `base`.
+    static func touched(_ form: BotRoutineForm, from base: BotRoutineForm) -> [BotRoutinePart] {
+        BotRoutinePart.allCases.filter { value($0, form) != value($0, base) }
+    }
+
+    static func scheduleTouched(_ form: BotRoutineForm, from base: BotRoutineForm) -> Bool {
+        touched(form, from: base).contains { $0.isSchedule }
+    }
+
+    /// Everything the schedule depends on, to tell when to ask the desktop about it again.
+    static func signature(_ form: BotRoutineForm) -> String {
+        BotRoutinePart.allCases.filter(\.isSchedule).map { value($0, form) }.joined(separator: "|") + "|" + (form.zone ?? "-")
+    }
 
     // MARK: Phone to desktop
 
-    /// The schedule to send, or nil when a limit reset routine has no limit picked.
-    static func schedule(_ form: BotRoutineForm) -> [String: Any]? {
-        let draft = form.draft
-        let zone = TimeZone.current.identifier
-        let clock = String(format: "%02d:%02d", draft.hour, draft.minute)
-        let days = Weekday.allCases.filter { draft.days.contains($0) }.map(\.rawValue)
-        switch draft.mode {
-        case .once:
-            let calendar = Calendar.current
-            var parts = calendar.dateComponents([.year, .month, .day], from: form.onceDate)
-            parts.hour = draft.hour
-            parts.minute = draft.minute
-            let at = calendar.date(from: parts) ?? form.onceDate
-            return ["kind": "once", "at": TasksWire.iso(at)]
-        case .daily:
-            return ["kind": "daily", "time": clock, "time_zone": zone]
-        case .weekdays:
-            return ["kind": "daily", "time": clock, "time_zone": zone, "weekdays": [0, 1, 2, 3, 4]]
-        case .weekly:
-            return ["kind": "daily", "time": clock, "time_zone": zone, "weekdays": days]
-        case .interval:
-            var out: [String: Any] = ["kind": "interval", "every_minutes": draft.intervalMinutes, "time_zone": zone]
-            if !days.isEmpty && days.count < 7 { out["weekdays"] = days }
-            if draft.onlyBetween {
-                out["window"] = ["start": String(format: "%02d:00", draft.startHour), "end": String(format: "%02d:00", draft.endHour)]
-            }
-            if form.stopAfter {
-                let calendar = Calendar.current
-                let end = calendar.date(bySettingHour: 23, minute: 59, second: 0, of: form.stopDate) ?? form.stopDate
-                out["ends_at"] = TasksWire.iso(end)
-            }
-            return out
-        case .custom:
-            return ["kind": "cron", "expression": draft.cron.trimmingCharacters(in: .whitespaces), "time_zone": zone]
-        case .limitReset:
-            guard !form.endpointID.isEmpty else { return nil }
-            return ["kind": "limit_reset", "endpoint_id": form.endpointID, "repeat": draft.afterEveryReset ? "every_reset" : "once"]
-        }
+    /// The zone a schedule built whole on this iPhone names: the routine's own; for one with none, nothing
+    /// (the desktop keeps using its own), except a custom schedule, which the desktop requires to name one.
+    static func sendZone(_ form: BotRoutineForm) -> String? {
+        form.zone ?? (kind(form.draft.mode) == "cron" ? TimeZone.current.identifier : nil)
     }
 
-    /// Everything the schedule depends on, to tell whether the person changed it.
-    static func signature(_ form: BotRoutineForm) -> String {
-        let draft = form.draft
-        let days = Weekday.allCases.filter { draft.days.contains($0) }.map { String($0.rawValue) }.joined()
-        let clock = "\(draft.hour):\(draft.minute)"
-        switch draft.mode {
-        case .once:
-            let parts = Calendar.current.dateComponents([.year, .month, .day], from: form.onceDate)
-            return "once|\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)|\(clock)"
-        case .daily: return "daily|\(clock)"
-        case .weekdays: return "weekdays|\(clock)"
-        case .weekly: return "weekly|\(days)|\(clock)"
-        case .interval:
-            let stop: String
-            if form.stopAfter {
-                let parts = Calendar.current.dateComponents([.year, .month, .day], from: form.stopDate)
-                stop = "\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)"
+    private static func onceAt(_ form: BotRoutineForm) -> Date {
+        let calendar = Calendar.current
+        var parts = calendar.dateComponents([.year, .month, .day], from: form.onceDate)
+        parts.hour = form.draft.hour
+        parts.minute = form.draft.minute
+        return calendar.date(from: parts) ?? form.onceDate
+    }
+
+    /// The end of the stop day as a wall-clock time with no offset: the desktop reads it in the schedule's
+    /// own zone, or its machine's when the schedule names none (bot_schedules.py: parse_instant).
+    private static func stopText(_ form: BotRoutineForm) -> String {
+        let parts = calendar(form).dateComponents([.year, .month, .day], from: form.stopDate)
+        return String(format: "%04d-%02d-%02dT23:59:00", parts.year ?? 2000, parts.month ?? 1, parts.day ?? 1)
+    }
+
+    private static func clock(_ hour: Int, _ minute: Int) -> String { String(format: "%02d:%02d", hour, minute) }
+
+    /// Write one part into a schedule.
+    private static func put(_ part: BotRoutinePart, _ form: BotRoutineForm, into out: inout [String: Any]) {
+        let d = form.draft
+        let k = kind(d.mode)
+        switch part {
+        case .time, .onceDay:
+            if k == "daily" { out["time"] = clock(d.hour, d.minute) }
+            if k == "once" { out["at"] = TasksWire.iso(onceAt(form)) }
+        case .days:
+            guard k == "daily" || k == "interval" else { return }
+            let days = effectiveDays(form)
+            if days.isEmpty || days.count == 7 {
+                out.removeValue(forKey: "weekdays")
             } else {
-                stop = "-"
+                out["weekdays"] = days
             }
-            let window = draft.onlyBetween ? "\(draft.startHour)-\(draft.endHour)" : "-"
-            return "interval|\(draft.intervalMinutes)|\(days)|\(window)|\(stop)"
-        case .custom: return "cron|\(draft.cron.trimmingCharacters(in: .whitespaces))"
-        case .limitReset: return "reset|\(form.endpointID)|\(draft.afterEveryReset)"
+        case .every:
+            if k == "interval" { out["every_minutes"] = d.intervalMinutes }
+        case .window:
+            guard k == "interval" else { return }
+            if d.onlyBetween {
+                out["window"] = ["start": clock(d.startHour, form.startMinute), "end": clock(d.endHour, form.endMinute)]
+            } else {
+                out.removeValue(forKey: "window")
+            }
+        case .stop:
+            guard k == "interval" else { return }
+            if form.stopAfter {
+                out["ends_at"] = stopText(form)
+            } else {
+                out.removeValue(forKey: "ends_at")
+            }
+        case .cron:
+            if k == "cron" { out["expression"] = d.cron.trimmingCharacters(in: .whitespaces) }
+        case .limit:
+            if k == "limit_reset" { out["endpoint_id"] = form.endpointID }
+        case .afterEvery:
+            if k == "limit_reset" { out["repeat"] = d.afterEveryReset ? "every_reset" : "once" }
+        default:
+            break
         }
     }
 
-    /// Only what differs from `base`: never a value the person did not change on this phone.
-    /// A schedule that changed but cannot be sent is NSNull.
-    static func changes(_ form: BotRoutineForm, from base: BotRoutineForm) -> [String: Any] {
-        let draft = form.draft
-        let old = base.draft
-        var out: [String: Any] = [:]
-        if cleanName(draft.name) != cleanName(old.name) { out["name"] = cleanName(draft.name) }
-        let instructions = draft.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        if instructions != old.instructions.trimmingCharacters(in: .whitespacesAndNewlines) { out["instructions"] = instructions }
-        if signature(form) != signature(base) { out["schedule"] = schedule(form) ?? NSNull() }
-        if draft.queueIfRunning != old.queueIfRunning { out["overlap"] = draft.queueIfRunning ? "queue" : "skip" }
-        if draft.readOnly != old.readOnly { out["access"] = draft.readOnly ? "read-and-draft" : "normal" }
-        if draft.runOnStart != old.runOnStart { out["run_on_startup"] = draft.runOnStart }
-        if draft.rememberLast != old.rememberLast { out["continuity"] = draft.rememberLast }
-        if draft.showAsCall != old.showAsCall { out["call"] = draft.showAsCall }
-        if draft.blockMinutes != old.blockMinutes { out["duration_minutes"] = draft.blockMinutes }
-        if form.limitSet && (draft.runLimit != old.runLimit || !base.limitSet) { out["timeout_minutes"] = draft.runLimit }
+    /// The schedule to send, or nil when a limit reset routine has no limit picked. Editing a stored schedule of
+    /// the same kind starts from it exactly as stored and replaces only the parts the person changed: its zone,
+    /// its anchor, its window minutes and its exact end stay. A new routine, or a new kind, is built whole.
+    static func schedule(_ form: BotRoutineForm, base: BotRoutineForm?) -> [String: Any]? {
+        let k = kind(form.draft.mode)
+        if k == "limit_reset" && form.endpointID.isEmpty { return nil }
+        if let base, let stored = base.stored, kind(base.draft.mode) == k,
+           var out = BotRoutineWire.plain(stored) as? [String: Any] {
+            for part in touched(form, from: base) where part.isSchedule { put(part, form, into: &out) }
+            // A stored schedule with no zone is sent with none, so the desktop keeps using its own.
+            if out["time_zone"] is NSNull { out.removeValue(forKey: "time_zone") }
+            return out
+        }
+        var out: [String: Any] = ["kind": k]
+        for part in BotRoutinePart.allCases where part.isSchedule { put(part, form, into: &out) }
+        if k == "daily" || k == "interval" || k == "cron", let zone = sendZone(form) { out["time_zone"] = zone }
         return out
+    }
+
+    /// Only what the person changed since `base`: never a value they did not change on this iPhone. A schedule
+    /// this editor cannot show exactly is never sent. A schedule that changed but cannot be sent is NSNull.
+    static func changes(_ form: BotRoutineForm, from base: BotRoutineForm) -> [String: Any] {
+        let d = form.draft
+        var out: [String: Any] = [:]
+        let parts = touched(form, from: base)
+        for part in parts where !part.isSchedule {
+            switch part {
+            case .name: out["name"] = cleanName(d.name)
+            case .instructions: out["instructions"] = d.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .overlap: out["overlap"] = d.queueIfRunning ? "queue" : "skip"
+            case .access: out["access"] = d.readOnly ? "read-and-draft" : "normal"
+            case .runOnStart: out["run_on_startup"] = d.runOnStart
+            case .continuity: out["continuity"] = d.rememberLast
+            case .call: out["call"] = d.showAsCall
+            case .block: out["duration_minutes"] = d.blockMinutes
+            case .runLimit: if form.limitSet { out["timeout_minutes"] = d.runLimit }
+            default: break
+            }
+        }
+        if base.exact && parts.contains(where: { $0.isSchedule }) {
+            let sent: Any = Self.schedule(form, base: base) ?? NSNull()
+            out["schedule"] = sent
+        }
+        return out
+    }
+
+    // MARK: After a re-read
+
+    /// Whether the desktop's routine `fresh` has every part the person changed since `base`.
+    static func landed(_ form: BotRoutineForm, from base: BotRoutineForm, in fresh: BotRoutineForm) -> Bool {
+        let parts = touched(form, from: base)
+        if parts.contains(where: { $0.isSchedule }) && !fresh.exact { return false }
+        return parts.allSatisfy { value($0, form) == value($0, fresh) }
+    }
+
+    /// The desktop's routine as read again (`fresh`), with the person's own changes (since `old`) on top. Parts the
+    /// person did not touch take the desktop's values. A part both changed differently is listed in `conflicts`.
+    /// A schedule of another kind on either side moves as one piece.
+    static func rebase(_ form: BotRoutineForm, from old: BotRoutineForm, onto fresh: BotRoutineForm)
+        -> (form: BotRoutineForm, conflicts: [BotRoutinePart]) {
+        var out = fresh
+        var conflicts: [BotRoutinePart] = []
+        let mine = Set(touched(form, from: old))
+        let theirs = Set(touched(fresh, from: old))
+        for part in BotRoutinePart.allCases where !part.isSchedule && mine.contains(part) {
+            copy(part, from: form, into: &out)
+            if theirs.contains(part) && value(part, fresh) != value(part, form) { conflicts.append(part) }
+        }
+        let scheduleParts = BotRoutinePart.allCases.filter(\.isSchedule)
+        let mineInSchedule = scheduleParts.filter { mine.contains($0) }
+        guard !mineInSchedule.isEmpty else { return (out, conflicts) }
+        guard fresh.exact else {
+            // The desktop now has a schedule this iPhone cannot change: the desktop's stays, and the editor says so.
+            conflicts.append(.kind)
+            return (out, conflicts)
+        }
+        let sameKind = value(.kind, form) == value(.kind, old) && value(.kind, fresh) == value(.kind, old)
+        if sameKind {
+            for part in mineInSchedule {
+                copy(part, from: form, into: &out)
+                if theirs.contains(part) && value(part, fresh) != value(part, form) { conflicts.append(part) }
+            }
+        } else {
+            copy(.kind, from: form, into: &out)
+            if scheduleParts.contains(where: { theirs.contains($0) }) && signature(fresh) != signature(out) {
+                conflicts.append(.kind)
+            }
+        }
+        return (out, conflicts)
+    }
+
+    // MARK: In words
+
+    static func daysText(_ form: BotRoutineForm) -> String {
+        let days = effectiveDays(form)
+        if days.count == 7 { return "every day" }
+        if days == [0, 1, 2, 3, 4] { return "weekdays" }
+        return days.compactMap { Weekday(rawValue: $0)?.short }.joined(separator: ", ")
+    }
+
+    static func scheduleText(_ form: BotRoutineForm) -> String {
+        let d = form.draft
+        switch d.mode {
+        case .once:
+            return "once on \(form.onceDate.formatted(.dateTime.month(.abbreviated).day())) at \(clockText(d.hour, d.minute))"
+        case .daily, .weekdays, .weekly:
+            return "\(daysText(form)) at \(clockText(d.hour, d.minute))"
+        case .interval:
+            var text = "every \(d.intervalMinutes) min"
+            if effectiveDays(form).count < 7 { text += " on \(daysText(form))" }
+            if d.onlyBetween { text += ", \(clockText(d.startHour, form.startMinute)) to \(clockText(d.endHour, form.endMinute))" }
+            return text
+        case .custom:
+            return "the custom schedule \(d.cron.trimmingCharacters(in: .whitespaces))"
+        case .limitReset:
+            return d.afterEveryReset ? "after every \(d.limitName) reset" : "once, after the next \(d.limitName) reset"
+        }
+    }
+
+    static func text(_ part: BotRoutinePart, _ form: BotRoutineForm) -> String {
+        let d = form.draft
+        switch part {
+        case .name: return "\"\(cleanName(d.name))\""
+        case .instructions:
+            let text = d.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\"" + (text.count > 40 ? String(text.prefix(40)) + "…" : text) + "\""
+        case .kind: return scheduleText(form)
+        case .time: return clockText(d.hour, d.minute)
+        case .onceDay: return form.onceDate.formatted(.dateTime.month(.abbreviated).day())
+        case .days: return daysText(form)
+        case .every: return "every \(d.intervalMinutes) min"
+        case .window:
+            return d.onlyBetween ? "\(clockText(d.startHour, form.startMinute)) to \(clockText(d.endHour, form.endMinute))" : "any hour"
+        case .stop:
+            guard form.stopAfter else { return "no end" }
+            var style = Date.FormatStyle(date: .abbreviated, time: .omitted)
+            style.timeZone = calendar(form).timeZone
+            return "after \(form.stopDate.formatted(style))"
+        case .cron: return d.cron.trimmingCharacters(in: .whitespaces)
+        case .limit: return d.limitName
+        case .afterEvery: return d.afterEveryReset ? "after every reset" : "once, after the next"
+        case .overlap: return d.queueIfRunning ? "queue one for after" : "skip the new run"
+        case .access: return d.readOnly ? "on" : "off"
+        case .runOnStart: return d.runOnStart ? "on" : "off"
+        case .continuity: return d.rememberLast ? "on" : "off"
+        case .call: return d.showAsCall ? "on" : "off"
+        case .block: return "\(d.blockMinutes) min"
+        case .runLimit: return form.limitSet ? "\(d.runLimit) min" : "not set"
+        }
+    }
+
+    /// One plain line naming each part both sides changed, with both values.
+    static func conflictLine(_ conflicts: [BotRoutinePart], mine: BotRoutineForm, desktop: BotRoutineForm) -> String? {
+        guard !conflicts.isEmpty else { return nil }
+        var kept = false
+        let items = conflicts.map { part -> String in
+            if part == .kind && !desktop.exact {
+                return "Schedule: your desktop changed it to \"\(desktop.sentence ?? "a schedule")\", which can only be changed there, so your schedule change was not kept"
+            }
+            kept = true
+            let theirs = part == .kind ? (desktop.sentence ?? scheduleText(desktop)) : text(part, desktop)
+            return "\(part.label): your desktop has \(theirs), yours is \(text(part, mine))"
+        }
+        return "Also changed on your desktop. " + items.joined(separator: "; ") + (kept ? ". Saving sends yours." : ".")
+    }
+
+    /// The zone the desktop's next times are shown in: the schedule's own. A daily schedule with no zone uses the
+    /// desktop machine's, which it does not name; its stored time and its next run give that zone's offset.
+    /// Nil: this iPhone's.
+    static func shownZone(schedule: [String: Any], next: [Date]) -> TimeZone? {
+        let kind = schedule["kind"] as? String
+        guard kind == "daily" || kind == "interval" || kind == "cron" else { return nil }
+        if let name = schedule["time_zone"] as? String, !name.isEmpty { return TimeZone(identifier: name) }
+        guard kind == "daily", let first = next.first, let wall = TasksWire.clock(schedule["time"] as? String) else { return nil }
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        let parts = utc.dateComponents([.hour, .minute], from: first)
+        var offset = wall.hour * 60 + wall.minute - ((parts.hour ?? 0) * 60 + (parts.minute ?? 0))
+        if offset > 14 * 60 { offset -= 1440 }
+        if offset < -12 * 60 { offset += 1440 }
+        return TimeZone(secondsFromGMT: offset * 60)
     }
 }
 
 /// Times in plain words for runs that already happened.
-enum BotRoutineText {
+nonisolated enum BotRoutineText {
     static func past(_ date: Date, now: Date = Date()) -> String {
         let calendar = Calendar.current
         let clock = clockText(calendar.component(.hour, from: date), calendar.component(.minute, from: date))
