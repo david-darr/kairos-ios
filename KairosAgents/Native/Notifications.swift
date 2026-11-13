@@ -131,7 +131,7 @@ nonisolated struct Notice: Hashable, Sendable {
     /// The line under the headline: what to do next.
     var hint: String {
         switch kind {
-        case .approval: "Approve, deny or reply from here."
+        case .approval: "Allow, deny or reply from here."
         case .question: "Tap to answer in Kairos."
         case .replyReady: "Tap to open the chat."
         case .workDone: "Tap to see what it made."
@@ -209,7 +209,7 @@ final class NativeNotifications {
     static let callBackAction = "kairos.callback"
 
     static var categories: Set<UNNotificationCategory> {
-        let approve = UNNotificationAction(identifier: approveAction, title: "Approve", options: [.authenticationRequired],
+        let approve = UNNotificationAction(identifier: approveAction, title: "Allow", options: [.authenticationRequired],
                                            icon: UNNotificationActionIcon(systemImageName: "checkmark"))
         let deny = UNNotificationAction(identifier: denyAction, title: "Deny", options: [.destructive, .authenticationRequired],
                                         icon: UNNotificationActionIcon(systemImageName: "xmark"))
@@ -218,7 +218,7 @@ final class NativeNotifications {
                                                   textInputButtonTitle: "Send", textInputPlaceholder: "Your answer")
         let open = UNNotificationAction(identifier: openAction, title: "Open", options: [.foreground],
                                         icon: UNNotificationActionIcon(systemImageName: "arrow.up.forward.app"))
-        let retry = UNNotificationAction(identifier: retryAction, title: "Try again", options: [.authenticationRequired],
+        let retry = UNNotificationAction(identifier: retryAction, title: "Try again", options: [.authenticationRequired, .foreground],
                                          icon: UNNotificationActionIcon(systemImageName: "arrow.clockwise"))
         let snooze = UNNotificationAction(identifier: snoozeAction, title: "Remind me in 10 minutes", options: [],
                                           icon: UNNotificationActionIcon(systemImageName: "clock"))
@@ -306,6 +306,11 @@ final class NativeNotifications {
     func handle(action: String, text: String?, info: [String: String]) async {
         let link = info["link"].flatMap(URL.init(string:)).flatMap(NativeLink.init(url:)) ?? .home
         let request = info["request_id"] ?? ""
+        // An answer needs the request it answers; without one, open the approval or chat instead.
+        if request.isEmpty, [Self.approveAction, Self.denyAction, Self.replyAction].contains(action) {
+            NativeLinks.shared.open(link)
+            return
+        }
         switch action {
         case Self.approveAction:
             await PushBridge.answer(request, "once", nil)
@@ -315,7 +320,13 @@ final class NativeNotifications {
             let words = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !words.isEmpty { await PushBridge.answer(request, "reply", words) }
         case Self.retryAction:
-            await NativeBridge.retry(info["activity_id"] ?? "", info["activity_kind"] ?? "")
+            // Retry only works for a turn the phone watched; otherwise open the chat so the button still does something.
+            let turn = info["activity_id"] ?? ""
+            if !turn.isEmpty, await NativeBridge.canRetry(turn) {
+                await NativeBridge.retry(turn, info["activity_kind"] ?? "")
+            } else {
+                NativeLinks.shared.open(link)
+            }
         case Self.snoozeAction:
             if let kind = info["kind"].flatMap(NoticeKind.init(rawValue:)) {
                 await post(Notice(kind: kind, link: link), after: 600)

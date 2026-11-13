@@ -24,7 +24,8 @@ Registrations are removed when Apple says a token is no longer valid (status 410
 
 ## What each push says
 
-- **Alert:** only who and what kind: "Kip sent you a message", "Kip needs you", "Kip is waiting for your approval", "Kip finished a task". The relay builds the sentence from a fixed list, so a caller cannot send free text.
+- **Alert:** who it is from as the title, and one fixed line for what kind: "Kip wants your approval", "Kip is waiting for your answer", "Your reply is ready", "Kip finished a task", "A task couldn't finish". These are the phone's own lines, word for word, and a test checks them against the app. The chat's title, when the desktop sends one, is the subtitle. The relay builds the line from a fixed list, so a caller cannot send a message's text. It also sets the notification category (`kairos.<notice>`, which gives the phone its Allow, Deny and Reply buttons), a thread id so one chat's notifications group, and passes on a `kairos-agents://` link and opaque ids so a tap opens the right chat or approval.
+- **Old style alert:** a request with `what` and no `notice` still gets the original generic line ("Kip sent you a message", "Kip needs you", "Kip is waiting for your approval", "Kip finished a task") under the title "Kairos".
 - **Call (ring):** a ring id, an expiry time and a short caller label. The relay refuses a ring that has already expired, so the phone is never woken for a call that is over.
 - **Live Activity:** start, update, end, sent to that activity's own token with a small status object. Keep that object generic (a phase name, a percentage). Do not put message content in it.
 
@@ -45,11 +46,14 @@ Register: `{"apns_token":"hex","voip_token":"hex or null","environment":"sandbox
 Push bodies:
 
 ```json
+{"kind":"alert","notice":"approval|question|replyReady|workDone|workFailed","who":"Kip","title":"optional chat title","link":"kairos-agents://chat/abc","request_id":"optional","thread_id":"optional","activity_id":"optional","activity_kind":"optional","collapse_id":"optional"}
 {"kind":"alert","what":"message|needs_you|approval|done","who":"Kip","collapse_id":"optional"}
 {"kind":"ring","ring_id":"abc","expires_at":1800000060,"who":"Kip"}
 {"kind":"activity","event":"start","push_token":"hex","activity_type":"ChatRunAttributes","attributes":{},"content_state":{},"who":"Kip"}
 {"kind":"activity","event":"update|end","push_token":"hex","content_state":{},"stale_date":0,"dismissal_date":0}
 ```
+
+Alert fields with `notice`: `who` is cut to 40 characters and `title` to 80, each made one line (control characters, line breaks and direction overrides become spaces); a missing `who` reads "Kairos". `link` must be a `kairos-agents://` link of a known kind, `request_id` and `activity_id` up to 128 letters, digits and `_ . : -`, `thread_id` and `collapse_id` up to 64. A field that fails its check is dropped, not sent; an unknown `notice` is refused with `400`. `activity_id` goes out only with `activity_kind`. Without `thread_id`, a chat link groups by chat (`chat-<id>`), anything else by kind. Approvals and questions are time sensitive. Any other field (such as message text) is ignored.
 
 Success is `200 {"ok":true,"apns_id":"..."}`. Other answers: `401` bad signature, `409` ring expired or no token of that kind, `410` token gone (and removed), `422` Apple rejected it, `429` slow down (see `retry-after`), `503` Apple busy.
 
@@ -60,7 +64,7 @@ At registration the relay returns a random secret and keeps only its SHA-256 has
 - `X-Kairos-Timestamp`: unix seconds
 - `X-Kairos-Signature`: lowercase hex HMAC-SHA256 of `timestamp + "\n" + METHOD + "\n" + path + "\n" + sha256hex(raw body)`
 
-Requests more than 2 minutes off the relay's clock are refused, so a captured request cannot be replayed later. Because the relay needs the hash to check signatures, someone who could read the storage could push to those phones (generic text only). Treat the KV namespace as private.
+Requests more than 2 minutes off the relay's clock are refused, so a captured request cannot be replayed later. Because the relay needs the hash to check signatures, someone who could read the storage could push to those phones (the fixed lines only, with a name and a title). Treat the KV namespace as private.
 
 ## Limits
 
@@ -87,7 +91,7 @@ Apple's push service is free. Cloudflare's free Workers plan covers 100,000 requ
 
 ## Privacy note for the app
 
-Kairos uses a small relay to deliver notifications. The relay and Apple can see that a notification or call was sent to your phone, and when. They do not see your messages, your audio, or what a bot said. Notifications name who and what kind ("Kip needs you"), nothing more. The relay keeps your phone's push token until you remove the phone in Kairos settings or Apple reports the token invalid. Push is opt-in.
+Kairos uses a small relay to deliver notifications. The relay and Apple can see that a notification or call was sent to your phone, and when. They do not see your messages, your audio, or what a bot said. Notifications name who and what kind ("Kip wants your approval") and the chat's title, nothing more. When the app's Private setting is on, the phone tells the desktop and the desktop leaves the chat's title out, so the relay never receives it. The relay keeps your phone's push token until you remove the phone in Kairos settings or Apple reports the token invalid. Push is opt-in.
 
 ## Not verified yet
 

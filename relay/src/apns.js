@@ -76,24 +76,88 @@ const ALERT_TEXT = {
 };
 export const ALERT_KINDS = Object.keys(ALERT_TEXT);
 
-export function cleanLabel(value, fallback = "Kairos") {
-  if (typeof value !== "string") return fallback;
-  const s = value.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 40);
-  return s || fallback;
+// The phone's notification kinds the desktop sends (kairos-ios KairosAgents/Native/Notifications.swift,
+// NoticeKind). Each line is exactly the phone's own `headline` (test/wording.test.js checks it);
+// the title of the notification is who it is from.
+const NOTICE_TEXT = {
+  approval: (who) => `${who} wants your approval`,
+  question: (who) => `${who} is waiting for your answer`,
+  replyReady: () => "Your reply is ready",
+  workDone: (who) => `${who} finished a task`,
+  workFailed: () => "A task couldn't finish",
+};
+export const NOTICE_KINDS = Object.keys(NOTICE_TEXT);
+export function noticeLine(notice, who) {
+  return NOTICE_TEXT[notice](who);
+}
+const TIME_SENSITIVE = new Set(["approval", "question"]);
+
+export const LIMITS = { who: 40, title: 80, link: 256, id: 128, thread: 64 };
+const LINK_RE = /^kairos-agents:\/\/(chat|bot|approval|ring|call|ask|area|tab|home|desktop|new-chat)(\/[A-Za-z0-9_.-]{1,128})?(\?bot=[A-Za-z0-9_-]{1,64})?$/;
+const ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+const THREAD_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+const COLLAPSE_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+// One line of plain text: control, line and paragraph separators and bidi overrides become spaces,
+// runs of space collapse, and the result is cut to `max` characters (never inside a surrogate pair).
+export function cleanText(value, max) {
+  if (typeof value !== "string") return "";
+  const s = value.replace(/[\p{Cc}\p{Zl}\p{Zp}‪-‮⁦-⁩]/gu, " ").replace(/\s+/g, " ").trim();
+  return Array.from(s).slice(0, max).join("").trim();
 }
 
+export function cleanLabel(value, fallback = "Kairos") {
+  return cleanText(value, LIMITS.who) || fallback;
+}
+
+const pick = (value, re, max) => (typeof value === "string" && value.length <= max && re.test(value) ? value : null);
+
 export function buildAlert(body, bundleId, nowSeconds) {
-  if (!ALERT_KINDS.includes(body.what)) return { error: "bad_what", message: `what must be one of ${ALERT_KINDS.join(", ")}.` };
-  const text = ALERT_TEXT[body.what](cleanLabel(body.who));
   const message = {
     tokenField: "apns_token",
     topic: bundleId,
     pushType: "alert",
     priority: 10,
     expiration: nowSeconds + 3600,
-    payload: { aps: { alert: { title: "Kairos", body: text }, sound: "default" }, kind: body.what },
   };
-  if (typeof body.collapse_id === "string" && /^[A-Za-z0-9_.:-]{1,64}$/.test(body.collapse_id)) message.collapseId = body.collapse_id;
+  const collapse = pick(body.collapse_id, COLLAPSE_RE, 64);
+  if (collapse) message.collapseId = collapse;
+
+  // Without `notice` this is the original generic alert, unchanged.
+  if (body.notice === undefined) {
+    if (!ALERT_KINDS.includes(body.what)) return { error: "bad_what", message: `what must be one of ${ALERT_KINDS.join(", ")}.` };
+    const text = ALERT_TEXT[body.what](cleanLabel(body.who));
+    message.payload = { aps: { alert: { title: "Kairos", body: text }, sound: "default" }, kind: body.what };
+    return { message };
+  }
+
+  if (!NOTICE_KINDS.includes(body.notice)) return { error: "bad_notice", message: `notice must be one of ${NOTICE_KINDS.join(", ")}.` };
+  const who = cleanLabel(body.who);
+  const alert = { title: who, body: NOTICE_TEXT[body.notice](who) };
+  const title = cleanText(body.title, LIMITS.title);
+  if (title) alert.subtitle = title;
+  const link = pick(body.link, LINK_RE, LIMITS.link);
+  const requestId = pick(body.request_id, ID_RE, LIMITS.id);
+  const chat = link && /^kairos-agents:\/\/chat\/([A-Za-z0-9_.-]+)$/.exec(link);
+  const thread = pick(body.thread_id, THREAD_RE, LIMITS.thread) ?? (chat ? `chat-${chat[1]}`.slice(0, LIMITS.thread) : body.notice);
+  const aps = {
+    alert,
+    sound: "default",
+    category: `kairos.${body.notice}`,
+    "thread-id": thread,
+    "interruption-level": TIME_SENSITIVE.has(body.notice) ? "time-sensitive" : "active",
+  };
+  // Custom keys exactly as the phone reads them (NativeNotifications.handle): strings only.
+  const payload = { aps, kind: body.notice };
+  if (link) payload.link = link;
+  if (requestId) payload.request_id = requestId;
+  const activityId = pick(body.activity_id, ID_RE, LIMITS.id);
+  const activityKind = pick(body.activity_kind, /^[A-Za-z_]{1,32}$/, 32);
+  if (activityId && activityKind) {
+    payload.activity_id = activityId;
+    payload.activity_kind = activityKind;
+  }
+  message.payload = payload;
   return { message };
 }
 

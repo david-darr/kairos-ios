@@ -235,6 +235,78 @@ test("alert: unknown 'what' is refused, label is cleaned", async () => {
   assert.ok(text.length <= 40 + " needs you".length);
 });
 
+test("alert with notice: who, kind line, chat title, category, thread, custom keys, never message text", async () => {
+  const world = makeWorld();
+  const { env } = await makeEnv();
+  const inst = await register(world, env);
+  const res = await push(world, env, inst, {
+    kind: "alert", what: "approval", notice: "approval", who: "Kip", title: "Plan the launch",
+    link: "kairos-agents://approval/perm_1?bot=kip", request_id: "perm_1", thread_id: "bot-kip",
+    collapse_id: "kairos-run1", text: "SECRET MESSAGE BODY", preview: "SECRET2",
+  });
+  assert.equal(res.status, 200);
+  const { init } = world.calls[0];
+  assert.equal(init.headers["apns-collapse-id"], "kairos-run1");
+  assert.deepEqual(JSON.parse(init.body), {
+    aps: {
+      alert: { title: "Kip", subtitle: "Plan the launch", body: "Kip wants your approval" },
+      sound: "default", category: "kairos.approval", "thread-id": "bot-kip", "interruption-level": "time-sensitive",
+    },
+    kind: "approval", link: "kairos-agents://approval/perm_1?bot=kip", request_id: "perm_1",
+  });
+  assert.ok(!init.body.includes("SECRET"));
+});
+
+test("alert with notice: each kind's line, thread from the chat link, retry ids", async () => {
+  const world = makeWorld();
+  const { env } = await makeEnv();
+  const inst = await register(world, env);
+  const lines = { approval: "Ada wants your approval", question: "Ada is waiting for your answer", replyReady: "Your reply is ready",
+    workDone: "Ada finished a task", workFailed: "A task couldn't finish" };
+  for (const [notice, line] of Object.entries(lines)) {
+    assert.equal((await push(world, env, inst, { kind: "alert", notice, who: "Ada", link: "kairos-agents://chat/abc123" })).status, 200);
+    const payload = JSON.parse(world.calls.at(-1).init.body);
+    assert.equal(payload.aps.alert.body, line);
+    assert.equal(payload.aps.alert.title, "Ada");
+    assert.equal(payload.aps.alert.subtitle, undefined);
+    assert.equal(payload.aps.category, `kairos.${notice}`);
+    assert.equal(payload.aps["thread-id"], "chat-abc123");
+    assert.equal(payload.kind, notice);
+    assert.equal(payload.link, "kairos-agents://chat/abc123");
+  }
+  await push(world, env, inst, { kind: "alert", notice: "workFailed", activity_id: "run_9", activity_kind: "reply" });
+  const failed = JSON.parse(world.calls.at(-1).init.body);
+  assert.equal(failed.activity_id, "run_9");
+  assert.equal(failed.activity_kind, "reply");
+  assert.equal(failed.aps.alert.title, "Kairos");
+  assert.equal(failed.aps["thread-id"], "workFailed");
+  assert.equal(failed.aps["interruption-level"], "active");
+});
+
+test("alert with notice: unknown notice is refused; bad fields are cleaned or dropped", async () => {
+  const world = makeWorld();
+  const { env } = await makeEnv();
+  const inst = await register(world, env);
+  assert.equal((await push(world, env, inst, { kind: "alert", notice: "Free text" })).status, 400);
+  assert.equal((await push(world, env, inst, { kind: "alert", notice: "message" })).status, 400);
+  assert.equal(world.calls.length, 0);
+  const res = await push(world, env, inst, {
+    kind: "alert", notice: "question", who: "Kip‮\n\u0000", title: "Line one\nline two\u0007" + "y".repeat(200),
+    link: "https://evil.example/x", request_id: "bad id with spaces", thread_id: "x".repeat(65), activity_id: "run_1",
+  });
+  assert.equal(res.status, 200);
+  const payload = JSON.parse(world.calls[0].init.body);
+  assert.equal(payload.aps.alert.title, "Kip");
+  assert.ok(payload.aps.alert.subtitle.startsWith("Line one line two y"));
+  assert.equal(Array.from(payload.aps.alert.subtitle).length, 80);
+  assert.ok(!/[\u0000-\u001f‮]/.test(JSON.stringify(payload.aps.alert)));
+  assert.equal(payload.link, undefined);
+  assert.equal(payload.request_id, undefined);
+  assert.equal(payload.activity_id, undefined); // only with its activity_kind
+  assert.equal(payload.aps["thread-id"], "question");
+  assert.equal(payload.aps["interruption-level"], "time-sensitive");
+});
+
 test("ring: voip topic, push type, priority, expiry equals the ring's expiry", async () => {
   const world = makeWorld();
   const { env } = await makeEnv();

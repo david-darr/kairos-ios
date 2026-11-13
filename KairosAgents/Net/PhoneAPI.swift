@@ -102,8 +102,9 @@ extension APIClient {
     }
 
     /// POST /api/phone/push/register. Sending again replaces the registration.
-    func phonePushRegister(apns: String, voip: String?, environment: String, locale: String) async throws {
-        var body: [String: Any] = ["apns_token": apns, "environment": environment, "locale": locale]
+    /// `detail` is the notice level (`generic` or `hideTitles`); with `hideTitles` the desktop sends no chat titles.
+    func phonePushRegister(apns: String, voip: String?, environment: String, locale: String, detail: String) async throws {
+        var body: [String: Any] = ["apns_token": apns, "environment": environment, "locale": locale, "detail": detail]
         if let voip { body["voip_token"] = voip } else { body["voip_token"] = NSNull() }
         try await call("POST", "/api/phone/push/register", json: body)
     }

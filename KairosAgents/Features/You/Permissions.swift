@@ -223,8 +223,8 @@ enum PermissionCheck {
     static func request(_ kind: PermissionMoment.Kind) async -> PermissionState {
         switch kind {
         case .notifications:
-            let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) ?? false
-            return granted ? .granted : .denied
+            // The shared ask also registers for remote notifications once allowed, so push works from here on.
+            return await NativeNotifications.shared.requestPermission() ? .granted : .denied
         case .microphone:
             guard hasUsageText("NSMicrophoneUsageDescription") else { return .unavailable }
             return await AVCaptureDevice.requestAccess(for: .audio) ? .granted : .denied

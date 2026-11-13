@@ -9,7 +9,7 @@ extension and in the app's gallery (`-kDebugView native.<name>`, list in `Tools/
 | Function | Notification | Live Activity and Dynamic Island | Widget |
 |---|---|---|---|
 | Bot rings or calls you | VoIP push reported to CallKit: native incoming-call screen with Answer and Decline (`CallCenter.reportRing`). Missed call: `missedCall` with Call back | `call` kind: face, name, timer, Mute and End on the Lock Screen, compact (face, timer), minimal, expanded (Mute, End). Gallery `activity-call`, `activity-ends` (muted). In-app: `CallView` and the minimize pill (`call`, `call-pill`) | Quick actions: Call Kip |
-| Bot needs you (approval, question) | `approval`: "Kip wants your approval", Approve, Deny, Reply inline. `question`: "Scout is waiting for your answer", Reply inline, Open. Time sensitive, communication style (the bot's face) | A running reply shows "Waiting for you" and the hand in the island (`activity-ends`) | Needs you: small, medium, circular, rectangular, inline |
+| Bot needs you (approval, question) | `approval`: "Kip wants your approval", Allow, Deny, Reply inline. `question`: "Scout is waiting for your answer", Reply inline, Open. Time sensitive, communication style (the bot's face) | A running reply shows "Waiting for you" and the hand in the island (`activity-ends`) | Needs you: small, medium, circular, rectangular, inline |
 | Reply ready (long turn) | `replyReady`: "Your reply is ready", Open | `reply` kind: step, title, where it saves, sub-agent chips, Open chat and Stop; Done and Couldn't finish with Retry (`activity-reply`) | |
 | Background task, routine run | `workDone` (Open), `workFailed` (Open, Try again) | `task` kind: progress ring, bar, Stop; Done, Couldn't finish (`activity-task`) | Running work: small, medium, large, circular, rectangular |
 | Bot team cycle | `teamUpdate`: one update from Producer per cycle, never per post | `team` kind: Research, Script, Render, Post track, stage count in the island (`activity-team`) | Team status: small, medium, rectangular |
@@ -26,16 +26,25 @@ Every notification, Live Activity and widget opens a `NativeLink` (`kairos-agent
 
 ## Privacy
 
-Three levels in Notifications settings (`native.settings`): Who and what kind (default: the bot and the kind of
+Two levels in Notifications settings (`native.settings`): Who and what kind (default: the bot and the kind of
 event, plus the chat's title), Private (titles hidden too, on notifications, Live Activities and widgets; gallery
-`activity-private`), Show a preview (opt-in: one line of the message). Widgets carry counts and titles, never
+`activity-private`). The phone sends its level with its push registration, and again when it changes, so with
+Private on the desktop leaves the chat's title out of pushes. Show a preview (one line of the message) is not listed
+yet: the relay never reads message text, so it cannot be delivered; a stored preview setting reads as the default. Widgets carry counts and titles, never
 messages, and can be turned off. Lock Screen previews fall back to "Kairos" when iOS hides previews.
 
 ## Push payload (what the desktop and the relay send)
 
-- Alerts: `aps.alert` with the generic text, `aps.category` = `kairos.<kind>` (kinds above), `aps.interruption-level`,
-  `thread-id`, and custom keys `link` (a `kairos-agents://` URL), `request_id` (approvals: choices `once`, `reject`,
-  or `reply` with text), `activity_id`, `activity_kind`, `kind`.
+- Alerts: `aps.alert` with title = who it is from (the bot's or model's name, else "Kairos"), subtitle = the chat's
+  title when sent, body = the kind's fixed line (`approval` "Kip wants your approval", `question` "Kip is waiting for
+  your answer", `replyReady` "Your reply is ready", `workDone` "Kip finished a task", `workFailed` "Kip couldn't
+  finish"); `aps.category` = `kairos.<kind>`, `aps.interruption-level` (time sensitive for approval and question),
+  `thread-id` (`bot-<id>` or `chat-<id>`), and custom keys `link` (a `kairos-agents://` URL: `approval/<request>?bot=<id>`
+  for a bot's approval, `chat/<id>` for a chat), `request_id` (approvals: choices `once`, `reject`, or `reply` with
+  text), `activity_id`, `activity_kind`, `kind`. Never message text. The relay builds this from the desktop's fields
+  (`relay/README.md`); an action without a `request_id` opens the link instead. Remote alerts are drawn by iOS, so the
+  Private level cannot hide the subtitle on the phone, and the desktop does not know the level yet: titles show.
+  The desktop sends "reply ready" only for a turn of 30 seconds or more, or one started from the phone.
 - VoIP (topic `app.kairos-agents.mobile.voip`): `ring_id`, `agent_id`, `bot_name`, `expires_at` (seconds), optional
   `kind: bot_call_end`. Only for a real ring. Repeats of one ring map to one call id.
 - Ring ended elsewhere: a background push `{"kind": "bot_call_end", "ring_id", "outcome"}` (not VoIP).
@@ -66,7 +75,7 @@ messages, and can be turned off. Lock Screen previews fall back to "Kairos" when
 - The real Lock Screen, Dynamic Island and Home Screen rendering (the gallery draws the same views, but iOS frames,
   sizes, vibrancy and stale handling only show on a device).
 - VoIP pushes, the CallKit incoming-call screen on a locked phone, audio session hand-over, Bluetooth and speaker routes.
-- Notification actions from the Lock Screen (Approve needs Face ID), inline reply, time-sensitive delivery,
+- Notification actions from the Lock Screen (Allow needs Face ID), inline reply, time-sensitive delivery,
   communication-style avatars (needs the Communication Notifications capability in the signed profile).
 - App Group sharing between the app and the extension, push tokens, Live Activity push updates.
 - Bot-sent remote notifications showing the bot's face: needs a Notification Service Extension (a new App ID);

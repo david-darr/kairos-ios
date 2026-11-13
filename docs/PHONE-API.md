@@ -88,10 +88,13 @@ One small read for the top of Home and for widgets.
 ### `POST /api/phone/push/register`
 
 ```json
-{ "apns_token": "hex", "voip_token": "hex or null", "environment": "sandbox", "locale": "en-US" }
+{ "apns_token": "hex", "voip_token": "hex or null", "environment": "sandbox", "locale": "en-US", "detail": "generic" }
 ```
 
 `204`. One registration per device; sending again replaces it. `DELETE /api/phone/push/register` removes it.
+`detail` is optional: the phone's notice level, `generic` or `hideTitles`. The phone sends the registration again
+when the person changes it. With `hideTitles` the desktop leaves the chat's title out of every push; a missing or
+unknown value (an older phone) counts as `generic`.
 
 ### `POST /api/phone/push/activity`
 

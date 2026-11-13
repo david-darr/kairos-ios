@@ -26,11 +26,13 @@ struct NotificationSettingsScreen: View {
                 VStack(alignment: .leading, spacing: 8) {
                     SectionLabel(text: "What a notification says")
                     VStack(spacing: 0) {
-                        ForEach(Array(NoticeDetail.allCases.enumerated()), id: \.element) { index, level in
+                        ForEach(Array(NoticeDetail.offered.enumerated()), id: \.element) { index, level in
                             Button {
                                 Haptics.select()
                                 withAnimation(Motion.snappy) { detail = level }
                                 NativeSettings.detail = level
+                                // The desktop leaves chat titles out of pushes when this is Private.
+                                Task { await PushBridge.detailChanged() }
                             } label: {
                                 HStack(alignment: .top, spacing: 12) {
                                     Image(systemName: detail == level ? "checkmark.circle.fill" : "circle")
@@ -51,7 +53,7 @@ struct NotificationSettingsScreen: View {
                             .buttonStyle(PressStyle(scale: 0.98))
                             .accessibilityAddTraits(detail == level ? .isSelected : [])
                             .overlay(alignment: .bottom) {
-                                if index < NoticeDetail.allCases.count - 1 { Palette.line.frame(height: 1).padding(.leading, 48) }
+                                if index < NoticeDetail.offered.count - 1 { Palette.line.frame(height: 1).padding(.leading, 48) }
                             }
                         }
                     }

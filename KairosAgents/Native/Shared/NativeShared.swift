@@ -8,7 +8,8 @@ nonisolated enum NativeIDs {
 
 /// How much a notification, a Live Activity or a widget may say on a locked phone.
 /// Generic is the default (who and what kind, plus the chat title). Private also hides titles.
-/// Preview is the person's opt-in to see a short line of the message itself.
+/// Preview would add a short line of the message itself. It is not offered yet: the relay never
+/// reads message text, so it cannot be delivered. A stored preview value reads as generic.
 nonisolated enum NoticeDetail: String, CaseIterable, Codable, Hashable, Sendable {
     case generic, hideTitles, preview
 
@@ -27,6 +28,9 @@ nonisolated enum NoticeDetail: String, CaseIterable, Codable, Hashable, Sendable
         case .preview: "Adds one short line of the message. Anyone who sees your screen can read it."
         }
     }
+
+    /// The levels the settings screen lists. Preview stays out until it can be delivered.
+    static let offered: [NoticeDetail] = [.generic, .hideTitles]
 }
 
 /// Settings the extension needs too, kept in the App Group so both read the same values.
@@ -34,7 +38,10 @@ nonisolated enum NativeSettings {
     static var store: UserDefaults { UserDefaults(suiteName: NativeIDs.appGroup) ?? .standard }
 
     static var detail: NoticeDetail {
-        get { NoticeDetail(rawValue: store.string(forKey: "noticeDetail") ?? "") ?? .generic }
+        get {
+            let stored = NoticeDetail(rawValue: store.string(forKey: "noticeDetail") ?? "") ?? .generic
+            return NoticeDetail.offered.contains(stored) ? stored : .generic
+        }
         set { store.set(newValue.rawValue, forKey: "noticeDetail") }
     }
 
@@ -57,4 +64,6 @@ nonisolated enum NativeSettings {
 nonisolated enum NativeBridge {
     nonisolated(unsafe) static var stop: @Sendable (_ activityID: String, _ kind: String) async -> Void = { _, _ in }
     nonisolated(unsafe) static var retry: @Sendable (_ activityID: String, _ kind: String) async -> Void = { _, _ in }
+    /// Whether Retry can resend this turn from here (the phone watched it). When not, a notification opens its chat.
+    nonisolated(unsafe) static var canRetry: @Sendable (_ activityID: String) async -> Bool = { _ in false }
 }
