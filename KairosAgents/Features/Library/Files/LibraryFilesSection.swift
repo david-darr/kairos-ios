@@ -32,6 +32,9 @@ struct LibraryFilesSection: View {
         .task(id: DocsLiveStore.connectionKey) {
             await live.loadAll()
         }
+        .task(id: DriveStore.connectionKey) {
+            await drive.overviewTask()
+        }
         .onChange(of: cover == nil) {
             // Back from a place: the desktop's documents and files are read again.
             if cover == nil, DocsLiveStore.paired { Task { await live.loadAll() } }
@@ -170,12 +173,8 @@ struct LibraryFilesSection: View {
         return count == 1 ? "1 file" : "\(count) files"
     }
 
-    private var driveDetail: String {
-        // The Drive sample account is never shown while paired; Drive itself is read when it opens.
-        if DocsLiveStore.paired { return "Your Google files" }
-        guard let account = drive.currentAccount else { return "Not connected" }
-        return account.broken ? "Reconnect needed" : "Connected · \(account.storage)"
-    }
+    /// Paired: the desktop's Google accounts. Not paired: the sample account, as before.
+    private var driveDetail: String { drive.overviewLine }
 
     private func placeRow(_ title: String, detail: String, symbol: String, last: Bool = false, action: @escaping () -> Void) -> some View {
         Button {
