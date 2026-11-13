@@ -10,22 +10,31 @@ struct LibraryMailSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            summary.arrives(0)
-            searchPill.arrives(1)
+            if store.readyToShow {
+                summary.arrives(0)
+                if !store.isSample, let note = store.liveNote {
+                    MailLiveLine(text: note)
+                        .transition(.opacity)
+                }
+                searchPill.arrives(1)
 
-            if store.query.trimmingCharacters(in: .whitespaces).isEmpty {
-                lists
+                if store.query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    lists
+                } else {
+                    searchResults
+                }
+
+                Button { sheet = .accounts(connect: false, error: false) } label: {
+                    GroupRow(title: "Email accounts", symbol: "at", value: "\(store.accounts.count + store.googleSenders.count)", last: true)
+                }
+                .buttonStyle(PressStyle(scale: 0.99))
+                .kCard(radius: 20)
+                .padding(.top, 4)
+                .arrives(4)
             } else {
-                searchResults
+                // Paired, and the desktop's mail has not been read yet: never the sample mail.
+                waiting.arrives(0)
             }
-
-            Button { sheet = .accounts(connect: false, error: false) } label: {
-                GroupRow(title: "Email accounts", symbol: "at", value: "\(store.accounts.count + store.googleSenders.count)", last: true)
-            }
-            .buttonStyle(PressStyle(scale: 0.99))
-            .kCard(radius: 20)
-            .padding(.top, 4)
-            .arrives(4)
         }
         .padding(.bottom, 8)
         .animation(Motion.snappy, value: store.items)
@@ -35,6 +44,12 @@ struct LibraryMailSection: View {
             sheetContent(current)
                 .environment(router)
                 .environment(chrome)
+        }
+        .animation(Motion.snappy, value: store.liveNote)
+        .animation(Motion.snappy, value: store.liveLoad)
+        .task(id: MailStore.connectionKey) {
+            store.followConnection()
+            await store.loadLive()
         }
         .onAppear(perform: applyDebugState)
         .onChange(of: chrome.addTick) {
@@ -99,6 +114,43 @@ struct LibraryMailSection: View {
             } else {
                 PlannerPill(title: "Refresh now", symbol: "arrow.clockwise", style: .quiet, expand: true, action: refresh)
                     .transition(.opacity)
+            }
+        }
+        .padding(16)
+        .kCard(radius: 24, raised: true)
+    }
+
+    // MARK: Waiting for the desktop
+
+    private var waiting: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                Mascot(pose: .thinking, size: 50)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Important today")
+                        .font(KFont.ui(19, .semibold, relativeTo: .title3))
+                        .foregroundStyle(Palette.ink)
+                    Text("Your mail comes from your desktop.")
+                        .font(KFont.ui(13.5, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+            }
+            if case .failed(let text) = store.liveLoad {
+                MailLiveLine(text: text, symbol: "exclamationmark.triangle", retry: {
+                    Task { await store.loadLive() }
+                })
+                .transition(.opacity)
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().tint(Palette.gold)
+                    Text("Reading your desktop...")
+                        .font(KFont.ui(15, .medium, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.inkDim)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .transition(.opacity)
             }
         }
         .padding(16)
@@ -211,15 +263,25 @@ struct LibraryMailSection: View {
         VStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 Button { open(item) } label: {
-                    MailRow(item: item, hasDraft: store.drafts[item.id] != nil, last: index == items.count - 1)
+                    MailRow(item: item, hasDraft: store.drafts[item.id] != nil,
+                            replied: store.sentIDs.contains(item.id),
+                            unconfirmed: store.unconfirmedSends[item.id] != nil,
+                            last: index == items.count - 1)
                 }
                 .buttonStyle(PressStyle(scale: 0.99))
                 .contextMenu {
-                    Button { sheet = .draft(item, instant: false, sent: false) } label: {
-                        Label(store.drafts[item.id] == nil ? "Draft a reply" : "Open the draft", systemImage: "square.and.pencil")
+                    // Paired, replying is off when the address this came to cannot send from the phone.
+                    if store.isSample || store.drafts[item.id] != nil || store.replyAccount(for: item) != nil {
+                        Button { sheet = .draft(item, instant: false, sent: false) } label: {
+                            Label(store.drafts[item.id] == nil ? (store.isSample ? "Draft a reply" : "Write a reply") : "Open the draft",
+                                  systemImage: "square.and.pencil")
+                        }
                     }
-                    Button { handled(item) } label: {
-                        Label("Mark as handled", systemImage: "checkmark.circle")
+                    // Handled is kept on this iPhone only; paired, the next read would bring it back, so it is not offered.
+                    if store.isSample {
+                        Button { handled(item) } label: {
+                            Label("Mark as handled", systemImage: "checkmark.circle")
+                        }
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .leading)))
@@ -246,10 +308,11 @@ struct LibraryMailSection: View {
     }
 
     private func refresh() {
-        guard !store.refreshing else { return }
+        guard !store.refreshing, store.readyToShow else { return }
         Haptics.tap()
         Task {
             let summary = await store.refresh()
+            guard !summary.isEmpty else { return }
             Haptics.success()
             chrome.say(summary)
         }
@@ -311,6 +374,10 @@ struct LibraryMailSection: View {
 struct MailRow: View {
     let item: MailItem
     var hasDraft = false
+    /// Paired: the desktop confirmed a reply sent from this iPhone.
+    var replied = false
+    /// Paired: a reply was sent with no answer. Check Sent before sending again.
+    var unconfirmed = false
     var last = false
 
     var body: some View {
@@ -336,8 +403,14 @@ struct MailRow: View {
                     .foregroundStyle(Palette.goldText)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                if hasDraft {
+                if unconfirmed {
+                    TonePill(text: "Send not confirmed", tone: .danger, symbol: "exclamationmark.triangle.fill")
+                        .padding(.top, 3)
+                } else if hasDraft {
                     TonePill(text: "Draft waiting", tone: .gold, symbol: "square.and.pencil")
+                        .padding(.top, 3)
+                } else if replied {
+                    TonePill(text: "Replied from this iPhone", tone: .success, symbol: "checkmark")
                         .padding(.top, 3)
                 }
             }

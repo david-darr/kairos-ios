@@ -14,6 +14,8 @@ nonisolated struct MailItem: Identifiable, Hashable, Sendable {
     var needsReply: Bool
     /// What Kip writes when asked to draft a reply.
     var suggestedReply: String
+    /// Paired: the connected address the message arrived at, so a reply goes out from it.
+    var account: String? = nil
 
     var initial: String {
         let letter = sender.first { $0.isLetter || $0.isNumber }
@@ -38,8 +40,15 @@ nonisolated struct MailSender: Identifiable, Hashable, Sendable {
     var email: String
     var via: Via
     var canSend: Bool
+    /// Paired: the desktop's id for this address (an Email tab account id sends from the phone).
+    var remoteID: String? = nil
 
-    var id: String { email }
+    /// The same address can be listed twice (a Google account and an Email tab account), so the kind is part of the id.
+    var id: String { "\(via == .google ? "google" : "emailTab")|\(email)|\(remoteID ?? "")" }
+
+    /// Paired: the phone can send from this address. Only Email tab accounts send from the phone;
+    /// Google accounts send only through a bot on the desktop.
+    var sendsFromPhone: Bool { via == .emailTab && canSend && remoteID != nil }
 
     var detail: String {
         switch via {
@@ -58,8 +67,11 @@ nonisolated struct MailAccount: Identifiable, Hashable, Sendable {
     var smtpPort: Int
     /// Sample only: whether a test of this account's SMTP side works.
     var smtpWorks = true
+    /// Paired: the desktop's id for this account.
+    var remoteID: String? = nil
 
-    var id: String { email }
+    /// Paired, two accounts can share an address (an admin sees accounts other people added): the desktop's id tells them apart.
+    var id: String { remoteID ?? email }
     var hosts: String { "\(imapHost) / \(smtpHost)" }
 }
 
@@ -162,7 +174,7 @@ final class MailStore {
     /// One store for the session, so the list, drafts and accounts survive leaving Mail.
     static let shared = MailStore(provider: MailSampleProvider())
 
-    private let provider: any MailProviding
+    let provider: any MailProviding
     var items: [MailItem]
     var drafts: [String: MailDraft] = [:]
     var lastChecked: Date?
@@ -175,7 +187,39 @@ final class MailStore {
     var testResults: [String: MailTestResult] = [:]
     var query = ""
     var debugApplied = false
-    private var arrivalsUsed = false
+    var arrivalsUsed = false
+
+    // The paired desktop (MailLive.swift). Unpaired, none of this is used.
+
+    /// Showing the sample mail. False while the phone shows the paired desktop's mail.
+    var isSample = true
+    /// Which desktop and account the live mail belongs to.
+    var liveAccount = "sample"
+    var liveLoad: MailLiveLoad = .idle
+    var sampleStash: MailSampleStash?
+    /// Every sending address the desktop lists, Google ones included.
+    var liveSenders: [MailSender] = []
+    var googleConfigured = false
+    /// A quiet line under the summary: a re-read that failed, a check that did not answer, skipped items.
+    var liveNote: String?
+    /// Counts reads, so an older answer never replaces a newer one.
+    var readSerial = 0
+    /// Counts finished writes, so a read that began before a write finished is discarded.
+    var writeSerial = 0
+    /// Replies on their way to the desktop, by message.
+    var sendingIDs: Set<String> = []
+    /// Replies the desktop confirmed sent from this phone, by message.
+    var sentIDs: Set<String> = []
+    /// Replies whose send got no answer, with when they were sent. Check Sent before sending again.
+    var unconfirmedSends: [String: Date] = [:]
+    /// Holds that came back from a save after the app was closed. The typed reply did not survive.
+    var restoredHolds: Set<String> = []
+    /// This account's saved holds: a hash of the message id with when the send was tried, nothing else.
+    var savedHolds: [String: Date] = [:]
+    /// An account is being added or removed: the accounts sheet holds still until it is known.
+    var accountBusy = false
+    /// When a triage run last went without an answer. The desktop may still be on it, so a new run waits.
+    var triageUnclearSince: Date?
 
     init(provider: any MailProviding) {
         self.provider = provider
@@ -210,10 +254,14 @@ final class MailStore {
 
     /// Every address agents can send from: Google accounts, then every Email tab account.
     var senders: [MailSender] {
-        googleSenders + accounts.map { MailSender(email: $0.email, via: .emailTab, canSend: true) }
+        guard isSample else { return liveSenders }
+        return googleSenders + accounts.map { MailSender(email: $0.email, via: .emailTab, canSend: true) }
     }
 
-    var defaultSender: String { senders.first(where: \.canSend)?.email ?? "" }
+    var defaultSender: String {
+        guard isSample else { return senders.first(where: \.sendsFromPhone)?.email ?? "" }
+        return senders.first(where: \.canSend)?.email ?? ""
+    }
 
     var checkedLine: String {
         guard let lastChecked else { return "Runs automatically each morning at 5:50. Nothing checked yet." }
@@ -226,6 +274,7 @@ final class MailStore {
 
     /// Run triage now. Returns the summary for the toast.
     func refresh() async -> String {
+        guard isSample else { return await runTriageLive() }
         refreshing = true
         error = nil
         try? await Task.sleep(for: .seconds(1.5))
@@ -263,9 +312,11 @@ final class MailStore {
     }
 
     func newDraft(for item: MailItem) -> MailDraft {
-        MailDraft(itemID: item.id, from: defaultSender, to: item.address,
-                  subject: item.subject.hasPrefix("Re:") ? item.subject : "Re: \(item.subjectLine)",
-                  body: item.suggestedReply)
+        // Paired, a reply goes only from the address the message came to, never another one.
+        let from = isSample ? defaultSender : (replySender(for: item)?.email ?? "")
+        return MailDraft(itemID: item.id, from: from, to: item.address,
+                         subject: item.subject.hasPrefix("Re:") ? item.subject : "Re: \(item.subjectLine)",
+                         body: item.suggestedReply)
     }
 
     // Accounts
@@ -282,6 +333,7 @@ final class MailStore {
 
     /// Test an account's IMAP and SMTP. Returns whether both worked.
     func test(_ account: MailAccount) async -> Bool {
+        guard isSample else { return await testLive(account) }
         testing.insert(account.id)
         testResults[account.id] = nil
         try? await Task.sleep(for: .seconds(1.2))
