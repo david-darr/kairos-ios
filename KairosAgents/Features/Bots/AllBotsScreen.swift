@@ -34,6 +34,10 @@ struct AllBotsScreen: View {
                     section(team.name, team.members.compactMap { id in store.bots.first { $0.id == id } }, team: team)
                 }
                 section("Other bots", store.bots.filter { store.team(of: $0.id) == nil }, team: nil)
+                if store.liveMode && BotRoomLiveStore.shared.active {
+                    // Paired: the desktop's rooms (BotsRoomsLive.swift). Not paired, nothing here changes.
+                    BotRoomLiveList { id in goto = .room(id) }
+                }
                 if !store.liveMode {
                     NavigationLink(value: BotsRoute.maker) {
                         NavRow(title: "Make a bot", symbol: "plus.circle").kCard(radius: 20)
