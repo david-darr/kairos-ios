@@ -813,7 +813,8 @@ final class BotsSettingsLive {
     }
 
     /// Put the standing instructions back as they were before this change.
-    func rollback(_ botID: String, _ row: BotSetHistoryRowDTO) async -> BotSetOutcome {
+    /// `listRevision` is the bot's revision when the list the person chose from was read.
+    func rollback(_ botID: String, _ row: BotSetHistoryRowDTO, listRevision: Int?) async -> BotSetOutcome {
         followConnection()
         guard isCurrent, !busy.contains(botID) else {
             return .refused("Another change to this bot is still on its way. Try again in a moment.")
@@ -825,6 +826,12 @@ final class BotsSettingsLive {
         guard await loadSoul(botID), stillLive(account), let soul = souls[botID], let revision = soul.revision else {
             if stillLive(account) { busy.remove(botID) }
             return .refused("The instructions could not be read, so nothing was changed. Try again.")
+        }
+        // The bot must still be as it was when the person read the list: a change since then is one they never saw.
+        guard let listRevision, listRevision == revision else {
+            busy.remove(botID)
+            await loadHistory(botID)
+            return .refused("This bot changed after this list was read, so nothing was put back. The list now shows the newest changes. Check it and try again.")
         }
         beginWrite(botID)
         do {

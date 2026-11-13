@@ -1931,6 +1931,8 @@ private struct BotSetHistoryScreen: View {
     let store = BotsStore.shared
     var live = BotsSettingsLive.shared
     @State private var undoing: BotSetHistoryRowDTO?
+    /// The bot's revision when the list on screen was read, taken with the row the person tapped.
+    @State private var undoingRevision: Int?
 
     var body: some View {
         let history = live.isCurrent ? live.histories[botID] : nil
@@ -1957,6 +1959,7 @@ private struct BotSetHistoryScreen: View {
                                 if row.field == "soul" {
                                     PillButton(title: "Undo") {
                                         Haptics.tap()
+                                        undoingRevision = live.histories[botID]?.revision
                                         undoing = row
                                     }
                                     .disabled(busy)
@@ -1978,7 +1981,7 @@ private struct BotSetHistoryScreen: View {
                          detail: "The standing instructions go back to how they were before this change. History keeps both.",
                          confirm: "Put them back", danger: false) {
                 Task {
-                    let outcome = await live.rollback(botID, row)
+                    let outcome = await live.rollback(botID, row, listRevision: undoingRevision)
                     if !outcome.text.isEmpty { store.say(outcome.text) }
                 }
             }
