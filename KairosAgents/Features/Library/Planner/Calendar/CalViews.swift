@@ -529,14 +529,16 @@ struct CalDayPanel: View {
                 Text(CalDates.longDay(day))
                     .font(KFont.ui(19, .semibold, relativeTo: .title3))
                     .foregroundStyle(Palette.ink)
-                Text(CalDates.countHeading(items.count))
+                Text(store.showsEmpty || !items.isEmpty ? CalDates.countHeading(items.count) : "")
                     .font(KFont.ui(14, relativeTo: .footnote))
                     .foregroundStyle(Palette.inkFaint)
                     .contentTransition(.numericText())
             }
             if items.isEmpty {
-                PlannerEmpty(title: "Nothing on this day.", hint: "Make room for something new.", pose: .idle,
-                             actionTitle: "Add an event") { actions.new(day) }
+                if store.showsEmpty {
+                    PlannerEmpty(title: "Nothing on this day.", hint: "Make room for something new.", pose: .idle,
+                                 actionTitle: "Add an event") { actions.new(day) }
+                }
             } else {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     actions.card(store, item).arrives(index)
@@ -575,7 +577,7 @@ struct CalGroupedList: View {
             return items.isEmpty ? nil : (day, items)
         }
         VStack(alignment: .leading, spacing: 16) {
-            if groups.isEmpty {
+            if groups.isEmpty && store.showsEmpty {
                 PlannerEmpty(title: "Nothing coming up.", hint: "Make room for something new.", pose: .idle,
                              actionTitle: "Add an event") { actions.new(from) }
             }

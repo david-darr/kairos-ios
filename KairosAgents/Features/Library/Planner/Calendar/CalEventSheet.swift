@@ -81,11 +81,12 @@ struct CalDetailSheet: View {
     }
 
     private func sourceNote(_ event: CalEvent) -> String? {
+        if let reason = event.live?.readOnlyReason { return reason }
         switch event.source {
-        case .notes: "This is a note with a due time. Change it in Notes."
-        case .tab: "This deadline comes from the \(event.tabName ?? "tab") tab."
-        case .google where !(store.calendar(event.calendarID)?.writable ?? true): "This calendar is read-only."
-        default: nil
+        case .notes: return "This is a note with a due time. Change it in Notes."
+        case .tab: return "This deadline comes from the \(event.tabName ?? "tab") tab."
+        case .google where !(store.calendar(event.calendarID)?.writable ?? true): return "This calendar is read-only."
+        default: return nil
         }
     }
 
@@ -155,6 +156,14 @@ struct CalEventEditor: View {
     @State private var draft: CalDraft
     @State private var scope: CalScope
     @State private var error: String?
+    /// Paired: the save is on its way to the desktop, so Save sends nothing more.
+    @State private var saving = false
+    /// Paired: the whole series is being read, or could not be, so Save waits.
+    @State private var seriesPending = false
+    /// Paired: the values as read for the event being changed, so only what the person changed is sent. nil for a new event.
+    @State private var baseline: CalDraft?
+    /// Paired: a new event the desktop never confirmed and that was not found after. Add says "Add again".
+    @State private var unconfirmed = false
     @Environment(\.dismiss) private var dismiss
 
     init(store: CalStore, newOn day: Date, onSaved: @escaping (String) -> Void) {
@@ -177,7 +186,9 @@ struct CalEventEditor: View {
         self.onDelete = onDelete
         let useScope: CalScope = item.isSeries ? scope : .series
         _scope = State(initialValue: useScope)
-        _draft = State(initialValue: CalEventEditor.draft(for: item, scope: useScope, store: store))
+        let first = CalEventEditor.draft(for: item, scope: useScope, store: store)
+        _draft = State(initialValue: first)
+        _baseline = State(initialValue: first)
     }
 
     private static func draft(for item: CalOccurrence, scope: CalScope, store: CalStore) -> CalDraft {
@@ -191,17 +202,55 @@ struct CalEventEditor: View {
 
     private var editing: Bool { item != nil }
     private var showsRepeat: Bool { !(editing && item?.isSeries == true && scope == .this) }
+    /// Paired, on a Google calendar: no repeat choice. The phone could not change or delete a repeating Google event after.
+    private var googleTarget: Bool { !store.isSample && (draft.calendarID != "kairos" || item?.event.source == .google) }
+
+    private var saveTitle: String {
+        if saving { return "Saving..." }
+        if editing { return "Save" }
+        return unconfirmed ? "Add again" : "Add"
+    }
+
+    /// The All day switch. Only a tap by the person moves the times to whole days or to 9:00 to 9:30;
+    /// a draft loaded from the desktop (a series, one event) keeps its own times.
+    private var allDayBinding: Binding<Bool> {
+        Binding(get: { draft.allDay }, set: { allDay in
+            guard allDay != draft.allDay else { return }
+            draft.allDay = allDay
+            if allDay {
+                draft.start = CalDates.day(draft.start)
+                draft.end = max(CalDates.add(1, to: draft.start), CalDates.day(draft.end))
+            } else {
+                draft.start = CalDates.at(draft.start, 9)
+                draft.end = CalDates.at(draft.start, 9, 30)
+            }
+        })
+    }
+
+    /// Paired: a last date picked for "On a date" starts at the first event, since the desktop refuses one before it.
+    private var repeatEndBinding: Binding<CalRepeatEnd> {
+        Binding(get: { draft.rule.end }, set: { end in
+            draft.rule.end = end
+            if !store.isSample && end == .onDate && CalDates.day(draft.rule.until) < CalDates.day(draft.start) {
+                draft.rule.until = draft.start
+            }
+        })
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 PlannerSheetTitle(title: editing ? "Edit event" : "New event") {
+                    // Paired: while a save is on its way the sheet stays, so its result is always shown here.
                     Button("Cancel") { dismiss() }
                         .font(KFont.ui(16, .medium))
                         .foregroundStyle(Palette.inkDim)
                         .frame(minHeight: 44)
+                        .disabled(saving)
+                        .opacity(saving ? 0.4 : 1)
                 } trailing: {
-                    PlannerPill(title: editing ? "Save" : "Add", style: .gold, action: save)
+                    PlannerPill(title: saveTitle, style: .gold, action: save)
+                        .disabled(saving || seriesPending)
                 }
 
                 PlannerTextField(label: "Title", placeholder: "e.g. Bike shop stock check", text: $draft.title,
@@ -212,16 +261,19 @@ struct CalEventEditor: View {
                         SectionLabel(text: "Apply changes to")
                         PlannerMenuRow(title: "Change", options: CalScope.allCases, selection: $scope, label: \.title, last: true)
                             .kCard(radius: 18)
+                            .disabled(saving)
                     }
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
                     SectionLabel(text: "When")
                     VStack(spacing: 0) {
-                        PlannerToggleRow(title: "All day", symbol: "sun.max", isOn: $draft.allDay)
+                        PlannerToggleRow(title: "All day", symbol: "sun.max", isOn: allDayBinding)
                         dateRow(draft.allDay ? "Starts" : "Starts", selection: $draft.start)
                         dateRow(draft.allDay ? "Ends (exclusive)" : "Ends", selection: $draft.end)
-                        if showsRepeat { repeatRows }
+                        if showsRepeat {
+                            if googleTarget { googleRepeatNote } else { repeatRows }
+                        }
                         if !draft.allDay {
                             PlannerMenuRow(title: "Time zone", symbol: "globe", options: CalDates.commonZones,
                                            selection: $draft.timeZone, label: CalDates.zoneLabel, last: true)
@@ -255,6 +307,8 @@ struct CalEventEditor: View {
 
                 if let item, editing {
                     PlannerPill(title: "Delete event", symbol: "trash", style: .danger, expand: true) { onDelete(item) }
+                        .disabled(saving)
+                        .opacity(saving ? 0.4 : 1)
                         .padding(.top, 4)
                 }
             }
@@ -267,19 +321,45 @@ struct CalEventEditor: View {
         .tint(Palette.gold)
         .animation(Motion.snappy, value: draft)
         .animation(Motion.snappy, value: error)
+        .interactiveDismissDisabled(saving)
         .onChange(of: scope) { _, newScope in
-            if let item { draft = CalEventEditor.draft(for: item, scope: newScope, store: store) }
-        }
-        .onChange(of: draft.allDay) { _, allDay in
-            if allDay {
-                draft.start = CalDates.day(draft.start)
-                draft.end = max(CalDates.add(1, to: draft.start), CalDates.day(draft.end))
+            guard let item else { return }
+            // Loads set the fields directly; the All day switch's own handler never runs for them.
+            if store.isSample {
+                draft = CalEventEditor.draft(for: item, scope: newScope, store: store)
+            } else if newScope == .series && item.isSeries {
+                loadSeries(item)
             } else {
-                draft.start = CalDates.at(draft.start, 9)
-                draft.end = CalDates.at(draft.start, 9, 30)
+                seriesPending = false
+                let one = CalEventEditor.draft(for: item, scope: .this, store: store)
+                draft = one
+                baseline = one
             }
         }
         .onChange(of: draft.title) { if error != nil { error = nil } }
+        .task {
+            if !store.isSample, let item, item.isSeries, scope == .series { loadSeries(item) }
+        }
+    }
+
+    /// Paired: read the whole series before "All events in this series" can be saved, as the desktop does.
+    /// If it cannot be read, Save stays off: the fields of one event must never be saved over the series.
+    private func loadSeries(_ item: CalOccurrence) {
+        seriesPending = true
+        error = nil
+        Task {
+            do {
+                let series = try await store.liveSeries(of: item)
+                guard scope == .series else { return }
+                let whole = CalDraft(series, start: series.start, end: series.end)
+                draft = whole
+                baseline = whole
+                seriesPending = false
+            } catch let failure {
+                guard scope == .series else { return }
+                withAnimation(Motion.snappy) { error = "The series could not be read. " + failure.plainWords }
+            }
+        }
     }
 
     // Rows
@@ -298,6 +378,24 @@ struct CalEventEditor: View {
         }
         .padding(.horizontal, 16)
         .frame(minHeight: 56)
+        .overlay(alignment: .bottom) { Palette.line.frame(height: 1).padding(.leading, 54) }
+    }
+
+    /// In place of the repeat rows for a Google calendar while paired.
+    private var googleRepeatNote: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Palette.inkFaint)
+                .frame(width: 26)
+            Text("Events on a Google calendar cannot repeat from your phone. Make a repeating one on your desktop.")
+                .font(KFont.ui(13.5, relativeTo: .footnote))
+                .foregroundStyle(Palette.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .overlay(alignment: .bottom) { Palette.line.frame(height: 1).padding(.leading, 54) }
     }
 
@@ -326,7 +424,7 @@ struct CalEventEditor: View {
                 stepperRow(text: "Every \(draft.rule.interval) \(draft.rule.freq.unit(draft.rule.interval))",
                            value: $draft.rule.interval, range: 1...365)
                 PlannerMenuRow(title: "Ends", symbol: "flag.checkered", options: CalRepeatEnd.allCases,
-                               selection: $draft.rule.end, label: \.title)
+                               selection: repeatEndBinding, label: \.title)
                 if draft.rule.end == .onDate {
                     HStack {
                         Text("Last date").font(KFont.ui(16)).foregroundStyle(Palette.ink)
@@ -434,6 +532,11 @@ struct CalEventEditor: View {
         let end = draft.allDay ? CalDates.day(draft.end) : draft.end
         let google = draft.calendarID != "kairos"
 
+        if !store.isSample {
+            saveLive()
+            return
+        }
+
         if let item {
             if item.isSeries && scope == .this {
                 let single = CalEvent(id: UUID().uuidString, title: title, start: start, end: end, allDay: draft.allDay,
@@ -463,6 +566,56 @@ struct CalEventEditor: View {
         }
         dismiss()
     }
+
+    /// What the phone would send for these values: trimmed title, whole days for all day, and no rule where none can go.
+    private func liveDraft(_ values: CalDraft) -> CalLiveDraft {
+        let keepsRule = showsRepeat && !googleTarget
+        return CalLiveDraft(title: values.title.trimmingCharacters(in: .whitespacesAndNewlines), allDay: values.allDay,
+                            start: values.allDay ? CalDates.day(values.start) : values.start,
+                            end: values.allDay ? CalDates.day(values.end) : values.end,
+                            timeZone: values.timeZone, location: values.location, notes: values.notes,
+                            rule: keepsRule ? values.rule : CalRepeat(), calendarID: values.calendarID)
+    }
+
+    /// Paired: Save is the confirmation. It is sent once and never again by itself; the sheet stays until the desktop
+    /// answers, and the answer (saved, refused, or not confirmed) is always shown.
+    private func saveLive() {
+        guard !saving, !seriesPending else { return }
+        let live = liveDraft(draft)
+        let before = baseline.map { liveDraft($0) }
+        saving = true
+        error = nil
+        Task {
+            let outcome = await store.saveLive(live, baseline: before, editing: item, scope: scope)
+            saving = false
+            switch outcome {
+            case .failed(let problem):
+                Haptics.thud()
+                withAnimation(Motion.snappy) { error = problem }
+                return
+            case .unconfirmed(let problem):
+                // Not found after a create nobody confirmed. What was typed stays; Add says it would send it again.
+                Haptics.thud()
+                unconfirmed = true
+                withAnimation(Motion.snappy) { error = problem }
+                return
+            case .unchanged:
+                onSaved("Nothing changed.")
+                dismiss()
+                return
+            case .saved, .savedUnconfirmed:
+                break
+            }
+            if item == nil { store.selected = CalDates.day(live.start) }
+            Haptics.success()
+            if outcome == .savedUnconfirmed {
+                onSaved("Event created. Your desktop was slow to confirm it, but it is on your calendar.")
+            } else {
+                onSaved(item == nil ? "Event created" : "Event saved")
+            }
+            dismiss()
+        }
+    }
 }
 
 // MARK: - Delete
@@ -475,6 +628,8 @@ struct CalDeleteSheet: View {
 
     @State private var scope: CalScope = .this
     @State private var deleting = false
+    /// Paired: why the desktop did not delete it.
+    @State private var problem: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -497,20 +652,53 @@ struct CalDeleteSheet: View {
                 if item.isSeries {
                     PlannerMenuRow(title: "Delete", options: CalScope.allCases, selection: $scope, label: \.title, last: true)
                         .kCard(radius: 18)
+                        .disabled(sending)
+                }
+                if let problem {
+                    Text(problem)
+                        .font(KFont.ui(14.5, .medium, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.danger)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .transition(.opacity)
                 }
                 VStack(spacing: 4) {
                     PlannerPill(title: deleting ? "Deleting..." : "Delete event", symbol: "trash", style: .danger, expand: true, action: delete)
                         .disabled(deleting)
+                    // Paired: while the delete is on its way the sheet stays, so its result is always shown here.
                     QuietButton(title: "Cancel") { dismiss() }
+                        .disabled(sending)
+                        .opacity(sending ? 0.4 : 1)
                 }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
         }
+        .interactiveDismissDisabled(sending)
     }
 
+    /// Paired and the delete is on its way to the desktop.
+    private var sending: Bool { deleting && !store.isSample }
+
     private func delete() {
+        guard !deleting else { return }
         deleting = true
+        if !store.isSample {
+            // Paired: this sheet is the confirmation. Sent once; the sheet closes only when the desktop has deleted it.
+            problem = nil
+            Task {
+                if let why = await store.deleteLive(item, scope: scope) {
+                    Haptics.thud()
+                    withAnimation(Motion.snappy) { problem = why }
+                    deleting = false
+                    return
+                }
+                Haptics.success()
+                onDeleted("Event deleted")
+                dismiss()
+            }
+            return
+        }
         Task {
             try? await Task.sleep(for: .milliseconds(350))
             withAnimation(Motion.snappy) {
