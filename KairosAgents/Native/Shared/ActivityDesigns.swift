@@ -73,31 +73,31 @@ struct NativeControl<Label: View>: View {
 
 // MARK: - Small pieces
 
-/// The bot's own face, never redrawn: Kip or the bot's pastel and shape.
+/// The bot's own face, never redrawn: Kip or the bot's pastel and shape. For work it wears the state:
+/// its expression, a wash in the state's colour and a small mark, all of which ease to the next state.
 struct ActivityFace: View {
     let attributes: KairosActivityAttributes
-    var phase: ActivityPhase = .running
+    var mood: BotMood = .working
     var size: CGFloat
     var stage: Color = .black
+    var showsMark = true
 
     var body: some View {
-        Mascot(
-            shape: MascotShape(rawValue: attributes.botShape) ?? .round,
-            colorHex: attributes.botColor,
-            pose: pose,
-            size: size,
-            stage: stage
-        )
-        .environment(\.colorScheme, .dark)
-    }
-
-    private var pose: MascotPose {
-        switch phase {
-        case .running: attributes.kind == .call ? .idle : .thinking
-        case .waiting: .needs
-        case .done: .idle
-        case .failed, .stopped: .sleeping
+        Group {
+            if attributes.kind == .call {
+                Mascot(
+                    shape: MascotShape(rawValue: attributes.botShape) ?? .round,
+                    colorHex: attributes.botColor,
+                    pose: mood == .offline ? .sleeping : .idle,
+                    size: size,
+                    stage: stage
+                )
+            } else {
+                MoodFace(color: attributes.botColor, shape: attributes.botShape, mood: mood, size: size, stage: stage,
+                         island: true, showsMark: showsMark)
+            }
         }
+        .environment(\.colorScheme, .dark)
     }
 }
 
@@ -142,6 +142,7 @@ struct ProgressRing: View {
     var progress: Double?
     var color: Color = IslandInk.gold
     var lineWidth: CGFloat = 3
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -151,6 +152,8 @@ struct ProgressRing: View {
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
+        .animation(MoodStyle.animation(reduceMotion), value: progress)
+        .animation(MoodStyle.animation(reduceMotion), value: color)
         .accessibilityHidden(true)
     }
 }
@@ -162,6 +165,7 @@ struct StageTrack: View {
     var progress: Double?
     var phase: ActivityPhase = .running
     var showLabels = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .top, spacing: 5) {
@@ -183,6 +187,9 @@ struct StageTrack: View {
                 }
             }
         }
+        .animation(MoodStyle.animation(reduceMotion), value: current)
+        .animation(MoodStyle.animation(reduceMotion), value: progress)
+        .animation(MoodStyle.animation(reduceMotion), value: phase)
         .accessibilityElement()
         .accessibilityLabel("Stage \(min(current + 1, stages.count)) of \(stages.count): \(stages.indices.contains(current) ? stages[current] : "")")
     }
@@ -206,6 +213,7 @@ struct StageTrack: View {
 struct WorkBar: View {
     var progress: Double
     var color: Color = IslandInk.gold
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { proxy in
@@ -215,6 +223,7 @@ struct WorkBar: View {
             }
         }
         .frame(height: 5)
+        .animation(MoodStyle.animation(reduceMotion), value: progress)
         .accessibilityLabel("\(Int(progress * 100)) percent")
     }
 }
@@ -302,18 +311,23 @@ private struct ActivityTexts: View {
         }
     }
 
+    /// The step before this one, shown dimmed above it while work runs.
+    private var previous: String? {
+        state.phase == .running && state.stale != true ? state.previous : nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(topLine)
-                .font(KFont.ui(13, relativeTo: .caption))
-                .foregroundStyle(state.phase == .waiting ? IslandInk.gold : IslandInk.dim)
-                .lineLimit(1)
+            TickerText(text: topLine, previous: previous,
+                       font: KFont.ui(13, relativeTo: .caption),
+                       color: state.phase == .waiting ? IslandInk.gold : IslandInk.dim,
+                       dimColor: IslandInk.faint, dimFont: KFont.ui(11, relativeTo: .caption2))
             Text(state.headline(for: attributes, hidingTitles: hidingTitles))
                 .font(KFont.ui(titleSize, .semibold, relativeTo: .headline))
                 .foregroundStyle(IslandInk.cream)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
-            if !state.detail.isEmpty, state.phase != .failed, !hidingTitles || attributes.kind == .reply {
+            if !state.detail.isEmpty, state.phase != .failed, previous == nil, !hidingTitles || attributes.kind == .reply {
                 Text(state.detail)
                     .font(KFont.ui(13, relativeTo: .caption))
                     .foregroundStyle(IslandInk.faint)
@@ -368,24 +382,26 @@ struct ActivityLockView: View {
     let attributes: KairosActivityAttributes
     let state: KairosActivityAttributes.ContentState
     var hidingTitles: Bool = NativeSettings.hidesTitles
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
             if state.phase.ended {
-                ended
+                ended.transition(.opacity)
             } else if attributes.kind == .call {
                 call
             } else {
-                running
+                running.transition(.opacity)
             }
         }
+        .animation(MoodStyle.animation(reduceMotion), value: state.phase.ended)
         .environment(\.colorScheme, .dark)
     }
 
     private var running: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 14) {
-                ActivityFace(attributes: attributes, phase: state.phase, size: 52, stage: IslandInk.card)
+                ActivityFace(attributes: attributes, mood: state.mood, size: 52, stage: IslandInk.card)
                 ActivityTexts(attributes: attributes, state: state, hidingTitles: hidingTitles)
                 Spacer(minLength: 4)
                 ActivityFigure(attributes: attributes, state: state)
@@ -414,13 +430,17 @@ struct ActivityLockView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .background(alignment: .bottom) {
-            LinearGradient(colors: [IslandInk.gold.opacity(0), IslandInk.gold.opacity(0.16)], startPoint: .top, endPoint: .bottom)
+            // The wash takes the state's colour and eases to the next one.
+            LinearGradient(colors: [washTint.opacity(0), washTint.opacity(0.2)], startPoint: .top, endPoint: .bottom)
+                .animation(MoodStyle.animation(reduceMotion), value: state.mood)
         }
     }
 
+    private var washTint: Color { MoodStyle.tint(state.mood, island: true) }
+
     private var call: some View {
         HStack(spacing: 14) {
-            ActivityFace(attributes: attributes, size: 52, stage: IslandInk.card)
+            ActivityFace(attributes: attributes, mood: state.mood, size: 52, stage: IslandInk.card)
             VStack(alignment: .leading, spacing: 2) {
                 Text(attributes.botName).font(KFont.display(28)).foregroundStyle(IslandInk.cream).lineLimit(1)
                 HStack(spacing: 6) {
@@ -443,7 +463,7 @@ struct ActivityLockView: View {
 
     private var ended: some View {
         HStack(spacing: 12) {
-            ActivityFace(attributes: attributes, phase: state.phase, size: 38, stage: IslandInk.card)
+            ActivityFace(attributes: attributes, mood: state.mood, size: 38, stage: IslandInk.card)
             Text(state.headline(for: attributes, hidingTitles: hidingTitles))
                 .font(KFont.ui(15.5, .medium, relativeTo: .subheadline))
                 .foregroundStyle(IslandInk.cream)
@@ -492,7 +512,7 @@ struct IslandCompactLeading: View {
     let state: KairosActivityAttributes.ContentState
 
     var body: some View {
-        ActivityFace(attributes: attributes, phase: state.phase, size: 24)
+        ActivityFace(attributes: attributes, mood: state.mood, size: 24, showsMark: false)
             .padding(.leading, 2)
     }
 }
@@ -501,18 +521,25 @@ struct IslandCompactTrailing: View {
     let attributes: KairosActivityAttributes
     let state: KairosActivityAttributes.ContentState
 
+    /// One mark for every state but running work, so the symbol itself swaps from one state to the next.
+    private var mark: (symbol: String, color: Color)? {
+        switch state.mood {
+        case .done: ("checkmark.circle.fill", IslandInk.success)
+        case .failed: ("exclamationmark.circle.fill", IslandInk.danger)
+        case .idle: ("stop.circle.fill", IslandInk.dim)
+        case .needsYou: ("hand.raised.fill", IslandInk.gold)
+        case .offline: ("link", IslandInk.faint)
+        case .working: nil
+        }
+    }
+
     var body: some View {
         Group {
-            switch state.phase {
-            case .done:
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(IslandInk.success)
-            case .failed:
-                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(IslandInk.danger)
-            case .stopped:
-                Image(systemName: "stop.circle.fill").foregroundStyle(IslandInk.dim)
-            case .waiting:
-                Image(systemName: "hand.raised.fill").foregroundStyle(IslandInk.gold)
-            case .running:
+            if let mark {
+                Image(systemName: mark.symbol)
+                    .foregroundStyle(mark.color)
+                    .contentTransition(.symbolEffect(.replace))
+            } else {
                 ActivityFigure(attributes: attributes, state: state, compact: true)
             }
         }
@@ -529,9 +556,9 @@ struct IslandMinimal: View {
     var body: some View {
         ZStack {
             if attributes.kind != .call, !state.phase.ended {
-                ProgressRing(progress: state.progress ?? stageProgress, color: IslandInk.gold, lineWidth: 2)
+                ProgressRing(progress: state.progress ?? stageProgress, color: MoodStyle.tint(state.mood, island: true), lineWidth: 2)
             }
-            ActivityFace(attributes: attributes, phase: state.phase, size: 17)
+            ActivityFace(attributes: attributes, mood: state.mood, size: 17, showsMark: false)
         }
         .frame(width: 24, height: 24)
         .accessibilityElement()
@@ -550,7 +577,7 @@ struct IslandExpandedLeading: View {
     let state: KairosActivityAttributes.ContentState
 
     var body: some View {
-        ActivityFace(attributes: attributes, phase: state.phase, size: 46)
+        ActivityFace(attributes: attributes, mood: state.mood, size: 46)
             .padding(.leading, 4)
             .padding(.top, 2)
     }

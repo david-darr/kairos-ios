@@ -23,9 +23,36 @@ nonisolated struct WidgetSnapshot: Codable, Hashable, Sendable {
         var progress: Double?
         var step: String
         var link: String
+        // Added for state and motion. Optional so a snapshot written by an older build still reads.
+        var botID: String? = nil
+        /// True when this is the paired desktop's Kip (the quick actions widget follows Kip's own state).
+        var isKip: Bool? = nil
+        /// The bot is waiting on the person (an approval or a question).
+        var waiting: Bool? = nil
+        /// When the desktop started the turn; drawn as timer text that ticks by itself.
+        var startedAt: Date? = nil
+        /// The step before this one, drawn dimmed above it.
+        var previousStep: String? = nil
+    }
+
+    /// The newest piece of work that finished or failed, shown until it is 30 minutes old.
+    nonisolated struct Ended: Codable, Hashable, Sendable {
+        var title: String
+        var botName: String
+        var botColor: UInt32?
+        var botShape: String = "round"
+        var failed: Bool
+        var at: Date
+        var link: String
+        var isKip: Bool? = nil
+
+        /// How long an end card stays on a widget.
+        static let shownFor: TimeInterval = 30 * 60
     }
 
     nonisolated struct Team: Codable, Hashable, Sendable {
+        /// The team's own id on the desktop, so a tap opens it. nil when not known: the tap opens All bots.
+        var id: String? = nil
         var name: String
         var stages: [String]
         var stage: Int
@@ -95,6 +122,15 @@ nonisolated struct WidgetSnapshot: Codable, Hashable, Sendable {
     var usage: [Usage] = []
     var desktop: Desktop?
     var pinned: Pinned?
+    var ended: Ended? = nil
+
+    /// The snapshot as it should read at `date`: an end card older than 30 minutes is gone.
+    func shown(at date: Date) -> WidgetSnapshot {
+        guard let ended, date >= ended.at.addingTimeInterval(Ended.shownFor) else { return self }
+        var copy = self
+        copy.ended = nil
+        return copy
+    }
 
     static let empty = WidgetSnapshot(updatedAt: .distantPast, connected: false)
 }

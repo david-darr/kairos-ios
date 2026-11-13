@@ -333,6 +333,122 @@ struct LockWidgetsPage: View {
     }
 }
 
+// MARK: - States
+
+/// The names the gallery uses for each state (`widgets-small-working`, `activity-state-needs` ...).
+extension BotMood {
+    var galleryName: String {
+        switch self {
+        case .working: "working"
+        case .needsYou: "needs"
+        case .done: "done"
+        case .failed: "failed"
+        case .idle: "idle"
+        case .offline: "offline"
+        }
+    }
+
+    init?(galleryName: String) {
+        guard let found = BotMood.allCases.first(where: { $0.galleryName == galleryName }) else { return nil }
+        self = found
+    }
+}
+
+/// Every widget whose look follows a state, in one state and one size, so each state can be checked as a still.
+struct WidgetStatePage: View {
+    let family: WidgetFamily
+    let mood: BotMood
+
+    private var kinds: [KairosWidgetKind] {
+        family == .systemLarge ? [.running] : [.running, .needsYou, .quickActions, .team]
+    }
+
+    private var familyName: String {
+        switch family {
+        case .systemSmall: "small"
+        case .systemMedium: "medium"
+        default: "large"
+        }
+    }
+
+    var body: some View {
+        let snapshot = NativeSample.snapshot(mood)
+        GalleryPage(title: "Widgets, \(familyName): \(mood.label.lowercased())") {
+            if family == .systemSmall {
+                LazyVGrid(columns: [GridItem(.fixed(170), spacing: 22), GridItem(.fixed(170))], spacing: 22) {
+                    ForEach(kinds, id: \.self) { kind in
+                        VStack(spacing: 6) {
+                            WidgetDrawing(kind: kind, family: family, snapshot: snapshot)
+                            Text(kind.title).font(KFont.ui(12.5)).foregroundStyle(Palette.inkFaint)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 6)
+            } else {
+                ForEach(kinds, id: \.self) { kind in
+                    VStack(spacing: 6) {
+                        WidgetDrawing(kind: kind, family: family, snapshot: snapshot)
+                        Text(kind.title).font(KFont.ui(12.5)).foregroundStyle(Palette.inkFaint)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+    }
+}
+
+/// The Lock Screen widgets that follow a state, in one state.
+struct LockWidgetStatePage: View {
+    let mood: BotMood
+
+    var body: some View {
+        let snapshot = NativeSample.snapshot(mood)
+        GalleryPage(title: "Lock Screen widgets: \(mood.label.lowercased())", dark: true) {
+            Caption(text: "Inline", dark: true)
+            WidgetDrawing(kind: .needsYou, family: .accessoryInline, snapshot: snapshot)
+            Caption(text: "Circular", dark: true)
+            HStack(spacing: 14) {
+                ForEach([KairosWidgetKind.running, .needsYou, .quickActions], id: \.self) { kind in
+                    WidgetDrawing(kind: kind, family: .accessoryCircular, snapshot: snapshot)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            Caption(text: "Rectangular", dark: true)
+            LazyVGrid(columns: [GridItem(.fixed(172), spacing: 18), GridItem(.fixed(172))], alignment: .leading, spacing: 12) {
+                ForEach([KairosWidgetKind.running, .needsYou, .quickActions, .team], id: \.self) { kind in
+                    WidgetDrawing(kind: kind, family: .accessoryRectangular, snapshot: snapshot)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+/// The Live Activity in one state, on every surface: compact, minimal, expanded and the Lock Screen.
+struct ActivityStatePage: View {
+    let mood: BotMood
+
+    var body: some View {
+        let reply = NativeSample.attributes(.reply)
+        let task = NativeSample.attributes(.task)
+        let state = NativeSample.state(.reply, mood)
+        GalleryPage(title: "Live Activity: \(mood.label.lowercased())", dark: true) {
+            Caption(text: "Dynamic Island, compact", dark: true)
+            IslandCompactDrawing(attributes: reply, state: state).frame(maxWidth: .infinity)
+            Caption(text: "Minimal, beside another activity", dark: true)
+            IslandMinimalDrawing(attributes: reply, state: state,
+                                 other: NativeSample.attributes(.render), otherState: NativeSample.running(.render))
+                .frame(maxWidth: .infinity)
+            Caption(text: "Expanded", dark: true)
+            IslandExpandedDrawing(attributes: reply, state: state)
+            Caption(text: "Lock Screen", dark: true)
+            LockCardDrawing { ActivityLockView(attributes: reply, state: state, hidingTitles: false) }
+            LockCardDrawing { ActivityLockView(attributes: task, state: NativeSample.state(.task, mood), hidingTitles: false) }
+        }
+    }
+}
+
 // MARK: - Notifications
 
 /// A notification as iOS draws it. Bot notifications read as a message from the bot (its face, the app badge).

@@ -54,6 +54,11 @@ final class LiveActivities {
 
     func update(_ id: String, _ state: State) {
         guard let activity = activity(id) else { return }
+        var state = state
+        // The step line moves on: the step it replaces stays, dimmed, above it.
+        if let old = running[id], !old.step.isEmpty, old.step != state.step, state.phase == .running {
+            state.previous = old.step
+        }
         running[id] = state
         Task {
             await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(15 * 60),

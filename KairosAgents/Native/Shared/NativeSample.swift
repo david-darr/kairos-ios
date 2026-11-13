@@ -43,7 +43,8 @@ nonisolated enum NativeSample {
     static func running(_ kind: ActivityKind, startedAt: Date = Date(timeIntervalSinceNow: -134)) -> KairosActivityAttributes.ContentState {
         switch kind {
         case .reply:
-            .init(step: "Reading your notes", detail: "Saving to Library", helpers: [scout, quill], startedAt: startedAt)
+            .init(step: "Reading your notes", detail: "Saving to Library", helpers: [scout, quill], startedAt: startedAt,
+                  previous: "Searching your files")
         case .task:
             .init(step: "Filing 12 of 27 receipts", detail: "Routine · every Friday", progress: 0.44, startedAt: startedAt)
         case .team:
@@ -74,7 +75,56 @@ nonisolated enum NativeSample {
         return state
     }
 
+    /// One kind of activity in each state, for the gallery. Sample states only: the phone shows these before pairing.
+    static func state(_ kind: ActivityKind, _ mood: BotMood) -> KairosActivityAttributes.ContentState {
+        switch mood {
+        case .working: return running(kind)
+        case .needsYou:
+            var state = running(kind)
+            state.phase = .waiting
+            state.previous = nil
+            return state
+        case .done: return done(kind)
+        case .failed: return failed(kind)
+        case .idle:
+            var state = running(kind)
+            state.phase = .stopped
+            return state
+        case .offline:
+            var state = running(kind)
+            state.step = "Open Kairos to refresh"
+            state.previous = nil
+            state.stale = true
+            return state
+        }
+    }
+
     // MARK: Widgets
+
+    /// The sample widgets in one state, for the gallery.
+    static func snapshot(_ mood: BotMood, now: Date = .now) -> WidgetSnapshot {
+        var sample = snapshot(now: now)
+        switch mood {
+        case .working:
+            sample.needsYou = []
+        case .needsYou:
+            sample.running[0].waiting = true
+        case .done, .failed:
+            sample.running = []
+            sample.needsYou = []
+            sample.ended = .init(title: "Drafting your report", botName: "Kip", botColor: nil, failed: mood == .failed,
+                                   at: now.addingTimeInterval(-4 * 60), link: NativeLink.bot(NativeLink.kip).url.absoluteString, isKip: true)
+            sample.team?.stage = 3
+            sample.team?.note = mood == .failed ? "Posting stopped" : "Today's video is up"
+        case .idle:
+            sample.running = []
+            sample.needsYou = []
+            sample.team?.paused = true
+        case .offline:
+            return WidgetSnapshot(updatedAt: now, connected: false)
+        }
+        return sample
+    }
 
     static func snapshot(now: Date = .now) -> WidgetSnapshot {
         let calendar = Calendar.current
@@ -90,13 +140,15 @@ nonisolated enum NativeSample {
             ],
             running: [
                 .init(id: "r1", title: "Drafting your report", botName: "Kip", botColor: nil, progress: 0.58, step: "Writing",
-                      link: NativeLink.bot("kip").url.absoluteString),
+                      link: NativeLink.bot("kip").url.absoluteString, botID: "kip", isKip: true,
+                      startedAt: now.addingTimeInterval(-134), previousStep: "Reading your notes"),
                 .init(id: "r2", title: "Check zip tie availability", botName: "Claude", botColor: nil, progress: nil, step: "Searching",
-                      link: NativeLink.chat("c-zip").url.absoluteString),
+                      link: NativeLink.chat("c-zip").url.absoluteString, startedAt: now.addingTimeInterval(-48)),
                 .init(id: "r3", title: "File this week's receipts", botName: "Ledger", botColor: ledgerColor, botShape: "dome", progress: 0.44,
-                      step: "12 of 27", link: NativeLink.bot("ledger").url.absoluteString),
+                      step: "12 of 27", link: NativeLink.bot("ledger").url.absoluteString, botID: "ledger",
+                      startedAt: now.addingTimeInterval(-610), previousStep: "11 of 27"),
             ],
-            team: .init(name: "Content team", stages: ["Research", "Script", "Render", "Post"], stage: 2,
+            team: .init(id: "content-team", name: "Content team", stages: ["Research", "Script", "Render", "Post"], stage: 2,
                         note: "Rendering today's video", memberColors: [producerColor, scoutColor, quillColor]),
             post: .init(title: "Five tools for small shops", platform: "YouTube", views: 1240, likes: 86, comments: 12,
                         postedAt: now.addingTimeInterval(-3 * 3600), needsTap: 1),

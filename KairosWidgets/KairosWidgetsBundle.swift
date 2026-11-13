@@ -61,6 +61,7 @@ struct KairosLiveActivity: Widget {
         guard context.isStale, !context.state.phase.ended else { return context.state }
         var state = context.state
         state.step = "Open Kairos to refresh"
+        state.stale = true
         return state
     }
 }
@@ -83,9 +84,18 @@ nonisolated struct SnapshotProvider: TimelineProvider {
         completion(SnapshotEntry(date: .now, snapshot: context.isPreview && !stored.connected ? NativeSample.snapshot() : stored))
     }
 
+    /// The app reloads every widget whenever it writes new numbers (free while it is open, from the budget
+    /// otherwise). Between those, one more entry is planned when an end card is due to leave, so the widget
+    /// eases back to its quiet state on time; timer text keeps ticking without any entry.
     func getTimeline(in context: Context, completion: @escaping (Timeline<SnapshotEntry>) -> Void) {
-        let entry = SnapshotEntry(date: .now, snapshot: WidgetSnapshotStore.read())
-        completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(15 * 60))))
+        let now = Date()
+        let stored = WidgetSnapshotStore.read()
+        var entries = [SnapshotEntry(date: now, snapshot: stored.shown(at: now))]
+        if let ended = stored.ended {
+            let leaves = ended.at.addingTimeInterval(WidgetSnapshot.Ended.shownFor)
+            if leaves > now { entries.append(SnapshotEntry(date: leaves, snapshot: stored.shown(at: leaves))) }
+        }
+        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(15 * 60))))
     }
 }
 

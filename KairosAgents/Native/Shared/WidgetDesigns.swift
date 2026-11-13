@@ -5,6 +5,211 @@ import WidgetKit
 // the app's gallery draws the same views so they can be photographed. They follow the look:
 // night brown with cream ink, or parchment with bistre.
 
+// MARK: - State and motion
+
+// One state language for every widget, Live Activity and island view: the bot's face changes expression,
+// a soft wash behind it takes the state's colour, a small mark names the state, and step lines move on.
+// WidgetKit animates these when a timeline entry or a Live Activity update changes them (two seconds at most);
+// nothing here loops. With Reduce Motion on, every change is a cross-fade.
+
+/// What a bot is doing, as every native surface shows it.
+nonisolated enum BotMood: String, CaseIterable, Hashable, Sendable {
+    case working, needsYou, done, failed, idle, offline
+
+    init(_ phase: ActivityPhase, stale: Bool = false) {
+        if stale, !phase.ended { self = .offline; return }
+        switch phase {
+        case .running: self = .working
+        case .waiting: self = .needsYou
+        case .done: self = .done
+        case .failed: self = .failed
+        case .stopped: self = .idle
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .working: "bolt.fill"
+        case .needsYou: "hand.raised.fill"
+        case .done: "checkmark"
+        case .failed: "exclamationmark"
+        case .idle: "moon.zzz.fill"
+        case .offline: "link"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .working: "Working"
+        case .needsYou: "Needs you"
+        case .done: "Done"
+        case .failed: "Couldn't finish"
+        case .idle: "Idle"
+        case .offline: "Not connected"
+        }
+    }
+}
+
+enum MoodStyle {
+    static func pose(_ mood: BotMood) -> MascotPose {
+        switch mood {
+        case .working: .thinking
+        case .needsYou: .needs
+        case .done, .idle: .idle
+        case .failed, .offline: .sleeping
+        }
+    }
+
+    /// The wash and mark colour. The island and the Lock Screen card are always night, so they use `IslandInk`.
+    static func tint(_ mood: BotMood, island: Bool = false) -> Color {
+        switch mood {
+        case .working: island ? IslandInk.working : Palette.working
+        case .needsYou: island ? IslandInk.gold : Palette.gold
+        case .done: island ? IslandInk.success : Palette.success
+        case .failed: island ? IslandInk.danger : Palette.danger
+        case .idle, .offline: island ? IslandInk.faint : Palette.inkFaint
+        }
+    }
+
+    /// Settles well inside the two seconds WidgetKit allows.
+    static func animation(_ reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeInOut(duration: 0.35) : .spring(response: 0.55, dampingFraction: 0.82)
+    }
+
+    /// A face changing expression.
+    static func swap(_ reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .opacity : .scale(scale: 0.8).combined(with: .opacity)
+    }
+
+    /// A line arriving from below and leaving upward.
+    static func tick(_ reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .opacity : .asymmetric(
+            insertion: .move(edge: .bottom).combined(with: .opacity),
+            removal: .move(edge: .top).combined(with: .opacity))
+    }
+}
+
+/// The hero: the bot's own face (never redrawn) over a soft wash in the state's colour, with a small mark.
+struct MoodFace: View {
+    var color: UInt32?
+    var shape: String = "round"
+    var mood: BotMood
+    var size: CGFloat
+    var stage: Color = Palette.ground
+    /// Night colours, for the Lock Screen card and the island.
+    var island = false
+    var showsMark = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            Mascot(shape: MascotShape(rawValue: shape) ?? .round, colorHex: color, pose: MoodStyle.pose(mood), size: size, stage: stage)
+                .id(mood)
+                .transition(MoodStyle.swap(reduceMotion))
+        }
+        .frame(width: size, height: size)
+        .background {
+            Circle()
+                .fill(MoodStyle.tint(mood, island: island).opacity(mood == .idle || mood == .offline ? 0.18 : (island ? 0.42 : 0.3)))
+                .frame(width: size * 1.2, height: size * 1.2)
+                .blur(radius: size * 0.2)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if showsMark, mood != .idle {
+                MoodMark(mood: mood, size: max(11, size * 0.34), island: island)
+                    .offset(x: size * 0.06, y: size * 0.02)
+                    .transition(.opacity)
+            }
+        }
+        .animation(MoodStyle.animation(reduceMotion), value: mood)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The state's small round mark. The symbol swaps with the system's replace effect.
+struct MoodMark: View {
+    let mood: BotMood
+    var size: CGFloat = 16
+    var island = false
+
+    var body: some View {
+        Image(systemName: mood.symbol)
+            .font(.system(size: size * 0.52, weight: .bold))
+            .foregroundStyle(island ? IslandInk.card : Palette.ground)
+            .contentTransition(.symbolEffect(.replace))
+            .frame(width: size, height: size)
+            .background(MoodStyle.tint(mood, island: island), in: Circle())
+            .overlay(Circle().strokeBorder(island ? IslandInk.card : Palette.ground, lineWidth: 1.5))
+            .accessibilityHidden(true)
+    }
+}
+
+/// A step line that moves on: the new step arrives from below, the one it replaces dims and moves up,
+/// and the one before that leaves. With no earlier step it simply slides to the next.
+struct TickerText: View {
+    let text: String
+    var previous: String? = nil
+    var font: Font
+    var color: Color
+    var dimColor: Color
+    var dimFont: Font? = nil
+    var lines = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var shown: [String] {
+        guard let previous, !previous.isEmpty, previous != text else { return [text] }
+        return [previous, text]
+    }
+
+    var body: some View {
+        let all = shown
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(all.enumerated()), id: \.element) { index, line in
+                let current = index == all.count - 1
+                Text(line)
+                    .font(current ? font : (dimFont ?? font))
+                    .foregroundStyle(current ? color : dimColor)
+                    .lineLimit(current ? lines : 1)
+                    .transition(MoodStyle.tick(reduceMotion))
+            }
+        }
+        .animation(MoodStyle.animation(reduceMotion), value: all)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+    }
+}
+
+/// A row of small faces: who else is working.
+struct FaceRow: View {
+    let faces: [(color: UInt32?, shape: String)]
+    var size: CGFloat = 18
+    var more = 0
+
+    var body: some View {
+        HStack(spacing: -size * 0.25) {
+            ForEach(Array(faces.prefix(3).enumerated()), id: \.offset) { _, face in
+                WidgetFace(color: face.color, shape: face.shape, size: size, pose: .thinking)
+            }
+            if more > 0 {
+                Text("+\(more)").font(KFont.ui(11.5, .medium)).foregroundStyle(Palette.inkFaint).padding(.leading, size * 0.4)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+extension WidgetSnapshot {
+    /// The state a widget that stands for one bot shows. `kip` narrows it to the paired desktop's Kip.
+    func mood(kip: Bool = false) -> BotMood {
+        guard connected else { return .offline }
+        let work = kip ? running.filter { $0.isKip == true } : running
+        if work.contains(where: { $0.waiting == true }) { return .needsYou }
+        if !work.isEmpty { return .working }
+        if let ended, !kip || ended.isKip == true { return ended.failed ? .failed : .done }
+        return .idle
+    }
+}
+
 // MARK: - Shared pieces
 
 /// The widget's ground: the app's own ground with one warm glow.
@@ -43,6 +248,22 @@ struct WidgetFace: View {
     }
 }
 
+/// Not connected: Kip asleep over a quiet wash, and how to fix it.
+struct WidgetOffline: View {
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            WidgetHeader(symbol: "link", title: title)
+            MoodFace(color: nil, mood: .offline, size: 38).padding(.top, 4).padding(.leading, 2)
+            Spacer(minLength: 0)
+            Text("Open Kairos and pair your desktop to see this.").font(KFont.ui(13.5, .medium)).foregroundStyle(Palette.inkDim)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
 /// A plain line for a widget that has nothing to show yet.
 struct WidgetEmpty: View {
     let symbol: String
@@ -62,6 +283,7 @@ struct WidgetEmpty: View {
 private struct InkBar: View {
     var value: Double
     var color: Color = Palette.gold
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { proxy in
@@ -71,6 +293,7 @@ private struct InkBar: View {
             }
         }
         .frame(height: 5)
+        .animation(MoodStyle.animation(reduceMotion), value: value)
     }
 }
 
@@ -78,6 +301,7 @@ private struct InkRing: View {
     var value: Double
     var color: Color = Palette.gold
     var width: CGFloat = 5
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -86,6 +310,7 @@ private struct InkRing: View {
                 .stroke(color, style: StrokeStyle(lineWidth: width, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
+        .animation(MoodStyle.animation(reduceMotion), value: value)
     }
 }
 
@@ -165,7 +390,7 @@ nonisolated enum KairosWidgetKind: String, CaseIterable, Sendable {
         switch self {
         case .needsYou: URL(string: snapshot.needsYou.first?.link ?? "") ?? NativeLink.home.url
         case .running: URL(string: snapshot.running.first?.link ?? "") ?? NativeLink.home.url
-        case .team: NativeLink.bot("content-team").url
+        case .team: snapshot.team?.id.map { NativeLink.bot($0).url } ?? NativeLink.allBots.url
         case .posts: NativeLink.area("studio").url
         case .spend, .usage: NativeLink.home.url
         case .nextEvent: NativeLink.area("calendar").url
@@ -187,7 +412,7 @@ struct KairosWidgetView: View {
             if family.isAccessory {
                 Label("Open Kairos", systemImage: "link").font(.system(size: 13, weight: .medium))
             } else {
-                WidgetEmpty(symbol: "link", title: kind.title, text: "Open Kairos and pair your desktop to see this.")
+                WidgetOffline(title: kind.title)
             }
         } else {
             switch kind {
@@ -199,7 +424,7 @@ struct KairosWidgetView: View {
             case .nextEvent: EventWidgetView(snapshot: snapshot, family: family, hidingTitles: hidingTitles)
             case .usage: UsageWidgetView(snapshot: snapshot, family: family)
             case .desktop: DesktopWidgetView(snapshot: snapshot, family: family, hidingTitles: hidingTitles)
-            case .quickActions: QuickActionsWidgetView(snapshot: snapshot, family: family)
+            case .quickActions: QuickActionsWidgetView(snapshot: snapshot, family: family, hidingTitles: hidingTitles)
             }
         }
     }
@@ -214,11 +439,18 @@ extension WidgetFamily {
 struct NeedsYouWidgetView: View {
     let snapshot: WidgetSnapshot
     let family: WidgetFamily
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var count: Int { snapshot.needsYou.count }
     private var names: String { snapshot.needsYou.map(\.botName).joined(separator: ", ") }
 
     var body: some View {
+        content
+            .animation(MoodStyle.animation(reduceMotion), value: snapshot.needsYou.map(\.id))
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch family {
         case .accessoryCircular:
             ZStack {
@@ -226,6 +458,7 @@ struct NeedsYouWidgetView: View {
                 VStack(spacing: 0) {
                     Image(systemName: "hand.raised.fill").font(.system(size: 13, weight: .semibold))
                     Text("\(count)").font(.system(size: 22, weight: .semibold, design: .rounded)).widgetAccentable()
+                        .contentTransition(.numericText(value: Double(count)))
                 }
             }
             .accessibilityLabel("\(count) need you")
@@ -233,12 +466,14 @@ struct NeedsYouWidgetView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Label(count == 1 ? "1 needs you" : "\(count) need you", systemImage: "hand.raised.fill")
                     .font(.system(size: 15, weight: .semibold)).widgetAccentable()
-                Text(count == 0 ? "Nothing is waiting" : names).font(.system(size: 13)).lineLimit(1)
+                    .contentTransition(.numericText(value: Double(count)))
+                TickerText(text: count == 0 ? "Nothing is waiting" : names, font: .system(size: 13), color: .primary, dimColor: .secondary)
                 Text("Tap to answer").font(.system(size: 12)).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         case .accessoryInline:
             Label(count == 0 ? "Nothing needs you" : "\(count) need you", systemImage: "hand.raised.fill")
+                .contentTransition(.numericText(value: Double(count)))
         case .systemMedium:
             HStack(spacing: 16) {
                 bigCount.frame(width: 104, alignment: .leading)
@@ -246,7 +481,7 @@ struct NeedsYouWidgetView: View {
                     ForEach(snapshot.needsYou.prefix(3)) { item in
                         WidgetLink(link: item.link, label: "Open \(item.botName)") {
                             HStack(spacing: 8) {
-                                WidgetFace(color: item.botColor, shape: item.botShape, size: 28, pose: .needs)
+                                MoodFace(color: item.botColor, shape: item.botShape, mood: .needsYou, size: 28, showsMark: false)
                                 VStack(alignment: .leading, spacing: 0) {
                                     Text(item.botName).font(KFont.ui(14.5, .semibold)).foregroundStyle(Palette.ink)
                                     Text(item.kind == "Approval" ? "Wants your approval" : "Asked you a question")
@@ -256,9 +491,14 @@ struct NeedsYouWidgetView: View {
                                 Spacer(minLength: 0)
                             }
                         }
+                        .transition(MoodStyle.tick(reduceMotion))
                     }
                     if snapshot.needsYou.isEmpty {
-                        Text("Your bots are fine on their own.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+                        HStack(spacing: 10) {
+                            MoodFace(color: nil, mood: .idle, size: 30)
+                            Text("Your bots are fine on their own.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+                        }
+                        .transition(.opacity)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -269,7 +509,11 @@ struct NeedsYouWidgetView: View {
                 Spacer(minLength: 0)
                 HStack(spacing: -8) {
                     ForEach(snapshot.needsYou.prefix(3)) { item in
-                        WidgetFace(color: item.botColor, shape: item.botShape, size: 34, pose: .needs)
+                        MoodFace(color: item.botColor, shape: item.botShape, mood: .needsYou, size: 34, showsMark: false)
+                            .transition(MoodStyle.swap(reduceMotion))
+                    }
+                    if snapshot.needsYou.isEmpty {
+                        MoodFace(color: nil, mood: .idle, size: 34).transition(MoodStyle.swap(reduceMotion))
                     }
                 }
             }
@@ -283,7 +527,7 @@ struct NeedsYouWidgetView: View {
             Text("\(count)")
                 .font(KFont.display(54))
                 .foregroundStyle(count == 0 ? Palette.inkFaint : Palette.goldText)
-                .contentTransition(.numericText())
+                .contentTransition(.numericText(value: Double(count)))
                 .padding(.top, 2)
             Text(count == 0 ? "Nothing waiting" : (count == 1 ? "bot is waiting" : "bots are waiting"))
                 .font(KFont.ui(13)).foregroundStyle(Palette.inkDim).lineLimit(1)
@@ -297,43 +541,74 @@ struct RunningWidgetView: View {
     let snapshot: WidgetSnapshot
     let family: WidgetFamily
     var hidingTitles: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func title(_ item: WidgetSnapshot.Running) -> String { hidingTitles ? "\(item.botName) is working" : item.title }
+    private func mood(_ item: WidgetSnapshot.Running) -> BotMood { item.waiting == true ? .needsYou : .working }
+    private func step(_ item: WidgetSnapshot.Running) -> String { item.waiting == true ? "Waiting for you" : item.step }
+
+    private func endedLine(_ ended: WidgetSnapshot.Ended) -> String {
+        let what = hidingTitles ? "\(ended.botName)'s work" : ended.title
+        return ended.failed ? "Couldn't finish: \(what)" : "Done: \(what)"
+    }
 
     var body: some View {
+        content
+            .animation(MoodStyle.animation(reduceMotion), value: snapshot.running.map(\.id))
+            .animation(MoodStyle.animation(reduceMotion), value: snapshot.ended)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch family {
         case .accessoryCircular:
             if let first = snapshot.running.first, let progress = first.progress {
                 Gauge(value: progress) { Image(systemName: "bolt.fill") } currentValueLabel: {
-                    Text("\(Int(progress * 100))")
+                    Text("\(Int(progress * 100))").contentTransition(.numericText(value: progress))
                 }
                 .gaugeStyle(.accessoryCircular)
             } else {
                 ZStack {
                     AccessoryWidgetBackground()
                     VStack(spacing: 0) {
-                        Image(systemName: "bolt.fill").font(.system(size: 12, weight: .semibold))
+                        Image(systemName: snapshot.mood().symbol).font(.system(size: 12, weight: .semibold))
+                            .contentTransition(.symbolEffect(.replace))
                         Text("\(snapshot.running.count)").font(.system(size: 22, weight: .semibold, design: .rounded))
+                            .contentTransition(.numericText(value: Double(snapshot.running.count)))
                     }
                 }
             }
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 2) {
                 Label("\(snapshot.running.count) running", systemImage: "bolt.fill").font(.system(size: 15, weight: .semibold)).widgetAccentable()
+                    .contentTransition(.numericText(value: Double(snapshot.running.count)))
                 if let first = snapshot.running.first {
-                    Text(title(first)).font(.system(size: 13)).lineLimit(1)
+                    TickerText(text: title(first), font: .system(size: 13), color: .primary, dimColor: .secondary)
                     if let progress = first.progress { ProgressView(value: progress).tint(.primary) }
+                } else if let ended = snapshot.ended {
+                    Text(endedLine(ended)).font(.system(size: 13)).lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         case .systemMedium, .systemLarge:
             VStack(alignment: .leading, spacing: family == .systemLarge ? 12 : 9) {
                 WidgetHeader(symbol: "bolt.fill", title: "\(snapshot.running.count) running")
+                    .contentTransition(.numericText(value: Double(snapshot.running.count)))
                 ForEach(snapshot.running.prefix(family == .systemLarge ? 5 : 3)) { item in
                     WidgetLink(link: item.link, label: "Open \(item.title)") { row(item) }
+                        .transition(MoodStyle.tick(reduceMotion))
                 }
                 if snapshot.running.isEmpty {
-                    Text("Nothing is running.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+                    if let ended = snapshot.ended {
+                        WidgetLink(link: ended.link, label: "Open \(ended.botName)") { endedRow(ended) }
+                            .transition(MoodStyle.tick(reduceMotion))
+                    } else {
+                        HStack(spacing: 10) {
+                            MoodFace(color: nil, mood: .idle, size: 30)
+                            Text("Nothing is running.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
+                        }
+                        .transition(.opacity)
+                    }
                 }
                 if family == .systemLarge, !snapshot.needsYou.isEmpty {
                     Palette.line.frame(height: 1).padding(.vertical, 4)
@@ -341,7 +616,7 @@ struct RunningWidgetView: View {
                     ForEach(snapshot.needsYou.prefix(3)) { item in
                         WidgetLink(link: item.link, label: "Open \(item.botName)") {
                             HStack(spacing: 10) {
-                                WidgetFace(color: item.botColor, shape: item.botShape, size: 30, pose: .needs)
+                                MoodFace(color: item.botColor, shape: item.botShape, mood: .needsYou, size: 30, showsMark: false)
                                 Text(item.botName).font(KFont.ui(14.5, .medium)).foregroundStyle(Palette.ink)
                                 Text(item.kind == "Approval" ? "wants your approval" : "asked you a question")
                                     .font(KFont.ui(13)).foregroundStyle(Palette.inkFaint)
@@ -349,6 +624,7 @@ struct RunningWidgetView: View {
                             }
                             .lineLimit(1)
                         }
+                        .transition(MoodStyle.tick(reduceMotion))
                     }
                 }
                 Spacer(minLength: 0)
@@ -363,19 +639,39 @@ struct RunningWidgetView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         default:
             VStack(alignment: .leading, spacing: 6) {
-                WidgetHeader(symbol: "bolt.fill", title: "Running")
+                HStack(spacing: 4) {
+                    WidgetHeader(symbol: "bolt.fill", title: "Running")
+                    if let started = snapshot.running.first?.startedAt { timer(started) }
+                }
                 if let first = snapshot.running.first {
-                    ZStack {
-                        InkRing(value: first.progress ?? 0.3, width: 4)
-                        WidgetFace(color: first.botColor, shape: first.botShape, size: 34, pose: .thinking)
+                    HStack(alignment: .center, spacing: 8) {
+                        ZStack {
+                            InkRing(value: first.progress ?? 0.3, color: MoodStyle.tint(mood(first)), width: 4)
+                            MoodFace(color: first.botColor, shape: first.botShape, mood: mood(first), size: 34)
+                        }
+                        .frame(width: 46, height: 46)
+                        Spacer(minLength: 0)
+                        if snapshot.running.count > 1 {
+                            FaceRow(faces: snapshot.running.dropFirst().map { (color: $0.botColor, shape: $0.botShape) }, size: 18,
+                                    more: max(0, snapshot.running.count - 4))
+                                .transition(.opacity)
+                        }
                     }
-                    .frame(width: 46, height: 46)
                     .padding(.top, 2)
                     Spacer(minLength: 0)
-                    Text(title(first)).font(KFont.ui(15, .semibold)).foregroundStyle(Palette.ink).lineLimit(2)
-                    Text(snapshot.running.count > 1 ? "\(first.step) · +\(snapshot.running.count - 1) more" : first.step)
-                        .font(KFont.ui(12.5)).foregroundStyle(Palette.inkFaint).lineLimit(1)
+                    TickerText(text: title(first), font: KFont.ui(15, .semibold), color: Palette.ink, dimColor: Palette.inkFaint, lines: 2)
+                    TickerText(text: step(first), font: KFont.ui(12.5), color: mood(first) == .needsYou ? Palette.goldText : Palette.inkFaint,
+                               dimColor: Palette.inkFaint)
+                } else if let ended = snapshot.ended {
+                    MoodFace(color: ended.botColor, shape: ended.botShape, mood: ended.failed ? .failed : .done, size: 38)
+                        .padding(.top, 4).padding(.leading, 2)
+                        .transition(MoodStyle.swap(reduceMotion))
+                    Spacer(minLength: 0)
+                    Text(endedLine(ended)).font(KFont.ui(14.5, .semibold)).foregroundStyle(Palette.ink).lineLimit(2)
+                    Text("\(Text(ended.at, style: .relative)) ago").font(KFont.ui(12)).foregroundStyle(Palette.inkFaint).lineLimit(1)
                 } else {
+                    MoodFace(color: nil, mood: .idle, size: 38).padding(.top, 4).padding(.leading, 2)
+                        .transition(MoodStyle.swap(reduceMotion))
                     Spacer(minLength: 0)
                     Text("Nothing is running.").font(KFont.ui(14)).foregroundStyle(Palette.inkDim)
                 }
@@ -384,22 +680,54 @@ struct RunningWidgetView: View {
         }
     }
 
+    /// Time since the desktop started the turn; WidgetKit keeps it ticking with the app closed.
+    private func timer(_ since: Date) -> some View {
+        Text(since, style: .timer)
+            .font(KFont.ui(11.5, .medium).monospacedDigit())
+            .foregroundStyle(Palette.inkFaint)
+            .multilineTextAlignment(.trailing)
+            .frame(width: 46, alignment: .trailing)
+            .lineLimit(1)
+    }
+
     private func row(_ item: WidgetSnapshot.Running) -> some View {
         HStack(spacing: 10) {
-            WidgetFace(color: item.botColor, shape: item.botShape, size: 30, pose: .thinking)
+            MoodFace(color: item.botColor, shape: item.botShape, mood: mood(item), size: 30)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(title(item)).font(KFont.ui(14.5, .medium)).foregroundStyle(Palette.ink).lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(item.progress.map { "\(Int($0 * 100))%" } ?? item.step)
-                        .font(KFont.ui(12.5).monospacedDigit()).foregroundStyle(Palette.inkFaint).lineLimit(1)
+                    if let progress = item.progress {
+                        Text("\(Int(progress * 100))%")
+                            .font(KFont.ui(12.5).monospacedDigit()).foregroundStyle(Palette.inkFaint).lineLimit(1)
+                            .contentTransition(.numericText(value: progress))
+                    } else if let started = item.startedAt {
+                        timer(started)
+                    } else {
+                        Text(step(item)).font(KFont.ui(12.5)).foregroundStyle(Palette.inkFaint).lineLimit(1)
+                    }
+                }
+                if family == .systemLarge {
+                    TickerText(text: step(item), previous: item.waiting == true ? nil : item.previousStep, font: KFont.ui(12.5),
+                               color: mood(item) == .needsYou ? Palette.goldText : Palette.inkDim, dimColor: Palette.inkFaint, dimFont: KFont.ui(11))
                 }
                 if let progress = item.progress {
-                    InkBar(value: progress)
+                    InkBar(value: progress, color: MoodStyle.tint(mood(item)))
                 } else {
-                    InkBar(value: 0.25, color: Palette.working.opacity(0.7))
+                    InkBar(value: 0.25, color: MoodStyle.tint(mood(item)).opacity(0.7))
                 }
             }
+        }
+    }
+
+    private func endedRow(_ ended: WidgetSnapshot.Ended) -> some View {
+        HStack(spacing: 10) {
+            MoodFace(color: ended.botColor, shape: ended.botShape, mood: ended.failed ? .failed : .done, size: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(endedLine(ended)).font(KFont.ui(14.5, .medium)).foregroundStyle(Palette.ink).lineLimit(1)
+                Text("\(Text(ended.at, style: .relative)) ago").font(KFont.ui(12)).foregroundStyle(Palette.inkFaint).lineLimit(1)
+            }
+            Spacer(minLength: 0)
         }
     }
 }
@@ -409,23 +737,29 @@ struct RunningWidgetView: View {
 struct TeamWidgetView: View {
     let snapshot: WidgetSnapshot
     let family: WidgetFamily
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let team = snapshot.team {
             content(team)
+                .animation(MoodStyle.animation(reduceMotion), value: team)
         } else {
-            WidgetEmpty(symbol: "person.3", title: "Team", text: "No bot team yet.")
+            WidgetEmpty(symbol: "person.3", title: "Team", text: "Tap to see your bots and teams.")
         }
+    }
+
+    private func stageLine(_ team: WidgetSnapshot.Team) -> String {
+        let stageName = team.stages.indices.contains(team.stage) ? team.stages[team.stage] : ""
+        return team.paused ? "Paused" : "\(stageName) · \(team.stage + 1) of \(team.stages.count)"
     }
 
     @ViewBuilder
     private func content(_ team: WidgetSnapshot.Team) -> some View {
-        let stageName = team.stages.indices.contains(team.stage) ? team.stages[team.stage] : ""
         switch family {
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 2) {
                 Label(team.name, systemImage: "person.3.fill").font(.system(size: 15, weight: .semibold)).widgetAccentable()
-                Text(team.paused ? "Paused" : "\(stageName) · \(team.stage + 1) of \(team.stages.count)").font(.system(size: 13))
+                TickerText(text: stageLine(team), font: .system(size: 13), color: .primary, dimColor: .secondary)
                 ProgressView(value: Double(team.stage + 1), total: Double(max(1, team.stages.count))).tint(.primary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -435,7 +769,7 @@ struct TeamWidgetView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         WidgetHeader(symbol: "person.3.fill", title: "Team")
                         Text(team.name).font(KFont.display(26)).foregroundStyle(Palette.ink).lineLimit(1)
-                        Text(team.paused ? "Paused" : team.note).font(KFont.ui(13)).foregroundStyle(Palette.inkDim).lineLimit(1)
+                        TickerText(text: team.paused ? "Paused" : team.note, font: KFont.ui(13), color: Palette.inkDim, dimColor: Palette.inkFaint)
                     }
                     Spacer(minLength: 6)
                     faces(team, size: 34)
@@ -449,8 +783,7 @@ struct TeamWidgetView: View {
                 faces(team, size: 30).padding(.top, 4)
                 Spacer(minLength: 0)
                 Text(team.name).font(KFont.ui(15, .semibold)).foregroundStyle(Palette.ink).lineLimit(1)
-                Text(team.paused ? "Paused" : "\(stageName) · \(team.stage + 1) of \(team.stages.count)")
-                    .font(KFont.ui(12.5)).foregroundStyle(Palette.inkFaint).lineLimit(1)
+                TickerText(text: stageLine(team), font: KFont.ui(12.5), color: Palette.inkFaint, dimColor: Palette.inkFaint)
                 track(team, labels: false).padding(.top, 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -460,7 +793,8 @@ struct TeamWidgetView: View {
     private func faces(_ team: WidgetSnapshot.Team, size: CGFloat) -> some View {
         HStack(spacing: -size * 0.3) {
             ForEach(Array(team.memberColors.prefix(3).enumerated()), id: \.offset) { index, color in
-                WidgetFace(color: color, shape: ["squircle", "round", "tall"][index % 3], size: size)
+                MoodFace(color: color, shape: ["squircle", "round", "tall"][index % 3], mood: team.paused ? .idle : .working,
+                         size: size, showsMark: index == 0)
             }
         }
     }
@@ -522,6 +856,7 @@ struct PostsWidgetView: View {
             VStack(alignment: .leading, spacing: 0) {
                 WidgetHeader(symbol: "play.rectangle.fill", title: "Latest post")
                 Text(WidgetFormat.count(post.views)).font(KFont.display(44)).foregroundStyle(Palette.ink).padding(.top, 4)
+                    .contentTransition(.numericText(value: Double(post.views)))
                 Text("views on \(post.platform)").font(KFont.ui(12.5)).foregroundStyle(Palette.inkDim).lineLimit(1)
                 Spacer(minLength: 0)
                 HStack(spacing: 10) {
@@ -538,6 +873,7 @@ struct PostsWidgetView: View {
     private func stat(_ value: Int, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(WidgetFormat.count(value)).font(KFont.display(30)).foregroundStyle(Palette.ink)
+                .contentTransition(.numericText(value: Double(value)))
             Text(label).font(KFont.ui(12)).foregroundStyle(Palette.inkFaint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -589,6 +925,7 @@ struct SpendWidgetView: View {
             VStack(alignment: .leading, spacing: 0) {
                 WidgetHeader(symbol: "creditcard.fill", title: "This month")
                 Text(WidgetFormat.money(spend.spent, spend.currency)).font(KFont.display(40)).foregroundStyle(Palette.ink)
+                    .contentTransition(.numericText(value: spend.spent))
                     .minimumScaleFactor(0.7).lineLimit(1).padding(.top, 6)
                 Text("of \(WidgetFormat.money(spend.cap, spend.currency)) cap").font(KFont.ui(13)).foregroundStyle(Palette.inkDim)
                 Spacer(minLength: 0)
@@ -693,6 +1030,7 @@ struct UsageWidgetView: View {
                                 Text("resets \(reset.formatted(.dateTime.weekday(.abbreviated)))").font(KFont.ui(11.5)).foregroundStyle(Palette.inkFaint)
                             }
                             Text("\(item.percent)%").font(KFont.ui(14, .semibold).monospacedDigit()).foregroundStyle(tint(item.percent))
+                                .contentTransition(.numericText(value: Double(item.percent)))
                         }
                         InkBar(value: Double(item.percent) / 100, color: tint(item.percent))
                     }
@@ -709,6 +1047,7 @@ struct UsageWidgetView: View {
                             ZStack {
                                 InkRing(value: Double(item.percent) / 100, color: tint(item.percent), width: 6)
                                 Text("\(item.percent)").font(KFont.ui(17, .semibold).monospacedDigit()).foregroundStyle(Palette.ink)
+                                    .contentTransition(.numericText(value: Double(item.percent)))
                             }
                             .frame(width: 56, height: 56)
                             Text(item.provider).font(KFont.ui(12.5, .medium)).foregroundStyle(Palette.inkDim).lineLimit(1)
@@ -804,28 +1143,57 @@ struct DesktopWidgetView: View {
 struct QuickActionsWidgetView: View {
     let snapshot: WidgetSnapshot
     let family: WidgetFamily
+    var hidingTitles: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Kip's own state on the paired desktop (or on the sample data before pairing).
+    private var mood: BotMood { snapshot.mood(kip: true) }
+
+    private var line: String {
+        let work = snapshot.running.first { $0.isKip == true }
+        switch mood {
+        case .working:
+            guard let work else { return "Working" }
+            return hidingTitles ? "Working on it" : work.title
+        case .needsYou: return "Waiting for you"
+        case .done: return "Finished. Tap to see"
+        case .failed: return "Couldn't finish"
+        case .offline: return "Not connected"
+        case .idle: return "Anything, any time"
+        }
+    }
 
     var body: some View {
+        content
+            .animation(MoodStyle.animation(reduceMotion), value: mood)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch family {
         case .accessoryCircular:
             ZStack {
                 AccessoryWidgetBackground()
-                Mascot(size: 44, stage: .clear)
+                Mascot(pose: MoodStyle.pose(mood), size: 44, stage: .clear)
+                    .id(mood)
+                    .transition(MoodStyle.swap(reduceMotion))
             }
             .accessibilityLabel("Ask Kip")
         case .accessoryRectangular:
             HStack(spacing: 8) {
-                Mascot(size: 38, stage: .clear)
+                Mascot(pose: MoodStyle.pose(mood), size: 38, stage: .clear)
+                    .id(mood)
+                    .transition(MoodStyle.swap(reduceMotion))
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Ask Kip").font(.system(size: 15, weight: .semibold)).widgetAccentable()
-                    Text("Tap to start").font(.system(size: 13)).foregroundStyle(.secondary)
+                    TickerText(text: mood == .idle ? "Tap to start" : line, font: .system(size: 13), color: .secondary, dimColor: .secondary)
                 }
                 Spacer(minLength: 0)
             }
         case .systemMedium:
             HStack(spacing: 14) {
                 VStack(spacing: 2) {
-                    Mascot(size: 74, stage: Palette.ground)
+                    MoodFace(color: nil, mood: mood, size: 70)
                     Text("Kip").font(KFont.display(24)).foregroundStyle(Palette.ink)
                 }
                 .frame(width: 96)
@@ -841,10 +1209,10 @@ struct QuickActionsWidgetView: View {
             }
         default:
             VStack(alignment: .leading, spacing: 0) {
-                Mascot(size: 70, stage: Palette.ground).frame(maxWidth: .infinity)
+                MoodFace(color: nil, mood: mood, size: 66).frame(maxWidth: .infinity)
                 Spacer(minLength: 0)
                 Text("Ask Kip").font(KFont.display(28)).foregroundStyle(Palette.ink)
-                Text("Anything, any time").font(KFont.ui(12.5)).foregroundStyle(Palette.inkFaint)
+                TickerText(text: line, font: KFont.ui(12.5), color: mood == .needsYou ? Palette.goldText : Palette.inkFaint, dimColor: Palette.inkFaint)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }

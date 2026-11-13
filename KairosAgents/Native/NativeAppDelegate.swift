@@ -78,15 +78,75 @@ final class NativeLinks {
 
     var pending: NativeLink?
     var showSettings = false
+    @ObservationIgnored private var waiting: Task<Void, Never>?
 
+    /// Widgets and some pushes name Kip as "kip" and the sample team as "content-team". On a paired phone a link
+    /// is resolved against the paired desktop's own bots when it is followed: "kip" is the desktop's Kip, and a bot
+    /// the desktop does not have opens Home instead of a screen for nothing. On a cold start this waits for the
+    /// bot list first. Not paired, every link goes where it always went.
     func open(_ link: NativeLink) {
+        waiting?.cancel()
+        waiting = nil
+        let store = ChatStore.shared
+        guard !store.isSample, Self.namesBot(link) else {
+            deliver(link)
+            return
+        }
+        if store.homeLoaded {
+            deliver(Self.resolve(link, in: store) ?? .home)
+            return
+        }
+        waiting = Task { [weak self] in
+            let deadline = Date().addingTimeInterval(20)
+            while !Task.isCancelled, !store.isSample, !store.homeLoaded, store.homeError == nil, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.waiting = nil
+            if store.isSample {
+                self.deliver(link)
+            } else if store.homeLoaded {
+                self.deliver(Self.resolve(link, in: store) ?? .home)
+            } else {
+                // The bot list never came: never push a screen for a bot that may not exist.
+                self.deliver(.home)
+            }
+        }
+    }
+
+    private func deliver(_ link: NativeLink) {
         switch link {
         case .ring(let ring, let bot):
             CallCenter.shared.answerFromLink(ringID: ring, botID: bot)
         case .call(let bot):
-            CallCenter.shared.startCall(with: SampleData.bot(bot))
+            // The same path a call from the bot's own screen takes: CallCenter with the bot itself.
+            let store = ChatStore.shared
+            CallCenter.shared.startCall(with: store.isSample ? SampleData.bot(bot) : store.bot(bot))
         default:
             pending = link
+        }
+    }
+
+    /// Links that carry a bot id. A ring's bot comes from the ring itself and is left to `CallCenter`.
+    private static func namesBot(_ link: NativeLink) -> Bool {
+        switch link {
+        case .bot, .ask, .call, .approval: true
+        default: false
+        }
+    }
+
+    /// The link with its bot id swapped for the paired desktop's own, or nil when that bot is not there.
+    static func resolve(_ link: NativeLink, in store: ChatStore) -> NativeLink? {
+        func real(_ id: String) -> String? {
+            if id == NativeLink.kip { return store.kip?.id }
+            return store.bots.contains { $0.id == id } ? id : nil
+        }
+        switch link {
+        case .bot(let id): return real(id).map { NativeLink.bot($0) }
+        case .ask(let id): return real(id).map { NativeLink.ask($0) }
+        case .call(let id): return real(id).map { NativeLink.call($0) }
+        case .approval(let request, let id): return real(id).map { NativeLink.approval(requestID: request, botID: $0) }
+        default: return link
         }
     }
 }
@@ -148,6 +208,7 @@ private struct NativeLinksModifier: ViewModifier {
         case .addedTab(let title): router.push(.page(title))
         case .home: router.paths[.home] = []; router.select(.home)
         case .desktop: router.paths[.desktop] = []; router.select(.desktop)
+        case .allBots: router.paths[.home] = []; router.push(.allBots, on: .home)
         case .ring, .call: break
         }
     }
