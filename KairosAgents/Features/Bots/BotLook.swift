@@ -51,6 +51,8 @@ struct MascotPicker: View {
     @Binding var accessory: MascotAccessory
     var previewSize: CGFloat = 150
     var showPreview = true
+    /// The shapes offered. A paired bot can only be stored in the desktop's three.
+    var shapes: [MascotShape] = MascotShape.allCases
 
     private let shapeColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
     private let accessoryColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
@@ -100,7 +102,7 @@ struct MascotPicker: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(text: "Shape")
                 LazyVGrid(columns: shapeColumns, spacing: 8) {
-                    ForEach(MascotShape.allCases, id: \.self) { option in
+                    ForEach(shapes, id: \.self) { option in
                         tile(on: option == shape, label: BotLook.name(option)) {
                             shape = option
                         } content: {
@@ -158,8 +160,17 @@ struct BotLookScreen: View {
     @State private var shape: MascotShape = .round
     @State private var accessory: MascotAccessory = .none
     @State private var loaded = false
+    var live = BotsSettingsLive.shared
 
     var body: some View {
+        if live.active {
+            BotSetLookScreen(botID: botID)
+        } else {
+            sample
+        }
+    }
+
+    @ViewBuilder private var sample: some View {
         let bot = store.bot(botID)
         BotsPage("Look and name") {
             if bot.isKip {
@@ -224,5 +235,121 @@ struct BotLookScreen: View {
         store.botBinding(botID).wrappedValue = bot
         Haptics.success()
         store.say("Look saved")
+    }
+}
+
+/// Settings > Look and name while paired: name, job and a look the desktop can store (its three shapes, the six
+/// colours and the six accessories). Only what changed is sent, with the revision read. Kip stays locked.
+private struct BotSetLookScreen: View {
+    let botID: String
+    let store = BotsStore.shared
+    var live = BotsSettingsLive.shared
+    @State private var name = ""
+    @State private var job = ""
+    @State private var colorHex: UInt32 = Palette.botPowder
+    @State private var shape: MascotShape = .round
+    @State private var accessory: MascotAccessory = .none
+    @State private var filled = false
+    @State private var saving = false
+
+    var body: some View {
+        let agent = live.record(botID)
+        BotsPage("Look and name", live: true) {
+            BotSetUnsureNote(botID: botID)
+            BotsLoadNote(state: live.shown(live.recordLoad[botID])) {
+                Task {
+                    await live.loadRecord(botID)
+                    fill()
+                }
+            }
+            if let agent, agent.isFrontDesk {
+                let bot = store.bot(botID)
+                VStack(spacing: 14) {
+                    BotFace(bot: bot, size: 150, blinks: true)
+                    Text(bot.name).font(KFont.display(36)).foregroundStyle(Palette.ink)
+                    HintLine(text: "Kip always looks like Kairos's own Kip. Its name and look cannot be changed, so you always know who answers first.", symbol: "lock")
+                        .padding(14)
+                        .kCard(radius: 18)
+                }
+                .frame(maxWidth: .infinity)
+            } else if let agent, filled {
+                let pending = changes(agent)
+                let blank = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                FieldCard(title: "Name", text: $name, placeholder: "e.g. Juniper", limit: 100)
+                if blank {
+                    HintLine(text: "A bot needs a name.", symbol: "exclamationmark.circle", color: Palette.danger)
+                }
+                FieldCard(title: "Job", text: $job, placeholder: "What is this bot for?", limit: 200)
+                MascotPicker(colorHex: $colorHex, shape: $shape, accessory: $accessory, shapes: BotAvatarRules.shapes)
+                    .padding(16)
+                    .kCard(radius: 22)
+                let ready = !pending.isEmpty && !blank && !saving && !live.busy.contains(botID) && job.count <= 200
+                HStack(spacing: 10) {
+                    PillButton(title: "Shuffle", symbol: "shuffle", wide: true) {
+                        withAnimation(Motion.bouncy) {
+                            colorHex = BotLook.colors.randomElement()?.hex ?? Palette.botGold
+                            shape = BotAvatarRules.shapes.randomElement() ?? .round
+                            accessory = BotLook.accessories.randomElement() ?? .none
+                        }
+                    }
+                    PillButton(title: saving ? "Saving" : "Save look", symbol: "checkmark", look: .filled, wide: true) { save(pending) }
+                        .disabled(!ready)
+                        .opacity(ready ? 1 : 0.5)
+                }
+                if !pending.isEmpty {
+                    HintLine(text: "Changes are not saved yet.", symbol: "circle.dotted")
+                }
+                HintLine(text: "Your desktop keeps three shapes: round, squircle and tall.", symbol: "info.circle")
+            }
+        }
+        .task(id: BotsSettingsLive.connectionKey) {
+            await live.loadRecordIfNeeded(botID)
+            fill()
+        }
+    }
+
+    /// The form starts from the desktop's look once, then keeps what the person picks.
+    private func fill() {
+        guard !filled, live.isCurrent, let agent = live.records[botID] else { return }
+        name = agent.name ?? ""
+        job = agent.role ?? ""
+        colorHex = agent.bodyColorHex
+        shape = BotAvatarRules.shapes.contains(agent.mascotShape) ? agent.mascotShape : .round
+        accessory = agent.mascotAccessory
+        filled = true
+    }
+
+    /// Only what differs from the desktop's record.
+    private func changes(_ agent: AgentDTO) -> [String: Any] {
+        var out: [String: Any] = [:]
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed != (agent.name ?? "") { out["name"] = trimmed }
+        if job != (agent.role ?? "") { out["role"] = job }
+        if colorHex != agent.bodyColorHex || shape != agent.mascotShape || accessory != agent.mascotAccessory {
+            out["avatar"] = [
+                "version": 3,
+                "character": "ajar",
+                "shape": shape.rawValue,
+                "color": String(format: "#%06X", colorHex),
+                "acc": accessory.rawValue,
+                "finish": agent.avatar?.finish ?? "flat",
+            ] as [String: Any]
+        }
+        return out
+    }
+
+    private func save(_ changes: [String: Any]) {
+        guard !changes.isEmpty, !saving else { return }
+        saving = true
+        Task {
+            let outcome = await live.patch(botID, changes, what: "the new look", done: "Look saved.")
+            saving = false
+            if case .changed = outcome {
+                store.say("This bot changed on your desktop. Your choices are kept here; save again to use them.")
+            } else if !outcome.text.isEmpty {
+                store.say(outcome.text)
+            }
+            if outcome.isDone { Haptics.success() }
+        }
     }
 }
