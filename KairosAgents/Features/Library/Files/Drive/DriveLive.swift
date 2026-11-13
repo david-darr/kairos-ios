@@ -849,7 +849,8 @@ extension DriveStore {
                 return .failed("\(clean) was not made. " + error.plainWords)
             }
             let found = await lookFor(check, google: google, account: account, what: clean)
-            guard found.outcome == .done, let id = found.id else { return found.outcome }
+            // A folder is made where it belongs, so a proved folder needs nothing more.
+            guard kind != .folder, found.outcome == .done, let id = found.id else { return found.outcome }
             // Only the item proved to be the new one is ever moved.
             made = id
         }
