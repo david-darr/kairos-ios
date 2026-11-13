@@ -37,6 +37,8 @@ final class TasksStore {
     var agentsKnown = false
     /// Cards and tasks with a write on its way: their controls wait.
     var busy: Set<String> = []
+    /// Where a routine should deliver, chosen on this phone and not yet sent (routine id to channel id).
+    var pickedChannel: [String: String] = [:]
     /// Cards and tasks with a Run now on its way (the desktop answers when the run ends).
     var starting: Set<String> = []
     /// One plain sentence for the person, said once and cleared.

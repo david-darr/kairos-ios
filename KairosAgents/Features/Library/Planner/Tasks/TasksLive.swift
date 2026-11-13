@@ -129,6 +129,7 @@ extension TasksStore {
         agentNames = [:]
         agentsKnown = false
         busy = []
+        pickedChannel = [:]
         starting = []
         problem = nil
         scheduleCheck = nil
@@ -997,7 +998,8 @@ extension TasksStore {
                 let hours = max(1, Int(((item.defaultIntervalSeconds ?? 21_600) / 3600).rounded()))
                 // A routine whose task exists delivers where that task says; only one never turned on
                 // keeps the choice made on this phone.
-                let channel = item.taskId != nil ? (item.deliverToChannel ?? "") : (chosen[item.actionId] ?? "")
+                let channel = pickedChannel[item.actionId]
+                    ?? (item.taskId != nil ? (item.deliverToChannel ?? "") : (chosen[item.actionId] ?? ""))
                 return JobRoutine(id: item.actionId, label: item.label ?? item.actionId, about: item.description ?? "",
                                   usesModel: item.usesModel ?? true, hour: clock?.hour,
                                   everyHours: clock == nil ? hours : nil, deliver: channelLabel(channel),
@@ -1020,6 +1022,7 @@ extension TasksStore {
         guard let index = routines.firstIndex(where: { $0.id == id }) else { return }
         routines[index].channelID = channelID
         routines[index].deliver = channelLabel(channelID)
+        pickedChannel[id] = channelID
     }
 
     func enableRoutineLive(_ id: String, say: @escaping (String) -> Void) {
@@ -1032,16 +1035,20 @@ extension TasksStore {
         Task {
             defer { if stillLive(account) { busy.remove(id) } }
             do {
-                let task = try await liveClient().taskBuiltinEnable(id, channel: routine.channelID)
+                // Only a channel the person picked on this phone is ever sent: a row read a while ago may
+                // show an older channel, and turning a routine on must not put that back.
+                let picked = pickedChannel[id]
+                let task = try await liveClient().taskBuiltinEnable(id, channel: picked ?? routine.channelID)
+                if stillLive(account) { pickedChannel[id] = nil }
                 // Turning on a routine whose task already exists keeps that task's channel
                 // (task_routes.py enable_builtin_task), so a different choice is sent as its own change.
-                if (task.deliverToChannel ?? "") != routine.channelID {
+                if let picked, (task.deliverToChannel ?? "") != picked {
                     guard stillLive(account) else {
                         endWrite()
                         return
                     }
                     do {
-                        _ = try await liveClient().taskUpdate(task.id, ["deliver_to_channel": routine.channelID])
+                        _ = try await liveClient().taskUpdate(task.id, ["deliver_to_channel": picked])
                     } catch {
                         endWrite()
                         Connection.shared.note(error)
