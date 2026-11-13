@@ -36,6 +36,8 @@ struct NotesDetailsSheet: View {
     private var live: Bool { !store.isSample }
     /// A note from the vault's task list: the vault owns its text, so it is not edited here.
     private var textLocked: Bool { live && (note?.fromVault ?? false) }
+    /// The desktop's due time for this note is in a form this app cannot read: it is left exactly as it is.
+    private var dueLocked: Bool { live && (note?.dueUnreadable ?? false) }
 
     var body: some View {
         FittedSheet(estimate: 600) {
@@ -85,7 +87,16 @@ struct NotesDetailsSheet: View {
             .accessibilityLabel("Note text")
     }
 
+    @ViewBuilder
     private var dueCard: some View {
+        if dueLocked {
+            NotesLiveLine(text: "This note has a due time this app cannot read. Change it on your desktop. Saving here leaves it as it is.")
+        } else {
+            dueControls
+        }
+    }
+
+    private var dueControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle(isOn: $hasDue.animation(Motion.snappy)) {
                 Text("Due time")
@@ -192,7 +203,7 @@ struct NotesDetailsSheet: View {
             hasDue = true
             due = noteDue
         } else {
-            hasDue = item.focus == .due
+            hasDue = item.focus == .due && !dueLocked
         }
         loaded = true
         if item.focus == .due { save() }
@@ -235,6 +246,7 @@ struct NotesDetailsSheet: View {
     private var textChanged: Bool { !textLocked && text != savedText }
 
     private var dueChanged: Bool {
+        guard !dueLocked else { return false }
         switch (shownDue, savedDue) {
         case (nil, nil): return false
         case let (shown?, saved?): return abs(shown.timeIntervalSince(saved)) >= 1

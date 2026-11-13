@@ -7,6 +7,7 @@ struct LibraryNotesSection: View {
     @Environment(ChromeState.self) private var chrome
     @Environment(AppRouter.self) private var router
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     private let store: NotesStore
     private let start: NotesDebug?
@@ -17,6 +18,8 @@ struct LibraryNotesSection: View {
     @State private var flipping: Set<String> = []
     @State private var sheet: NotesSheetItem?
     @State private var confirmClear = false
+    /// Paired: the finished notes the person was asked about. Only these can be cleared.
+    @State private var clearIDs: Set<String> = []
     @State private var deleting: KNote?
     @State private var started = false
     @FocusState private var captureFocused: Bool
@@ -36,7 +39,7 @@ struct LibraryNotesSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            NotesCaptureCard(draft: $draft, hasDue: $hasDue, due: $draftDue, focused: $captureFocused,
+            NotesCaptureCard(draft: draftText, hasDue: draftHasDue, due: draftDueDate, focused: $captureFocused,
                              busy: live && store.adding, add: addDraft)
                 .arrives(0)
             if live { liveLines }
@@ -74,7 +77,7 @@ struct LibraryNotesSection: View {
             Button("Clear finished", role: .destructive, action: clearFinished)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Delete \(NotesCopy.count(store.finishedCount, "finished note"))? This can't be undone.")
+            Text("Delete \(NotesCopy.count(live ? clearIDs.count : store.finishedCount, "finished note"))? This can't be undone.")
         }
         .confirmationDialog("Delete this note?", isPresented: deletingShown, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -90,6 +93,11 @@ struct LibraryNotesSection: View {
             guard store === NotesStore.shared else { return }
             store.followConnection()
             await store.loadLive()
+        }
+        .onChange(of: scenePhase) {
+            // Back from the background: the desktop may have changed meanwhile.
+            guard scenePhase == .active, live, store === NotesStore.shared else { return }
+            Task { await store.loadLive() }
         }
         .onChange(of: chrome.addTick) {
             if router.tab == .library { captureFocused = true }
@@ -144,9 +152,10 @@ struct LibraryNotesSection: View {
                     .foregroundStyle(Palette.inkFaint)
                     .contentTransition(.numericText())
                 Spacer()
-                if store.finishedCount > 0 {
+                if store.finishedCount > 0 && !store.clearing {
                     Button {
                         Haptics.tap()
+                        if live { clearIDs = Set(store.notes.filter(\.done).map(\.id)) }
                         confirmClear = true
                     } label: {
                         Label("Clear finished", systemImage: "trash")
@@ -245,6 +254,19 @@ struct LibraryNotesSection: View {
         })
     }
 
+    // Paired, the note being typed lives in the store, so it survives switching sections while it is sent.
+    private var draftText: Binding<String> {
+        live ? Binding(get: { store.liveDraft }, set: { store.liveDraft = $0 }) : $draft
+    }
+
+    private var draftHasDue: Binding<Bool> {
+        live ? Binding(get: { store.liveDraftHasDue }, set: { store.liveDraftHasDue = $0 }) : $hasDue
+    }
+
+    private var draftDueDate: Binding<Date> {
+        live ? Binding(get: { store.liveDraftDue }, set: { store.liveDraftDue = $0 }) : $draftDue
+    }
+
     private var deletingShown: Binding<Bool> {
         Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
     }
@@ -252,7 +274,7 @@ struct LibraryNotesSection: View {
     // MARK: - Actions
 
     private func addDraft() {
-        let clean = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = draftText.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else {
             captureFocused = true
             return
@@ -273,8 +295,8 @@ struct LibraryNotesSection: View {
     /// Sent once. The typed text and due time stay in the card until the desktop has the note.
     private func addLive(_ text: String) {
         guard !store.adding else { return }
-        let due = hasDue ? draftDue : nil
-        let sent = draft
+        let due = store.liveDraftHasDue ? store.liveDraftDue : nil
+        let sent = store.liveDraft
         let store = store
         Task {
             let outcome = await store.createLive(text: text, due: due)
@@ -283,10 +305,10 @@ struct LibraryNotesSection: View {
                 Haptics.success()
                 withAnimation(Motion.snappy) {
                     // Only clear what was sent: anything typed since stays.
-                    if draft == sent {
-                        draft = ""
-                        hasDue = false
-                        draftDue = NotesDue.suggested()
+                    if store.liveDraft == sent {
+                        store.liveDraft = ""
+                        store.liveDraftHasDue = false
+                        store.liveDraftDue = NotesDue.suggested()
                     }
                     store.problem = nil
                 }
@@ -391,17 +413,27 @@ struct LibraryNotesSection: View {
     private func clearFinished() {
         if live {
             let store = store
+            let confirmed = clearIDs
             Task {
-                let result = await store.clearFinishedLive()
+                let result = await store.clearFinishedLive(confirmed: confirmed)
                 if result.deleted > 0 { Haptics.thud() }
-                if result.failed == 0 {
+                if result.unchecked {
+                    Haptics.thud()
+                    withAnimation(Motion.snappy) {
+                        store.problem = "Nothing was deleted, because your notes could not be checked with your desktop first. Try again."
+                    }
+                } else if result.failed == 0 && result.kept == 0 {
                     chrome.say("Deleted \(NotesCopy.count(result.deleted, "finished note"))")
                 } else {
-                    let total = result.deleted + result.failed
-                    let why = result.why.map { " " + $0 } ?? ""
-                    withAnimation(Motion.snappy) {
-                        store.problem = "Deleted \(result.deleted) of \(total) finished notes. \(result.failed) could not be deleted." + why
+                    var parts = ["Deleted \(NotesCopy.count(result.deleted, "finished note"))."]
+                    if result.kept > 0 {
+                        let one = result.kept == 1
+                        parts.append("\(NotesCopy.count(result.kept, "note")) \(one ? "is" : "are") open again, so \(one ? "it was" : "they were") kept.")
                     }
+                    if result.failed > 0 {
+                        parts.append("\(result.failed) could not be deleted." + (result.why.map { " " + $0 } ?? ""))
+                    }
+                    withAnimation(Motion.snappy) { store.problem = parts.joined(separator: " ") }
                 }
             }
             return
@@ -419,8 +451,8 @@ struct LibraryNotesSection: View {
         case .details:
             if let first = store.shown(done: false).first { sheet = NotesSheetItem(id: first.id) }
         case .composing:
-            draft = "Pick up the new bike stand from the supplier"
-            hasDue = true
+            draftText.wrappedValue = "Pick up the new bike stand from the supplier"
+            draftHasDue.wrappedValue = true
             captureFocused = true
         default:
             break

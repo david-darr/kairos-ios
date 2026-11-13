@@ -73,7 +73,132 @@ nonisolated enum NotesWire {
 
     static func due(_ value: JSONValue?) -> Date? {
         guard let text = value?.string, !text.isEmpty else { return nil }
-        return FlexibleDate.parse(text)
+        return parseDue(text)
+    }
+
+    /// The desktop has a due time for this note, but not one this app can read. Such a note shows that,
+    /// and the phone never sends a due time for it, so a time the person never saw is not replaced.
+    static func dueUnreadable(_ value: JSONValue?) -> Bool {
+        guard let value, !value.isNull else { return false }
+        guard let text = value.string else { return true }
+        // An empty due is no due on the desktop too (notes_service.py: `if not n.get("due_date")`).
+        return !text.isEmpty && parseDue(text) == nil
+    }
+
+    /// A due time in the ISO 8601 forms Python's `datetime.fromisoformat` reads, because the desktop stores
+    /// whatever text it is given (an agent's tool call, an import) and reads it back with that:
+    /// a date ("2027-03-05", "20270305"), then "T", "t" or a space, then "17", "17:00", "17:00:00",
+    /// "170000", with fractional seconds after "." or "," (any number of digits), then no zone (UTC, as
+    /// notes_service.py: _utc), "Z", "+01", "+01:00", "+0100" or "+01:00:00". A date alone is that day
+    /// here, at local midnight. Anything else (week dates, other separators, spaces around it) answers nil,
+    /// and the note then says it has a due time this app cannot read.
+    static func parseDue(_ raw: String) -> Date? {
+        let bytes = Array(raw.utf8)
+        var at = 0
+        func number(_ count: Int) -> Int? {
+            guard at + count <= bytes.count else { return nil }
+            var value = 0
+            for index in at..<(at + count) {
+                let byte = bytes[index]
+                guard byte >= 48, byte <= 57 else { return nil }
+                value = value * 10 + Int(byte - 48)
+            }
+            at += count
+            return value
+        }
+        func take(_ character: Character) -> Bool {
+            guard at < bytes.count, let ascii = character.asciiValue, bytes[at] == ascii else { return false }
+            at += 1
+            return true
+        }
+        func isDigit() -> Bool { at < bytes.count && bytes[at] >= 48 && bytes[at] <= 57 }
+
+        guard let year = number(4), year >= 1 else { return nil }
+        let dashed = take("-")
+        guard let month = number(2) else { return nil }
+        if dashed { guard take("-") else { return nil } }
+        guard let day = number(2) else { return nil }
+        if at == bytes.count {
+            return checkedDate(year, month, day, 0, 0, 0, 0, in: .current)
+        }
+        guard take("T") || take("t") || take(" "), let hour = number(2) else { return nil }
+        var minute = 0
+        var second = 0
+        var nanos = 0
+        func fraction() -> Bool {
+            guard take(".") || take(",") else { return true }
+            var digits = 0
+            var value = 0
+            while isDigit() {
+                if digits < 9 { value = value * 10 + Int(bytes[at] - 48) }
+                digits += 1
+                at += 1
+            }
+            guard digits > 0 else { return false }
+            for _ in min(digits, 9)..<9 { value *= 10 }
+            nanos = value
+            return true
+        }
+        if take(":") {
+            guard let minutes = number(2) else { return nil }
+            minute = minutes
+            if take(":") {
+                guard let seconds = number(2) else { return nil }
+                second = seconds
+                guard fraction() else { return nil }
+            }
+        } else if isDigit() {
+            guard let minutes = number(2) else { return nil }
+            minute = minutes
+            if isDigit() {
+                guard let seconds = number(2) else { return nil }
+                second = seconds
+                guard fraction() else { return nil }
+            }
+        }
+        var zone = TimeZone(secondsFromGMT: 0)
+        if take("Z") {
+            // UTC.
+        } else if at < bytes.count, bytes[at] == 43 || bytes[at] == 45 {
+            let sign = bytes[at] == 45 ? -1 : 1
+            at += 1
+            guard let hours = number(2) else { return nil }
+            var minutes = 0
+            var seconds = 0
+            if take(":") {
+                guard let value = number(2) else { return nil }
+                minutes = value
+                if take(":") {
+                    guard let value = number(2) else { return nil }
+                    seconds = value
+                    let keep = nanos
+                    guard fraction() else { return nil }
+                    nanos = keep
+                }
+            } else if isDigit() {
+                guard let value = number(2) else { return nil }
+                minutes = value
+            }
+            guard hours < 24, minutes < 60, seconds < 60 else { return nil }
+            zone = TimeZone(secondsFromGMT: sign * (hours * 3600 + minutes * 60 + seconds))
+        }
+        guard at == bytes.count, let zone else { return nil }
+        return checkedDate(year, month, day, hour, minute, second, nanos, in: zone)
+    }
+
+    /// The date for these parts, or nil when they name no real time (a 30 February, a 25 o'clock).
+    private static func checkedDate(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int,
+                                    _ second: Int, _ nanos: Int, in zone: TimeZone) -> Date? {
+        guard (1...12).contains(month), (1...31).contains(day), (0...23).contains(hour),
+              (0...59).contains(minute), (0...59).contains(second) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let parts = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute,
+                                   second: second, nanosecond: nanos)
+        guard let date = calendar.date(from: parts) else { return nil }
+        let back = calendar.dateComponents([.year, .month, .day], from: date)
+        guard back.year == year, back.month == month, back.day == day else { return nil }
+        return date
     }
 
     static func time(_ value: JSONValue?) -> Date? {
@@ -190,6 +315,45 @@ nonisolated enum NotesSamples {
                 throw SampleMismatch("due time as \(text)")
             }
             return "UTC out, three forms in"
+        },
+        DecodeCheck("notes.dueforms") {
+            // Every form Python's datetime.fromisoformat reads that the desktop may hold (it stores any text).
+            let sent = Date(timeIntervalSince1970: 1_804_266_000)
+            func same(_ text: String, _ offset: TimeInterval = 0) -> Bool {
+                guard let read = NotesWire.parseDue(text) else { return false }
+                return abs(read.timeIntervalSince(sent) - offset) < 0.000_01
+            }
+            let forms: [(String, TimeInterval)] = [
+                ("2027-03-05T17:00", 0), ("2027-03-05T17", 0), ("2027-03-05 17:00:00", 0), ("2027-03-05 17:00", 0),
+                ("2027-03-05t17:00:00", 0), ("2027-03-05T17:00:00.123456", 0.123456),
+                ("2027-03-05T17:00:00,5", 0.5), ("2027-03-05T17:00:00.123456+00:00", 0.123456),
+                ("2027-03-05T17:00:00Z", 0), ("2027-03-05T12:00:00-05:00", 0),
+                ("2027-03-05T12:00:00-0500", 0), ("2027-03-05T22:00+05", 0), ("20270305T170000", 0),
+                ("20270305T170000Z", 0), ("2027-03-05T1700", 0),
+            ]
+            for (text, offset) in forms where !same(text, offset) {
+                throw SampleMismatch("due form \(text)")
+            }
+            var local = Calendar(identifier: .gregorian)
+            local.timeZone = .current
+            let midnight = local.date(from: DateComponents(year: 2027, month: 3, day: 5))
+            guard NotesWire.parseDue("2027-03-05") == midnight, NotesWire.parseDue("20270305") == midnight else {
+                throw SampleMismatch("date-only due")
+            }
+            for bad in ["2027-02-30T10:00", "2027-03-05T25:00", "2027-03-05T17:00:00+25:00", "2027-03-05X17:00",
+                        "2027-W10-5", "2027-03-05T17:00:", "next Friday", "2027-3-5", " 2027-03-05T17:00"]
+            where NotesWire.parseDue(bad) != nil {
+                throw SampleMismatch("read \(bad)")
+            }
+            let odd = try KJSON.decode(NoteDTO.self, from: #"{"id": "a1b2c3d4e5f6", "text": "Ring the shop", "due_date": "next Friday"}"#)
+            let unreadable = NotesStore.liveNote(odd, order: 0)
+            guard unreadable.due == nil, unreadable.dueUnreadable,
+                  NotesWire.dueUnreadable(.number(5)), !NotesWire.dueUnreadable(.string("")),
+                  !NotesWire.dueUnreadable(.null), !NotesWire.dueUnreadable(nil),
+                  !NotesWire.dueUnreadable(.string("2027-03-05 17:00")) else {
+                throw SampleMismatch("unreadable due flag")
+            }
+            return "\(forms.count + 2) forms read, 9 refused, flag set"
         },
     ]
 }

@@ -14,6 +14,17 @@ nonisolated enum NotesWriteOutcome: Equatable, Sendable {
     case failed(String)
 }
 
+/// How Clear finished ended. Only notes the person confirmed that are still finished on the desktop are deleted.
+nonisolated struct NotesClearResult: Equatable, Sendable {
+    var deleted = 0
+    var failed = 0
+    /// Confirmed, but open again by the time they were checked: left alone.
+    var kept = 0
+    var why: String?
+    /// The list could not be read from the desktop first, so nothing was deleted.
+    var unchecked = false
+}
+
 /// The paired desktop behind Library > Notes (routes/notes_routes.py): the list (GET /api/notes),
 /// a new note (POST), a change to its text, due time or done state (PATCH /api/notes/{id}) and delete
 /// (DELETE /api/notes/{id}). The desktop has no pins, so pins are not offered while paired.
@@ -34,17 +45,20 @@ extension NotesStore {
         return desktop.address + "|" + desktop.username
     }
 
-    /// Still showing the live notes a request was sent for. Checked after every await before writing a result.
+    /// Still showing the live notes a request is for. Checked before sending and after every await.
     private func stillLive(_ account: String) -> Bool {
         !isSample && liveAccount == account && Self.accountKey == account
     }
+
+    private static let desktopChanged = "Your paired desktop changed. Try again."
 
     /// Move between the sample notes and the paired desktop's to match the connection.
     func followConnection() {
         let wantLive = !Connection.shared.usesSampleData
         if wantLive && !isSample && liveAccount != Self.accountKey {
-            // Another desktop or account: nothing read from the last one may stay on screen.
+            // Another desktop or account: nothing read from the last one may stay on screen, not even a search.
             resetLive()
+            query = ""
         }
         guard wantLive == isSample else { return }
         if wantLive {
@@ -71,6 +85,7 @@ extension NotesStore {
         liveLoad = .idle
         busy = []
         adding = false
+        clearing = false
         skipped = 0
         problem = nil
     }
@@ -90,27 +105,46 @@ extension NotesStore {
             pinned: false,
             created: NotesWire.time(dto.createdAt) ?? NotesWire.time(dto.updatedAt) ?? .now,
             order: order,
-            fromVault: dto.isFromVault
+            fromVault: dto.isFromVault,
+            dueUnreadable: NotesWire.dueUnreadable(dto.dueDate)
         )
     }
 
     // MARK: The list
 
     /// Read every note. Already read, the list stays on screen while it refreshes.
-    func loadLive() async {
-        guard !isSample else { return }
+    /// Answers true only when this read is now what the screen shows. A read overtaken by a newer one is
+    /// dropped, and a read that was on its way while a change finished is read again, so an older answer
+    /// never replaces a newer state. A cancelled read (the section closed) changes nothing.
+    @discardableResult
+    func loadLive() async -> Bool {
+        guard !isSample else { return false }
         let account = liveAccount
+        readSerial += 1
+        let mine = readSerial
         if liveLoad != .loaded { liveLoad = .loading }
-        do {
-            let read = try await liveClient().notesList()
-            guard stillLive(account) else { return }
-            show(read)
-            liveLoad = .loaded
-        } catch {
-            Connection.shared.note(error)
-            guard stillLive(account) else { return }
-            liveLoad = .failed("Your notes could not be read. " + error.plainWords)
+        for _ in 0..<3 {
+            let writes = writeSerial
+            do {
+                let read = try await liveClient().notesList()
+                guard stillLive(account), mine == readSerial else { return false }
+                guard writes == writeSerial else { continue }
+                show(read)
+                liveLoad = .loaded
+                return true
+            } catch {
+                if error is CancellationError || Task.isCancelled { return false }
+                Connection.shared.note(error)
+                guard stillLive(account), mine == readSerial else { return false }
+                liveLoad = .failed("Your notes could not be read. " + error.plainWords)
+                return false
+            }
         }
+        guard stillLive(account), mine == readSerial else { return false }
+        if liveLoad != .loaded {
+            liveLoad = .failed("Your notes kept changing while they were read. Try again.")
+        }
+        return false
     }
 
     private func show(_ read: NotesListDTO) {
@@ -145,17 +179,33 @@ extension NotesStore {
         return false
     }
 
+    /// The desktop refused the request, so it certainly did not save it. Anything else (not reached,
+    /// timed out, an answer this app could not read, a server error) may have come after it saved.
+    private static func wasRefused(_ error: Error) -> Bool {
+        guard let api = error as? APIError else { return false }
+        switch api {
+        case .notPaired, .badAddress, .unauthorized: return true
+        case .server(let status, _): return (400..<500).contains(status)
+        case .offline, .unreadable: return false
+        }
+    }
+
     // MARK: Writing
 
     /// Make a note on the desktop. Sent once; the person's text stays in the box until this says saved.
+    /// When the desktop does not confirm it, the list is read again: if the new note is there it counts
+    /// as saved, and if not the person is told plainly, so a second tap is never a blind duplicate.
     func createLive(text: String, due: Date?) async -> NotesWriteOutcome {
         guard !isSample else { return .failed("This note is a sample.") }
         guard !adding else { return .busy }
         let account = liveAccount
+        guard stillLive(account) else { return .failed(Self.desktopChanged) }
         adding = true
         defer { if liveAccount == account { adding = false } }
+        let before = Set(notes.map(\.id))
         do {
             let made = try await liveClient().notesCreate(text: text, due: due)
+            writeSerial += 1
             guard stillLive(account) else { return .saved }
             let top = (notes.map(\.order).min() ?? 0) - 1
             notes.removeAll { $0.id == made.id }
@@ -163,14 +213,22 @@ extension NotesStore {
             Task { if stillLive(account) { await loadLive() } }
             return .saved
         } catch {
+            writeSerial += 1
             Connection.shared.note(error)
-            if let api = error as? APIError, api.isOffline {
-                // The note may have reached the desktop before the answer was lost: read the list
-                // so the person can see it before adding it again.
-                Task { if stillLive(account) { await loadLive() } }
-                return .failed("Your desktop did not confirm this note. Check the list before adding it again. " + error.plainWords)
+            guard stillLive(account) else { return .failed(error.plainWords) }
+            if Self.wasRefused(error) {
+                return .failed("Your note was not saved. " + error.plainWords)
             }
-            return .failed("Your note was not saved. " + error.plainWords)
+            // The note may have reached the desktop before the answer was lost: look for it.
+            let read = await loadLive()
+            guard stillLive(account) else { return .failed(error.plainWords) }
+            if read && notes.contains(where: { !before.contains($0.id) && $0.text == text }) {
+                return .saved
+            }
+            if read {
+                return .failed("Your desktop did not confirm this note, and it is not in your list yet. Your text is still in the box. Check the list again in a moment before adding it again. " + error.plainWords)
+            }
+            return .failed("Your desktop did not confirm this note, and your list could not be read to check. Your text is still in the box. Check the list before adding it again. " + error.plainWords)
         }
     }
 
@@ -179,8 +237,12 @@ extension NotesStore {
         guard !isSample else { return .failed("This note is a sample.") }
         guard !busy.contains(id) else { return .busy }
         let account = liveAccount
+        guard stillLive(account) else { return .failed(Self.desktopChanged) }
         busy.insert(id)
-        defer { if liveAccount == account { busy.remove(id) } }
+        defer {
+            writeSerial += 1
+            if liveAccount == account { busy.remove(id) }
+        }
         do {
             let saved = try await liveClient().notesUpdate(id, completed: done)
             guard stillLive(account) else { return .saved }
@@ -200,13 +262,19 @@ extension NotesStore {
     /// Save a change to a note's text and due time. Only what changed is sent.
     func saveLive(_ id: String, text: String?, changesDue: Bool, due: Date?) async -> NotesWriteOutcome {
         guard !isSample else { return .failed("This note is a sample.") }
-        guard text != nil || changesDue else { return .saved }
+        // A due time this app cannot read is never sent over.
+        let sendsDue = changesDue && note(id)?.dueUnreadable != true
+        guard text != nil || sendsDue else { return .saved }
         guard !busy.contains(id) else { return .busy }
         let account = liveAccount
+        guard stillLive(account) else { return .failed(Self.desktopChanged) }
         busy.insert(id)
-        defer { if liveAccount == account { busy.remove(id) } }
+        defer {
+            writeSerial += 1
+            if liveAccount == account { busy.remove(id) }
+        }
         do {
-            let saved = try await liveClient().notesUpdate(id, text: text, changesDue: changesDue, due: due)
+            let saved = try await liveClient().notesUpdate(id, text: text, changesDue: sendsDue, due: due)
             guard stillLive(account) else { return .saved }
             replace(saved)
             return .saved
@@ -226,8 +294,12 @@ extension NotesStore {
         guard !isSample else { return .failed("This note is a sample.") }
         guard !busy.contains(id) else { return .busy }
         let account = liveAccount
+        guard stillLive(account) else { return .failed(Self.desktopChanged) }
         busy.insert(id)
-        defer { if liveAccount == account { busy.remove(id) } }
+        defer {
+            writeSerial += 1
+            if liveAccount == account { busy.remove(id) }
+        }
         do {
             _ = try await liveClient().notesDelete(id)
             guard stillLive(account) else { return .saved }
@@ -240,26 +312,49 @@ extension NotesStore {
         }
     }
 
-    /// Delete every finished note, one at a time, as the desktop's own page does.
-    /// Answers how many were deleted and how many were not.
-    func clearFinishedLive() async -> (deleted: Int, failed: Int, why: String?) {
-        guard !isSample else { return (0, 0, nil) }
+    /// Delete the finished notes the person confirmed, one at a time, as the desktop's own page does.
+    /// The list is read from the desktop first; a note is deleted only if it is still finished there and
+    /// was in `confirmed`. If that read fails, nothing is deleted. The desktop deletes for good and has no
+    /// version check, so the phone's older copy is never trusted for this.
+    func clearFinishedLive(confirmed: Set<String>) async -> NotesClearResult {
+        var result = NotesClearResult()
+        guard !isSample, !clearing, !confirmed.isEmpty else { return result }
         let account = liveAccount
-        let finished = notes.filter { $0.done && !busy.contains($0.id) }.map(\.id)
-        var deleted = 0
-        var failed = 0
-        var why: String?
-        for id in finished {
-            guard stillLive(account) else { break }
+        guard stillLive(account) else {
+            result.unchecked = true
+            return result
+        }
+        clearing = true
+        defer { if liveAccount == account { clearing = false } }
+        guard await loadLive(), stillLive(account) else {
+            result.unchecked = true
+            return result
+        }
+        // Reopened on the desktop since the person confirmed: kept. Gone already: nothing to do.
+        let fresh = notes.filter { confirmed.contains($0.id) }
+        let finished = fresh.filter { $0.done && !busy.contains($0.id) }.map(\.id)
+        result.kept = fresh.count - finished.count
+        for (index, id) in finished.enumerated() {
+            guard stillLive(account) else {
+                result.failed += finished.count - index
+                if result.why == nil { result.why = Self.desktopChanged }
+                break
+            }
+            // Reopened while this ran (here, or on the desktop and read since): left alone.
+            guard let current = note(id) else { continue }
+            guard current.done else {
+                result.kept += 1
+                continue
+            }
             switch await deleteLive(id) {
-            case .saved: deleted += 1
-            case .busy: failed += 1
+            case .saved: result.deleted += 1
+            case .busy: result.kept += 1
             case .failed(let reason):
-                failed += 1
-                if why == nil { why = reason }
+                result.failed += 1
+                if result.why == nil { result.why = reason }
             }
         }
-        return (deleted, failed, why)
+        return result
     }
 }
 

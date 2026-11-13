@@ -205,6 +205,15 @@ struct NotesCard: View {
             .foregroundStyle(overdue ? Palette.danger : Palette.inkFaint)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(overdue ? "Overdue, \(FilesDates.full(due))" : "Due \(FilesDates.full(due))")
+        } else if note.dueUnreadable {
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Due time this app cannot read")
+                    .font(KFont.ui(13, relativeTo: .footnote))
+            }
+            .foregroundStyle(Palette.inkFaint)
+            .accessibilityElement(children: .combine)
         } else {
             Text("No date")
                 .font(KFont.ui(13, relativeTo: .footnote))
@@ -218,7 +227,9 @@ struct NotesCard: View {
         if canPin {
             Button(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin") { act(.pin) }
         }
-        Button(note.due == nil ? "Add due time" : "Change due time", systemImage: "clock") { act(.due) }
+        if !note.dueUnreadable {
+            Button(note.due == nil ? "Add due time" : "Change due time", systemImage: "clock") { act(.due) }
+        }
         Button("Details", systemImage: "info.circle") { act(.details) }
         Divider()
         Button("Delete", systemImage: "trash", role: .destructive) { act(.delete) }

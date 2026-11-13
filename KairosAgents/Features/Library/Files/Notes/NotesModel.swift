@@ -13,6 +13,9 @@ nonisolated struct KNote: Identifiable, Hashable, Sendable {
     var order: Int
     /// Imported from the vault's task list on the paired desktop: its text belongs to the vault.
     var fromVault = false
+    /// The paired desktop has a due time for this note that this app cannot read. It is shown as such
+    /// and never sent, so a save cannot replace a time the person never saw.
+    var dueUnreadable = false
 }
 
 nonisolated enum NotesSort: String, CaseIterable, Hashable, Sendable {
@@ -63,6 +66,16 @@ final class NotesStore: NotesProviding {
     var problem: String?
     /// The sample notes, kept aside while the desktop's are shown.
     var sampleStash: [KNote]?
+    /// Clear finished is running.
+    var clearing = false
+    /// Counts list reads started and changes finished, so an older list answer never replaces a newer state.
+    var readSerial = 0
+    var writeSerial = 0
+    /// Paired only: the note being typed in the capture card. Kept here, not in the view, so it survives
+    /// switching Library sections while it is on its way to the desktop or after it failed.
+    var liveDraft = ""
+    var liveDraftHasDue = false
+    var liveDraftDue = NotesDue.suggested()
 
     init(notes: [KNote]) {
         self.notes = notes
