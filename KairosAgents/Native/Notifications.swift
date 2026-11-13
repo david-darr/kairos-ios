@@ -306,6 +306,11 @@ final class NativeNotifications {
     func handle(action: String, text: String?, info: [String: String]) async {
         let link = info["link"].flatMap(URL.init(string:)).flatMap(NativeLink.init(url:)) ?? .home
         let request = info["request_id"] ?? ""
+        // An answer needs the request it answers; without one, open the approval or chat instead.
+        if request.isEmpty, [Self.approveAction, Self.denyAction, Self.replyAction].contains(action) {
+            NativeLinks.shared.open(link)
+            return
+        }
         switch action {
         case Self.approveAction:
             await PushBridge.answer(request, "once", nil)

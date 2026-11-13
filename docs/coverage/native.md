@@ -33,9 +33,16 @@ messages, and can be turned off. Lock Screen previews fall back to "Kairos" when
 
 ## Push payload (what the desktop and the relay send)
 
-- Alerts: `aps.alert` with the generic text, `aps.category` = `kairos.<kind>` (kinds above), `aps.interruption-level`,
-  `thread-id`, and custom keys `link` (a `kairos-agents://` URL), `request_id` (approvals: choices `once`, `reject`,
-  or `reply` with text), `activity_id`, `activity_kind`, `kind`.
+- Alerts: `aps.alert` with title = who it is from (the bot's or model's name, else "Kairos"), subtitle = the chat's
+  title when sent, body = the kind's fixed line (`approval` "Kip wants your approval", `question` "Kip is waiting for
+  your answer", `replyReady` "Your reply is ready", `workDone` "Kip finished a task", `workFailed` "Kip couldn't
+  finish"); `aps.category` = `kairos.<kind>`, `aps.interruption-level` (time sensitive for approval and question),
+  `thread-id` (`bot-<id>` or `chat-<id>`), and custom keys `link` (a `kairos-agents://` URL: `approval/<request>?bot=<id>`
+  for a bot's approval, `chat/<id>` for a chat), `request_id` (approvals: choices `once`, `reject`, or `reply` with
+  text), `activity_id`, `activity_kind`, `kind`. Never message text. The relay builds this from the desktop's fields
+  (`relay/README.md`); an action without a `request_id` opens the link instead. Remote alerts are drawn by iOS, so the
+  Private level cannot hide the subtitle on the phone, and the desktop does not know the level yet: titles show.
+  The desktop sends "reply ready" only for a turn of 30 seconds or more, or one started from the phone.
 - VoIP (topic `app.kairos-agents.mobile.voip`): `ring_id`, `agent_id`, `bot_name`, `expires_at` (seconds), optional
   `kind: bot_call_end`. Only for a real ring. Repeats of one ring map to one call id.
 - Ring ended elsewhere: a background push `{"kind": "bot_call_end", "ring_id", "outcome"}` (not VoIP).
