@@ -351,8 +351,15 @@ private extension NativeLink {
 
 /// The notification centre calls in on its own queue; this hops to the main actor.
 nonisolated final class NotificationRelay: NSObject, UNUserNotificationCenterDelegate {
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+    /// iOS asks this only while the app is in front. When it is open and on screen, show nothing:
+    /// no banner, no sound. The app itself shows what needs the person (Home, the card in the chat).
+    /// The completion handler form, answered on the main actor, for the same reason as below.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        Task { @MainActor in
+            let onScreen = UIApplication.shared.applicationState == .active
+            completionHandler(onScreen ? [] : [.banner, .list, .sound])
+        }
     }
 
     /// The completion handler form, on purpose. iOS requires "done" to be said on the main thread.
