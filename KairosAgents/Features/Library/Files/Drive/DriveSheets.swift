@@ -26,6 +26,11 @@ struct DriveAccountsSheet: View {
                 }
                 .kCard(radius: 20)
 
+                if ui.live {
+                    HintLine(text: "Add, reconnect or disconnect Google accounts in Kairos on your desktop.", symbol: "desktopcomputer")
+                        .padding(.horizontal, 4)
+                }
+
                 if let note {
                     Label(note, systemImage: "desktopcomputer")
                         .font(KFont.ui(14.5, relativeTo: .subheadline))
@@ -36,6 +41,7 @@ struct DriveAccountsSheet: View {
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
+                if !ui.live {
                 VStack(spacing: 0) {
                     Button {
                         Haptics.tap()
@@ -68,6 +74,7 @@ struct DriveAccountsSheet: View {
                     }
                 }
                 .kCard(radius: 20)
+                }
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 24)
@@ -102,7 +109,7 @@ struct DriveAccountsSheet: View {
                     .font(KFont.ui(16, .medium))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
-                Text(account.broken ? "Sign-in expired or revoked" : (current ? "Browsing now" : "Switch to this Drive"))
+                Text(account.broken ? (ui.live ? (account.problem ?? "Sign-in expired or revoked") : "Sign-in expired or revoked") : (current ? "Browsing now" : "Switch to this Drive"))
                     .font(KFont.ui(13.5, relativeTo: .footnote))
                     .foregroundStyle(account.broken ? Palette.danger : (current ? Palette.goldText : Palette.inkFaint))
                 Text(account.canSend ? "Can send email" : "Cannot send email yet")
@@ -123,7 +130,20 @@ struct DriveAccountsSheet: View {
 
     @ViewBuilder
     private func trailing(for account: DriveAccount, current: Bool) -> some View {
-        if account.broken {
+        if ui.live {
+            if current {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Palette.goldText)
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel("Browsing now")
+            } else if !account.broken {
+                smallButton("Switch") {
+                    ui.switchAccount(account)
+                    dismiss()
+                }
+            }
+        } else if account.broken {
             smallButton("Reconnect") {
                 say("Reconnecting \(account.email) needs the computer running Kairos. Open Library there and sign in again.")
             }
@@ -202,6 +222,11 @@ struct DriveNewSheet: View {
                 .frame(maxWidth: .infinity)
                 .padding(.top, 30)
 
+                if ui.live && ui.store.busy.contains("new") {
+                    HintLine(text: "Wait for the last one to finish before you make or upload another.", symbol: "hourglass")
+                        .padding(.horizontal, 4)
+                }
+
                 VStack(spacing: 0) {
                     ForEach(Array(choices.enumerated()), id: \.offset) { index, choice in
                         Button {
@@ -211,6 +236,8 @@ struct DriveNewSheet: View {
                             row(choice, last: index == choices.count - 1)
                         }
                         .buttonStyle(PressStyle(scale: 0.985))
+                        .disabled(ui.live && ui.store.busy.contains("new"))
+                        .opacity(ui.live && ui.store.busy.contains("new") ? 0.45 : 1)
                         .arrives(index)
                     }
                 }
@@ -249,8 +276,13 @@ struct DriveMoveSheet: View {
     @Environment(DriveUI.self) private var ui
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    // Paired: folders read from the desktop, and the move on its way.
+    @State private var liveFolders: [DriveFile] = []
+    @State private var liveLoad: DriveLiveLoad = .idle
+    @State private var moving = false
 
     private var folders: [DriveFile] {
+        if ui.live { return liveFolders.filter { !ids.contains($0.id) } }
         let all = ui.store.destinations(excluding: ids)
         let words = query.trimmingCharacters(in: .whitespaces).lowercased()
         return words.isEmpty ? all : all.filter { $0.name.lowercased().contains(words) }
@@ -277,6 +309,16 @@ struct DriveMoveSheet: View {
 
             FilesSearchField(text: $query, prompt: "Find a destination folder")
 
+            if ui.live {
+                if moving {
+                    DriveLiveLine(text: "Moving. This sheet closes when your desktop answers.")
+                } else if case .failed(let why) = liveLoad {
+                    DriveLiveLine(text: why, action: "Try again") { Task { await loadFolders() } }
+                } else if liveLoad == .loading && liveFolders.isEmpty {
+                    DriveLiveLine(text: "Reading your folders.")
+                }
+            }
+
             ScrollView {
                 VStack(spacing: 0) {
                     destination(nil, title: "My Drive root", detail: "The top of My Drive", symbol: "externaldrive", last: folders.isEmpty)
@@ -295,21 +337,56 @@ struct DriveMoveSheet: View {
             .scrollIndicators(.hidden)
 
             QuietButton(title: "Cancel") { dismiss() }
+                .disabled(moving)
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 12)
         .kSheet([.medium, .large])
+        .interactiveDismissDisabled(moving)
+        .task(id: query) {
+            guard ui.live else { return }
+            if !query.isEmpty {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+            }
+            await loadFolders()
+        }
+    }
+
+    /// Paired: folders in the same Google account as the files being moved.
+    private func loadFolders() async {
+        guard let account = ids.first.flatMap({ ui.store.file($0)?.account }) else { return }
+        liveLoad = .loading
+        do {
+            liveFolders = try await ui.store.foldersLive(account: account, query: query.trimmingCharacters(in: .whitespaces))
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            liveLoad = .loaded
+        } catch {
+            if error is CancellationError || Task.isCancelled { return }
+            liveLoad = .failed("Your folders could not be read. " + error.plainWords)
+        }
     }
 
     private func location(of folder: DriveFile) -> String {
         if let parent = folder.parent, let above = ui.store.file(parent) { return "In \(above.name)" }
+        if ui.live { return folder.sharedWithMe ? "Shared with me" : "Google Drive" }
         return folder.sharedWithMe ? "Shared with me" : "My Drive"
     }
 
     private func destination(_ id: String?, title: String, detail: String, symbol: String, last: Bool) -> some View {
         Button {
-            ui.move(ids, to: id)
-            dismiss()
+            guard ui.live else {
+                ui.move(ids, to: id)
+                dismiss()
+                return
+            }
+            guard !moving else { return }
+            moving = true
+            Task {
+                await ui.moveLive(ids, to: id)
+                moving = false
+                dismiss()
+            }
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: symbol)
@@ -331,5 +408,6 @@ struct DriveMoveSheet: View {
             }
         }
         .buttonStyle(PressStyle(scale: 0.99))
+        .disabled(moving)
     }
 }

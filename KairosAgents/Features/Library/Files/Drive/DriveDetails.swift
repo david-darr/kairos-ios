@@ -18,6 +18,7 @@ struct DriveDetailsView: View {
         ScrollView {
             if let file {
                 VStack(alignment: .leading, spacing: 18) {
+                    if ui.live { liveLines(file) }
                     hero(file).arrives(0)
                     actions(file).arrives(1)
                     revisions(file).arrives(2)
@@ -39,6 +40,18 @@ struct DriveDetailsView: View {
             started = true
             showSharing = openSharing
         }
+        .task(id: DriveStore.connectionKey) {
+            guard ui.live else { return }
+            await ui.store.refreshFileLive(fileID)
+        }
+        .task(id: "\(showRevisions)|\(DriveStore.connectionKey)") {
+            guard ui.live, showRevisions else { return }
+            await ui.store.loadRevisionsLive(fileID)
+        }
+        .task(id: "\(showSharing)|\(DriveStore.connectionKey)") {
+            guard ui.live, showSharing else { return }
+            await ui.store.loadPeopleLive(fileID)
+        }
         .confirmationDialog("Delete forever?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete forever", role: .destructive) {
                 ui.deleteForever(fileID)
@@ -47,6 +60,17 @@ struct DriveDetailsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This file cannot be restored.")
+        }
+    }
+
+    /// Paired: the last change's sentence, and a file the desktop no longer has.
+    @ViewBuilder
+    private func liveLines(_ file: DriveFile) -> some View {
+        if let note = ui.store.liveNote {
+            DriveLiveLine(text: note, action: "OK") { ui.store.liveNote = nil }
+        }
+        if case .failed(let why) = ui.store.reads["info|" + fileID] {
+            DriveLiveLine(text: why, action: "Try again") { Task { await ui.store.refreshFileLive(fileID) } }
         }
     }
 
@@ -93,6 +117,7 @@ struct DriveDetailsView: View {
 
     private func location(of file: DriveFile) -> String {
         if let parent = file.parent, let folder = ui.store.file(parent) { return folder.name }
+        if ui.live { return file.sharedWithMe ? "Shared with me" : "Google Drive" }
         return file.sharedWithMe ? "Shared with me" : "My Drive"
     }
 
@@ -128,16 +153,28 @@ struct DriveDetailsView: View {
                 }
                 ActionTile(symbol: "pencil", title: "Rename") { ui.ask(.rename(file.id), text: file.name) }
                 ActionTile(symbol: "folder", title: "Move") { ui.sheet = .move([file.id]) }
-                ActionTile(symbol: "doc.on.doc", title: "Copy") { ui.copy([file.id]) }
+                if !(ui.live && file.isFolder) {
+                    ActionTile(symbol: "doc.on.doc", title: "Copy") { ui.copy([file.id]) }
+                }
                 ActionTile(symbol: "star", title: file.starred ? "Unstar" : "Star", on: file.starred) { ui.star([file.id], !file.starred) }
-                if !file.isFolder {
+                if !file.isFolder && !ui.live {
                     ActionTile(symbol: "arrow.down.circle", title: "Download") { ui.download(file) }
                 }
                 if file.trashed {
                     ActionTile(symbol: "arrow.uturn.backward", title: "Restore") { ui.restore([file.id]) }
-                    ActionTile(symbol: "trash.slash", title: "Delete forever", danger: true) { confirmDelete = true }
+                    if !ui.live {
+                        ActionTile(symbol: "trash.slash", title: "Delete forever", danger: true) { confirmDelete = true }
+                    }
                 } else {
-                    ActionTile(symbol: "trash", title: "Trash", danger: true) { ui.trash([file.id]) }
+                    ActionTile(symbol: "trash", title: "Trash", danger: true) { ui.askTrash([file.id]) }
+                }
+            }
+            .disabled(ui.live && (ui.batchRunning || ui.store.busy.contains(file.id)))
+            if ui.live {
+                DriveLiveOpenLink(file: file)
+                if file.trashed {
+                    HintLine(text: "Delete forever and Empty trash are not offered on your phone. Do them in Google Drive on your desktop.")
+                        .padding(.horizontal, 4)
                 }
             }
         }
@@ -149,7 +186,13 @@ struct DriveDetailsView: View {
         VStack(alignment: .leading, spacing: 0) {
             disclosure("Revisions", symbol: "clock.arrow.circlepath", open: $showRevisions)
             if showRevisions {
-                if file.revisions.isEmpty {
+                if ui.live, file.revisions.isEmpty, ui.store.reads["revisions|" + file.id] == .loading || ui.store.reads["revisions|" + file.id] == nil {
+                    Text("Reading revisions.")
+                        .font(KFont.ui(14.5, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.inkDim)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 14)
+                } else if file.revisions.isEmpty {
                     Text("Revisions unavailable for this file.")
                         .font(KFont.ui(14.5, relativeTo: .subheadline))
                         .foregroundStyle(Palette.inkDim)
@@ -223,6 +266,8 @@ struct DriveDetailsView: View {
 struct DriveSharingPanel: View {
     let file: DriveFile
     @Environment(DriveUI.self) private var ui
+
+    private var sharingBusy: Bool { ui.live && ui.store.busy.contains("share|" + file.id) }
     @State private var audience: DriveAudience = .person
     @State private var address = ""
     @State private var access: DriveAccess = .viewer
@@ -231,6 +276,17 @@ struct DriveSharingPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             addForm
+                .disabled(sharingBusy)
+                .opacity(sharingBusy ? 0.5 : 1)
+            if ui.live {
+                if sharingBusy {
+                    HintLine(text: "Sending to your desktop.", symbol: "hourglass")
+                } else if case .failed(let why) = ui.store.reads["people|" + file.id] {
+                    DriveLiveLine(text: why, action: "Try again") { Task { await ui.store.loadPeopleLive(file.id) } }
+                } else if file.members.isEmpty {
+                    HintLine(text: "Reading who has access.")
+                }
+            }
             SectionLabel(text: "Who has access")
             VStack(spacing: 0) {
                 ForEach(Array(file.members.enumerated()), id: \.element.id) { index, member in
@@ -321,7 +377,7 @@ struct DriveSharingPanel: View {
                 .truncationMode(.middle)
             Spacer(minLength: 4)
             if member.access == .owner {
-                Text("Owner")
+                Text(member.roleLabel ?? "Owner")
                     .font(KFont.ui(14, .medium, relativeTo: .footnote))
                     .foregroundStyle(Palette.inkFaint)
                     .padding(.trailing, 4)
@@ -344,7 +400,15 @@ struct DriveSharingPanel: View {
 
                 Button {
                     Haptics.tap()
-                    removing = member
+                    if ui.live {
+                        ui.sheet = .confirm(DriveLiveConfirm(
+                            title: "Remove \(member.title)?",
+                            detail: "\(member.title) will no longer be able to open \(file.name).",
+                            confirm: "Remove"
+                        ) { remove(member) })
+                    } else {
+                        removing = member
+                    }
                 } label: {
                     Image(systemName: "minus.circle")
                         .font(.system(size: 17, weight: .medium))
@@ -354,6 +418,7 @@ struct DriveSharingPanel: View {
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel("Remove \(member.title)")
+                .disabled(sharingBusy)
             }
         }
         .padding(.leading, 12)
@@ -369,6 +434,20 @@ struct DriveSharingPanel: View {
             get: { member.access },
             set: { level in
                 Haptics.select()
+                if ui.live {
+                    guard level != member.access, !sharingBusy else { return }
+                    ui.sheet = .confirm(DriveLiveConfirm(
+                        title: "Make \(member.title) \(level.title.lowercased())?",
+                        detail: "\(member.title) becomes \(level.title.lowercased()) on \(file.name) in Google Drive.",
+                        confirm: "Change access", danger: false
+                    ) {
+                        Task {
+                            let outcome = await ui.store.setAccessLive(file.id, member: member, to: level)
+                            ui.say(outcome, done: "\(member.title) is now \(level.title.lowercased())")
+                        }
+                    })
+                    return
+                }
                 withAnimation(Motion.snappy) { ui.store.setAccess(file.id, member: member.id, to: level) }
                 ui.toaster.say("\(member.title) is now \(level.title.lowercased())")
             }
@@ -392,6 +471,33 @@ struct DriveSharingPanel: View {
             break
         }
         let member = DriveMember(audience: audience, address: audience == .anyone ? "" : value, access: access)
+        if ui.live {
+            guard !sharingBusy else { return }
+            let fileID = file.id
+            let name = file.name
+            let chosenAudience = audience
+            let chosenAccess = access
+            let who = audience == .anyone ? "Anyone with the link" : member.title
+            let detail: String
+            switch audience {
+            case .person, .group:
+                detail = "\(who) can open \(name) as \(access.title.lowercased()). Google emails them a link."
+            case .domain:
+                detail = "Anyone at \(value) can open \(name) as \(access.title.lowercased())."
+            case .anyone:
+                detail = "Anyone who has the link can open \(name) as \(access.title.lowercased()), without signing in."
+            }
+            ui.sheet = .confirm(DriveLiveConfirm(
+                title: "Share with \(who)?", detail: detail, confirm: "Share", danger: audience == .anyone
+            ) {
+                Task {
+                    let outcome = await ui.store.shareLive(fileID, audience: chosenAudience, address: member.address, access: chosenAccess)
+                    if outcome == .done { address = "" }
+                    ui.say(outcome, done: "Shared with \(who)")
+                }
+            })
+            return
+        }
         withAnimation(Motion.snappy) { ui.store.share(file.id, with: member) }
         Haptics.success()
         ui.toaster.say("Shared with \(member.title)")
@@ -399,6 +505,15 @@ struct DriveSharingPanel: View {
     }
 
     private func remove(_ member: DriveMember) {
+        if ui.live {
+            guard !sharingBusy else { return }
+            let fileID = file.id
+            Task {
+                let outcome = await ui.store.removeAccessLive(fileID, member: member)
+                ui.say(outcome, done: "Removed \(member.title)")
+            }
+            return
+        }
         withAnimation(Motion.snappy) { ui.store.removeMember(file.id, member: member.id) }
         Haptics.thud()
         ui.toaster.say("Removed \(member.title)")

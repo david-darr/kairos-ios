@@ -21,14 +21,27 @@ enum DriveSheet: Identifiable {
     case accounts
     case newMenu
     case move([String])
+    /// Paired: a change that asks first.
+    case confirm(DriveLiveConfirm)
 
     var id: String {
         switch self {
         case .accounts: "accounts"
         case .newMenu: "new"
         case .move(let ids): "move-\(ids.joined(separator: ","))"
+        case .confirm(let ask): "confirm-\(ask.id)"
         }
     }
+}
+
+/// A change to the paired desktop's Drive that is confirmed first, naming what it touches.
+struct DriveLiveConfirm: Identifiable {
+    let id = UUID().uuidString
+    let title: String
+    let detail: String
+    let confirm: String
+    var danger = true
+    let action: () -> Void
 }
 
 /// The names asked for in the naming prompt.
@@ -80,7 +93,14 @@ final class DriveUI {
     var prompt: DrivePrompt = .newFolder
     var promptShown = false
     var promptText = ""
+    /// The text the naming prompt was filled with, so an unchanged name is not sent.
+    var promptFilled = ""
     var importing = false
+    /// Paired: a change to several files is on its way.
+    var batchRunning = false
+
+    /// Showing the paired desktop's Drive.
+    var live: Bool { !store.isSample }
 
     init(store: DriveStore, toaster: FilesToaster, debug: DriveDebug) {
         self.store = store
@@ -123,6 +143,7 @@ final class DriveUI {
     func ask(_ prompt: DrivePrompt, text: String = "") {
         self.prompt = prompt
         promptText = text
+        promptFilled = text
         promptShown = true
     }
 
@@ -145,6 +166,10 @@ final class DriveUI {
         let name = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
             toaster.say("Give it a name first")
+            return
+        }
+        if live {
+            savePromptLive(name)
             return
         }
         switch prompt {
@@ -172,6 +197,10 @@ final class DriveUI {
     func receive(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result else {
             toaster.say("Could not read those files")
+            return
+        }
+        if live {
+            receiveLive(urls)
             return
         }
         let limit = 25 * 1_024 * 1_024
@@ -225,13 +254,22 @@ final class DriveUI {
 
     // MARK: Actions on files
 
-    private func count(_ ids: [String]) -> String {
+    func count(_ ids: [String]) -> String {
         if ids.count == 1, let file = store.file(ids[0]) { return file.name }
         return "\(ids.count) files"
     }
 
     func copy(_ ids: [String]) {
         guard !ids.isEmpty else { return }
+        if live {
+            let files = ids.filter { store.file($0)?.isFolder == false }
+            guard !files.isEmpty else {
+                toaster.say("Folders cannot be copied in Google Drive")
+                return
+            }
+            runLive(files, done: { "Copied \($0)" }) { await self.store.copyLive($0) }
+            return
+        }
         let label = count(ids)
         withAnimation(Motion.snappy) { store.copy(ids) }
         Haptics.success()
@@ -240,6 +278,10 @@ final class DriveUI {
 
     func star(_ ids: [String], _ on: Bool) {
         guard !ids.isEmpty else { return }
+        if live {
+            runLive(ids, done: { on ? "Starred \($0)" : "Removed the star" }) { await self.store.starLive($0, on) }
+            return
+        }
         withAnimation(Motion.snappy) { store.setStarred(ids, on) }
         Haptics.select()
         toaster.say(on ? "Starred \(count(ids))" : "Removed the star")
@@ -248,6 +290,11 @@ final class DriveUI {
     func trash(_ ids: [String]) {
         guard !ids.isEmpty else { return }
         let label = count(ids)
+        if live {
+            runLive(ids, done: { "Moved \($0) to trash" }) { await self.store.trashLive($0) }
+            selected.subtract(ids)
+            return
+        }
         withAnimation(Motion.snappy) {
             store.trash(ids)
             selected.subtract(ids)
@@ -259,6 +306,11 @@ final class DriveUI {
     func restore(_ ids: [String]) {
         guard !ids.isEmpty else { return }
         let label = count(ids)
+        if live {
+            runLive(ids, done: { "Restored \($0)" }) { await self.store.restoreLive($0) }
+            selected.subtract(ids)
+            return
+        }
         withAnimation(Motion.snappy) {
             store.restore(ids)
             selected.subtract(ids)
@@ -292,6 +344,14 @@ final class DriveUI {
     }
 
     func refresh() {
+        if live {
+            Haptics.tap()
+            Task {
+                await store.loadAccountsLive()
+                if let key = store.shownKey { await store.loadList(key) }
+            }
+            return
+        }
         guard !loading else { return }
         withAnimation(Motion.snappy) { loading = true }
         Task {
@@ -302,7 +362,7 @@ final class DriveUI {
     }
 
     func switchAccount(_ account: DriveAccount) {
-        store.switchAccount(account.id)
+        if live { store.switchAccountLive(account.id) } else { store.switchAccount(account.id) }
         path = []
         selected = []
         selecting = false
@@ -317,6 +377,168 @@ final class DriveUI {
             selecting = false
         }
         toaster.say("Disconnected \(account.email)")
+    }
+}
+
+// MARK: - Paired desktop
+
+extension DriveUI {
+
+    /// Trash asks first while paired, naming the file or the count. Unpaired it works as it always did.
+    func askTrash(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        guard live else {
+            trash(ids)
+            return
+        }
+        let label = count(ids)
+        sheet = .confirm(DriveLiveConfirm(
+            title: ids.count == 1 ? "Move \(label) to trash?" : "Move \(ids.count) files to trash?",
+            detail: "They go to the trash in Google Drive. You can restore them from Trash.",
+            confirm: "Move to trash"
+        ) { [weak self] in self?.trash(ids) })
+    }
+
+    /// Run one change per file, one after another, and say how it went. It stops at the first file whose
+    /// change could not be confirmed, so nothing more is sent on top of an unknown state.
+    func runLive(_ ids: [String], done: @escaping (String) -> String, _ op: @escaping (String) async -> DriveLiveOutcome) {
+        guard !batchRunning else {
+            toaster.say("Wait for the last change to finish")
+            return
+        }
+        let label = count(ids)
+        batchRunning = true
+        Task {
+            defer { batchRunning = false }
+            var finished = 0
+            for id in ids {
+                let outcome = await op(id)
+                switch outcome {
+                case .done:
+                    finished += 1
+                case .busy:
+                    toaster.say("Wait for the last change to finish")
+                    return
+                case .failed(let why), .unconfirmed(let why):
+                    Haptics.thud()
+                    let start = finished > 0 ? "\(finished) of \(ids.count) done. " : ""
+                    store.liveNote = start + why
+                    return
+                }
+            }
+            Haptics.success()
+            toaster.say(done(label))
+        }
+    }
+
+    func say(_ outcome: DriveLiveOutcome, done: String) {
+        switch outcome {
+        case .done:
+            Haptics.success()
+            toaster.say(done)
+        case .busy:
+            toaster.say("Wait for the last change to finish")
+        case .failed(let why), .unconfirmed(let why):
+            Haptics.thud()
+            store.liveNote = why
+        }
+    }
+
+    /// Move files one after another; stops at the first that could not be confirmed.
+    func moveLive(_ ids: [String], to folder: String?) async {
+        let place = folder.flatMap { store.file($0)?.name } ?? "My Drive"
+        let label = count(ids)
+        var finished = 0
+        defer { selected = [] }
+        for id in ids {
+            let outcome = await store.moveLive(id, to: folder)
+            switch outcome {
+            case .done:
+                finished += 1
+            case .busy:
+                toaster.say("Wait for the last change to finish")
+                return
+            case .failed(let why), .unconfirmed(let why):
+                Haptics.thud()
+                store.liveNote = (finished > 0 ? "\(finished) of \(ids.count) moved. " : "") + why
+                return
+            }
+        }
+        Haptics.success()
+        toaster.say("Moved \(label) to \(place)")
+    }
+
+    fileprivate func savePromptLive(_ name: String) {
+        let folder = currentFolder
+        switch prompt {
+        case .rename(let id):
+            guard name != promptFilled.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            Task { say(await store.renameLive(id, to: name), done: "Renamed to \(name)") }
+        case .newFolder, .newSheet, .newForm:
+            let kind: DriveKind = prompt == .newFolder ? .folder : (prompt == .newSheet ? .sheet : .form)
+            if folder == nil && section != .myDrive {
+                section = .myDrive
+                query = ""
+            }
+            toaster.say("Making \(name)")
+            Task { say(await store.createLive(kind, name: name, in: folder), done: "\(name) created") }
+        }
+    }
+
+    fileprivate func receiveLive(_ urls: [URL]) {
+        var outgoing: [OutgoingFile] = []
+        var tooBig: [String] = []
+        var unreadable: [String] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let name = url.lastPathComponent
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if size > DriveWire.maxUpload {
+                tooBig.append(name)
+                continue
+            }
+            guard let data = try? Data(contentsOf: url) else {
+                unreadable.append(name)
+                continue
+            }
+            if data.count > DriveWire.maxUpload {
+                tooBig.append(name)
+                continue
+            }
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            outgoing.append(OutgoingFile(name: name, mimeType: mime, data: data))
+        }
+        if let first = tooBig.first {
+            Haptics.thud()
+            toaster.say(tooBig.count == 1 ? "\(first) is over 25 MB" : "\(tooBig.count) files are over 25 MB")
+        } else if let first = unreadable.first {
+            toaster.say("Could not read \(first)")
+        }
+        guard !outgoing.isEmpty else { return }
+        guard !store.busy.contains("new") else {
+            toaster.say("Wait for the upload on its way to finish")
+            return
+        }
+        let folder = currentFolder
+        if folder == nil && section != .myDrive {
+            section = .myDrive
+            query = ""
+        }
+        Task {
+            let result = await store.uploadLive(outgoing, in: folder)
+            let label = outgoing.count == 1 ? outgoing[0].name : "\(outgoing.count) files"
+            switch result.outcome {
+            case .done:
+                Haptics.success()
+                toaster.say("\(label) uploaded")
+            case .busy:
+                toaster.say("Wait for the upload on its way to finish")
+            case .failed(let why), .unconfirmed(let why):
+                Haptics.thud()
+                store.liveNote = (result.sent > 0 ? "\(result.sent) of \(outgoing.count) uploaded. " : "") + why
+            }
+        }
     }
 }
 
@@ -340,6 +562,21 @@ struct DriveScreen: View {
                 }
         }
         .environment(ui)
+        .task(id: DriveStore.connectionKey) {
+            let store = ui.store
+            let wasSample = store.isSample
+            store.followConnection()
+            if wasSample != store.isSample {
+                ui.path = []
+                ui.selected = []
+                ui.selecting = false
+            }
+            guard !store.isSample else { return }
+            switch store.accountsLoad {
+            case .idle, .failed: await store.loadAccountsLive()
+            case .loading, .loaded: break
+            }
+        }
         .filesToasts(toaster)
         .sheet(item: $ui.sheet, onDismiss: { ui.runPending() }) { sheet in
             sheetContent(sheet)
@@ -374,6 +611,7 @@ struct DriveScreen: View {
         case .accounts: DriveAccountsSheet()
         case .newMenu: DriveNewSheet()
         case .move(let ids): DriveMoveSheet(ids: ids)
+        case .confirm(let ask): ConfirmSheet(title: ask.title, detail: ask.detail, confirm: ask.confirm, danger: ask.danger, action: ask.action)
         }
     }
 }

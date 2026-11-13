@@ -15,6 +15,12 @@ struct DriveSheetEditor: View {
     @State private var problem: String?
     @State private var loadCount = 0
     @State private var started = false
+    // Paired: the tabs, what the loaded cells were filled from, and a read or save on its way.
+    @State private var liveTabs: [String] = []
+    @State private var baseline: [[String]] = []
+    @State private var reading = false
+    @State private var saving = false
+    @State private var liveNote: String?
 
     private static let maxRows = 20
     private static let maxColumns = 12
@@ -25,7 +31,11 @@ struct DriveSheetEditor: View {
         ScrollView {
             if let file {
                 VStack(alignment: .leading, spacing: 16) {
-                    if file.sheets.count > 1 { tabs(file) }
+                    if ui.live {
+                        if liveTabs.count > 1 { tabs(titles: liveTabs) }
+                    } else if file.sheets.count > 1 {
+                        tabs(file)
+                    }
                     rangeBar
                     if let problem {
                         Label(problem, systemImage: "exclamationmark.circle")
@@ -33,9 +43,20 @@ struct DriveSheetEditor: View {
                             .foregroundStyle(Palette.danger)
                             .transition(.opacity)
                     }
+                    if ui.live, let liveNote {
+                        DriveLiveLine(text: liveNote)
+                    }
+                    if ui.live && reading && loaded == nil {
+                        DriveLiveLine(text: "Reading the sheet.")
+                    }
                     if let loaded { gridView(loaded) }
-                    GoldButton(title: "Save cells", action: save)
+                    GoldButton(title: saving ? "Saving" : "Save cells", action: save)
                         .padding(.top, 4)
+                        .disabled(saving || reading)
+                        .opacity(saving || reading ? 0.6 : 1)
+                    if ui.live {
+                        HintLine(text: "Only the cells you change are sent, one at a time.")
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
@@ -47,14 +68,19 @@ struct DriveSheetEditor: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .top, spacing: 0) {
-            FilesHeader(title: file?.name ?? "Sheet", subtitle: tabTitle, back: { dismiss() })
+            FilesHeader(title: file?.name ?? "Sheet", subtitle: tabTitle, back: { if !saving { dismiss() } })
         }
+        .interactiveDismissDisabled(saving)
         .kScreen()
         .animation(Motion.snappy, value: problem)
         .onAppear {
             guard !started else { return }
             started = true
-            load()
+            if ui.live {
+                Task { await startLive() }
+            } else {
+                load()
+            }
         }
         .onChange(of: tab) {
             load()
@@ -62,8 +88,127 @@ struct DriveSheetEditor: View {
     }
 
     private var tabTitle: String {
+        if ui.live {
+            guard tab < liveTabs.count else { return "Sheets editor" }
+            return "Sheets editor · \(liveTabs[tab])"
+        }
         guard let file, tab < file.sheets.count else { return "Sheets editor" }
         return "Sheets editor · \(file.sheets[tab].title)"
+    }
+
+    private func tabs(titles: [String]) -> some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
+                    FilterPill(title: title, symbol: "tablecells", on: tab == index) {
+                        guard !saving else { return }
+                        tab = index
+                    }
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sheet tabs")
+    }
+
+    // MARK: Paired desktop
+
+    private func startLive() async {
+        reading = true
+        do {
+            liveTabs = try await ui.store.sheetTabsLive(fileID)
+            reading = false
+            load()
+        } catch {
+            reading = false
+            if error is CancellationError { return }
+            problem = "This sheet could not be read. " + error.plainWords
+        }
+    }
+
+    private func loadLive(_ range: DriveCellRange) {
+        guard tab < liveTabs.count else {
+            problem = liveTabs.isEmpty ? "This sheet has no tabs to show." : "Choose a tab"
+            return
+        }
+        let title = liveTabs[tab]
+        let text = normalized(rangeText)
+        let chosen = tab
+        reading = true
+        liveNote = nil
+        Task {
+            defer { reading = false }
+            do {
+                let cells = try await ui.store.cellsLive(fileID, tab: title, range: range)
+                guard chosen == tab, text == normalized(rangeText) else { return }
+                grid = cells
+                baseline = cells
+                loaded = range
+                loadedText = text
+                loadedTab = chosen
+                loadCount += 1
+                problem = nil
+                Haptics.select()
+            } catch {
+                if error is CancellationError { return }
+                problem = "These cells could not be read. " + error.plainWords
+            }
+        }
+    }
+
+    private func saveLive(_ range: DriveCellRange) {
+        guard !saving, loadedTab < liveTabs.count else { return }
+        let title = liveTabs[loadedTab]
+        let sentFrom = baseline
+        let typed = grid
+        saving = true
+        liveNote = nil
+        Task {
+            defer { saving = false }
+            let result = await ui.store.saveCellsLive(fileID, tab: title, range: range, baseline: sentFrom, grid: typed)
+            guard loaded == range, loadedTab < liveTabs.count, liveTabs[loadedTab] == title else { return }
+            // What the person typed while this was saving stays; everything else follows the desktop.
+            var nextBase = baseline
+            var nextGrid = grid
+            if let desktop = result.desktop, desktop.count == nextGrid.count {
+                for r in nextGrid.indices {
+                    for c in nextGrid[r].indices where c < desktop[r].count {
+                        let cell = DriveLiveCell(row: r, column: c)
+                        let untouched = nextGrid[r][c] == sentFrom[r][c]
+                        if let value = result.saved[cell] {
+                            nextBase[r][c] = value
+                        } else if result.conflicts.contains(cell) {
+                            // Changed on the desktop: the person's text stays and a second save sends it on purpose.
+                            nextBase[r][c] = desktop[r][c]
+                        } else if untouched {
+                            nextGrid[r][c] = desktop[r][c]
+                            nextBase[r][c] = desktop[r][c]
+                        }
+                    }
+                }
+            } else {
+                for (cell, value) in result.saved { nextBase[cell.row][cell.column] = value }
+            }
+            baseline = nextBase
+            grid = nextGrid
+            loadCount += 1
+            switch result.outcome {
+            case .done where result.conflicts.isEmpty:
+                problem = nil
+                Haptics.success()
+                ui.toaster.say(result.saved.isEmpty ? "No changes to save" : "Sheet saved")
+            case .done:
+                Haptics.thud()
+                let names = result.conflicts.map { DriveCellRange.columnName(range.left + $0.column) + "\(range.top + $0.row + 1)" }
+                liveNote = "\(names.joined(separator: ", ")) changed on your desktop, so your text there was not saved. It is still in the cells; save again to replace what the desktop has."
+            case .busy:
+                ui.toaster.say("Wait for the last save to finish")
+            case .failed(let why), .unconfirmed(let why):
+                Haptics.thud()
+                liveNote = why
+            }
+        }
     }
 
     // MARK: Tabs and range
@@ -181,6 +326,10 @@ struct DriveSheetEditor: View {
             problem = "Choose up to 20 rows and 12 columns"
             return
         }
+        if ui.live {
+            loadLive(range)
+            return
+        }
         grid = ui.store.cells(fileID, tab: tab, range: range)
         loaded = range
         loadedText = normalized(rangeText)
@@ -197,6 +346,10 @@ struct DriveSheetEditor: View {
         }
         guard normalized(rangeText) == loadedText, loadedTab == tab else {
             problem = "Load the new range before saving"
+            return
+        }
+        if ui.live {
+            saveLive(range)
             return
         }
         ui.store.saveCells(fileID, tab: tab, range: range, values: grid)

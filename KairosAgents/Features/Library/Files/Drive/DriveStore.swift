@@ -46,6 +46,27 @@ final class DriveStore: DriveProviding {
     var currentAccountID: String?
     var files: [DriveFile]
 
+    // The paired desktop's Drive (DriveLive.swift). Unpaired, none of this is used.
+    var isSample = true
+    var liveAccount = "sample"
+    var sampleStash: DriveSampleStash?
+    var accountsLoad: DriveLiveLoad = .idle
+    var accountsSerial = 0
+    var lists: [DriveLiveKey: DriveLiveList] = [:]
+    var listSerial: [DriveLiveKey: Int] = [:]
+    /// The list on screen, read again after every change.
+    var shownKey: DriveLiveKey?
+    var writeSerial = 0
+    /// Files with a change on its way, and "new" while something is being made or uploaded.
+    var busy: Set<String> = []
+    /// How far the upload on its way has gone, 0 to 1.
+    var uploadProgress: Double?
+    /// Per-file reads: "info|id", "revisions|id", "people|id".
+    var reads: [String: DriveLiveLoad] = [:]
+    var readSerials: [String: Int] = [:]
+    /// A longer sentence about the last change than a toast can hold.
+    var liveNote: String?
+
     init() {
         accounts = DriveSample.accounts
         currentAccountID = DriveSample.accounts.first?.id
