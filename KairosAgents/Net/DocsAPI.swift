@@ -343,15 +343,17 @@ nonisolated enum DocsSamples {
             let read = try KJSON.decode(DocsChatLibraryDTO.self, from: DocsSamples.chatFiles)
             let info = try KJSON.decode(DocsArtifactDTO.self, from: DocsSamples.info)
             let chat = try KJSON.decode(DocsSessionDTO.self, from: DocsSamples.session)
-            guard read.groups.count == 1, read.skipped == 2, read.groups[0].files.count == 3,
-                  DocsWire.origin(read.groups[0].files[0].origin) == .sent,
-                  DocsWire.origin(read.groups[0].files[2].origin) == .other,
-                  read.groups[0].files[1].exists?.bool == false,
-                  read.groups[0].files[1].size?.isNull == true,
-                  info.ext == "txt", DocsFileKind(wire: info.kind) == .text, DocsFileKind(wire: "hologram") == .other,
-                  chat.id == "a1b2c3d4e5f60718" else {
-                throw SampleMismatch("chat files")
+            guard read.groups.count == 1, read.groups[0].files.count == 3 else { throw SampleMismatch("chat files: groups and files") }
+            guard read.skipped == 2 else { throw SampleMismatch("chat files: skipped \(read.skipped)") }
+            guard DocsWire.origin(read.groups[0].files[0].origin) == .sent,
+                  DocsWire.origin(read.groups[0].files[2].origin) == .other else { throw SampleMismatch("chat files: origins") }
+            guard read.groups[0].files[1].exists?.bool == false else { throw SampleMismatch("chat files: exists") }
+            // A null size decodes as no value at all (an optional), or as an explicit null: both mean "unknown".
+            guard read.groups[0].files[1].size?.isNull ?? true else { throw SampleMismatch("chat files: null size") }
+            guard info.ext == "txt", DocsFileKind(wire: info.kind) == .text, DocsFileKind(wire: "hologram") == .other else {
+                throw SampleMismatch("chat files: file info")
             }
+            guard chat.id == "a1b2c3d4e5f60718" else { throw SampleMismatch("chat files: session") }
             let live = DocsLiveStore.liveGroups(read)
             guard live.count == 1, live[0].files[1].available == false, live[0].files[0].bytes == 1200,
                   live[0].files[0].url != nil else { throw SampleMismatch("chat files in screen shape") }
