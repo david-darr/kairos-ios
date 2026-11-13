@@ -8,6 +8,8 @@ struct NotesCaptureCard: View {
     @Binding var hasDue: Bool
     @Binding var due: Date
     var focused: FocusState<Bool>.Binding
+    /// A note is on its way to the desktop: the button says so and does nothing until it lands.
+    var busy = false
     let add: () -> Void
 
     var body: some View {
@@ -22,7 +24,7 @@ struct NotesCaptureCard: View {
                     .foregroundStyle(Palette.ink)
                     .focused(focused)
                     .submitLabel(.done)
-                    .onSubmit(add)
+                    .onSubmit { if !busy { add() } }
                     .accessibilityLabel("New note")
             }
             .padding(.horizontal, 14)
@@ -49,7 +51,9 @@ struct NotesCaptureCard: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            GoldButton(title: "Add note", action: add)
+            GoldButton(title: busy ? "Adding" : "Add note") {
+                if !busy { add() }
+            }
         }
         .padding(16)
         .kCard(radius: 24, raised: true)
@@ -98,6 +102,8 @@ struct NotesCard: View {
     let note: KNote
     /// Done as drawn: flips the moment it is tapped, before the note moves groups.
     let showsDone: Bool
+    /// False while paired: the desktop has no pins.
+    var canPin = true
     let toggle: () -> Void
     let act: (NotesCardAction) -> Void
 
@@ -199,6 +205,15 @@ struct NotesCard: View {
             .foregroundStyle(overdue ? Palette.danger : Palette.inkFaint)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(overdue ? "Overdue, \(FilesDates.full(due))" : "Due \(FilesDates.full(due))")
+        } else if note.dueUnreadable {
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Due time this app cannot read")
+                    .font(KFont.ui(13, relativeTo: .footnote))
+            }
+            .foregroundStyle(Palette.inkFaint)
+            .accessibilityElement(children: .combine)
         } else {
             Text("No date")
                 .font(KFont.ui(13, relativeTo: .footnote))
@@ -209,8 +224,12 @@ struct NotesCard: View {
     @ViewBuilder
     private var menu: some View {
         Button("Edit", systemImage: "pencil") { act(.edit) }
-        Button(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin") { act(.pin) }
-        Button(note.due == nil ? "Add due time" : "Change due time", systemImage: "clock") { act(.due) }
+        if canPin {
+            Button(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin") { act(.pin) }
+        }
+        if !note.dueUnreadable {
+            Button(note.due == nil ? "Add due time" : "Change due time", systemImage: "clock") { act(.due) }
+        }
         Button("Details", systemImage: "info.circle") { act(.details) }
         Divider()
         Button("Delete", systemImage: "trash", role: .destructive) { act(.delete) }

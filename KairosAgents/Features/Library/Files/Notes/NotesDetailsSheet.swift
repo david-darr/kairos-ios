@@ -8,7 +8,8 @@ struct NotesSheetItem: Identifiable, Hashable {
 }
 
 /// "Note": edit the text, the due time and the pin; see when it was made; delete it.
-/// Changes are saved as they are made.
+/// Sample notes are saved as they are changed. The paired desktop's notes are saved with Save, once,
+/// and the sheet stays open until a change is saved or discarded, so typed text is never lost.
 struct NotesDetailsSheet: View {
     let store: NotesStore
     let item: NotesSheetItem
@@ -24,7 +25,19 @@ struct NotesDetailsSheet: View {
     @State private var confirmDelete = false
     @FocusState private var textFocused: Bool
 
+    // Paired only: what the desktop last saved, and how the last write went.
+    @State private var savedText = ""
+    @State private var savedDue: Date?
+    @State private var saving = false
+    @State private var working = false
+    @State private var failure: String?
+
     private var note: KNote? { store.note(item.id) }
+    private var live: Bool { !store.isSample }
+    /// A note from the vault's task list: the vault owns its text, so it is not edited here.
+    private var textLocked: Bool { live && (note?.fromVault ?? false) }
+    /// The desktop's due time for this note is in a form this app cannot read: it is left exactly as it is.
+    private var dueLocked: Bool { live && (note?.dueUnreadable ?? false) }
 
     var body: some View {
         FittedSheet(estimate: 600) {
@@ -36,13 +49,18 @@ struct NotesDetailsSheet: View {
                     .padding(.top, 30)
 
                 textCard
+                if textLocked {
+                    NotesLiveLine(text: "This note comes from your vault, so change its text there. Its due time can change here.")
+                }
                 dueCard
                 actionRow
+                if live { liveFooter }
                 createdLine
             }
             .padding(.horizontal, 18)
             .padding(.bottom, 24)
         }
+        .interactiveDismissDisabled(live && (dirty || saving))
         .onAppear(perform: load)
         .onDisappear(perform: finish)
         .onChange(of: text) { save() }
@@ -59,16 +77,26 @@ struct NotesDetailsSheet: View {
     private var textCard: some View {
         TextField("Note", text: $text, axis: .vertical)
             .font(KFont.ui(17))
-            .foregroundStyle(Palette.ink)
+            .foregroundStyle(textLocked ? Palette.inkDim : Palette.ink)
             .lineLimit(2...10)
             .focused($textFocused)
+            .disabled(textLocked || saving)
             .padding(14)
             .frame(minHeight: 52)
             .kCard(radius: 18, raised: true)
             .accessibilityLabel("Note text")
     }
 
+    @ViewBuilder
     private var dueCard: some View {
+        if dueLocked {
+            NotesLiveLine(text: "This note has a due time this app cannot read. Change it on your desktop. Saving here leaves it as it is.")
+        } else {
+            dueControls
+        }
+    }
+
+    private var dueControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle(isOn: $hasDue.animation(Motion.snappy)) {
                 Text("Due time")
@@ -95,6 +123,7 @@ struct NotesDetailsSheet: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .kCard(radius: 18)
+        .disabled(saving)
     }
 
     private var overdue: Bool {
@@ -106,16 +135,48 @@ struct NotesDetailsSheet: View {
         let pinned = note?.pinned ?? false
         let done = note?.done ?? false
         return HStack(spacing: 10) {
-            ActionTile(symbol: "pin", title: pinned ? "Unpin" : "Pin", on: pinned) {
-                withAnimation(Motion.snappy) { store.togglePin(item.id) }
+            if !live {
+                ActionTile(symbol: "pin", title: pinned ? "Unpin" : "Pin", on: pinned) {
+                    withAnimation(Motion.snappy) { store.togglePin(item.id) }
+                }
             }
             ActionTile(symbol: done ? "arrow.uturn.backward" : "checkmark", title: done ? "Reopen" : "Complete", on: done) {
+                if live {
+                    setDoneLive(!done)
+                    return
+                }
                 withAnimation(Motion.snappy) { store.setDone(item.id, !done) }
                 chrome.say(done ? "Note reopened" : "Note finished")
             }
             ActionTile(symbol: "trash", title: "Delete", danger: true) {
                 confirmDelete = true
             }
+        }
+        .disabled(working || saving)
+    }
+
+    /// Paired: what went wrong, and Save and Discard while there is a change the desktop does not have yet.
+    @ViewBuilder
+    private var liveFooter: some View {
+        if loaded && note == nil {
+            NotesLiveLine(text: "This note is not on your desktop any more.")
+        }
+        if let failure {
+            NotesLiveLine(text: failure)
+        }
+        if dirty || saving {
+            VStack(spacing: 4) {
+                GoldButton(title: saving ? "Saving" : "Save") {
+                    if !saving { saveLive() }
+                }
+                if !saving {
+                    QuietButton(title: "Discard changes") {
+                        Haptics.tap()
+                        discard()
+                    }
+                }
+            }
+            .transition(.opacity)
         }
     }
 
@@ -136,28 +197,31 @@ struct NotesDetailsSheet: View {
         guard !loaded, let note else { return }
         text = note.text
         original = note.text
+        savedText = note.text
+        savedDue = note.due
         if let noteDue = note.due {
             hasDue = true
             due = noteDue
         } else {
-            hasDue = item.focus == .due
+            hasDue = item.focus == .due && !dueLocked
         }
         loaded = true
         if item.focus == .due { save() }
-        if item.focus == .text { textFocused = true }
+        if item.focus == .text && !textLocked { textFocused = true }
     }
 
+    /// Sample notes only: saved as they change.
     private func save() {
-        guard loaded, var current = store.note(item.id) else { return }
+        guard store.isSample, loaded, var current = store.note(item.id) else { return }
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !clean.isEmpty { current.text = text }
         current.due = hasDue ? due : nil
         store.update(current)
     }
 
-    /// A note left blank keeps the text it had.
+    /// A sample note left blank keeps the text it had.
     private func finish() {
-        guard loaded, var current = store.note(item.id) else { return }
+        guard store.isSample, loaded, var current = store.note(item.id) else { return }
         if current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             current.text = original
             store.update(current)
@@ -165,9 +229,126 @@ struct NotesDetailsSheet: View {
     }
 
     private func deleteNote() {
+        if live {
+            deleteLive()
+            return
+        }
         Haptics.thud()
         withAnimation(Motion.snappy) { store.delete(id: item.id) }
         chrome.say("Note deleted")
         dismiss()
+    }
+
+    // MARK: - Paired
+
+    private var shownDue: Date? { hasDue ? due : nil }
+
+    private var textChanged: Bool { !textLocked && text != savedText }
+
+    private var dueChanged: Bool {
+        guard !dueLocked else { return false }
+        switch (shownDue, savedDue) {
+        case (nil, nil): return false
+        case let (shown?, saved?): return abs(shown.timeIntervalSince(saved)) >= 1
+        default: return true
+        }
+    }
+
+    /// A change the desktop does not have yet.
+    private var dirty: Bool { live && loaded && (textChanged || dueChanged) }
+
+    /// One PATCH with only what changed. On failure everything typed stays, and Save can be tapped again.
+    private func saveLive() {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if textChanged && clean.isEmpty {
+            withAnimation(Motion.snappy) { failure = "A note needs some text. Type something, or discard the change." }
+            return
+        }
+        let sendText = textChanged ? clean : nil
+        let sendDue = dueChanged
+        let wanted = shownDue
+        saving = true
+        textFocused = false
+        let store = store
+        let id = item.id
+        Task {
+            let outcome = await store.saveLive(id, text: sendText, changesDue: sendDue, due: wanted)
+            withAnimation(Motion.snappy) {
+                saving = false
+                switch outcome {
+                case .saved:
+                    if let sendText {
+                        savedText = sendText
+                        text = sendText
+                    }
+                    if sendDue { savedDue = wanted }
+                    failure = nil
+                case .busy:
+                    failure = "Wait a moment for the last change to this note to save, then tap Save again."
+                case .failed(let why):
+                    failure = why
+                }
+            }
+            switch outcome {
+            case .saved:
+                Haptics.success()
+                chrome.say("Note saved")
+            case .busy, .failed:
+                Haptics.thud()
+            }
+        }
+    }
+
+    private func discard() {
+        withAnimation(Motion.snappy) {
+            text = savedText
+            if let savedDue {
+                hasDue = true
+                due = savedDue
+            } else {
+                hasDue = false
+            }
+            failure = nil
+        }
+    }
+
+    private func setDoneLive(_ done: Bool) {
+        working = true
+        let store = store
+        let id = item.id
+        Task {
+            let outcome = await store.setDoneLive(id, done)
+            withAnimation(Motion.snappy) {
+                working = false
+                switch outcome {
+                case .saved: failure = nil
+                case .busy: failure = "Wait a moment for the last change to this note to save."
+                case .failed(let why): failure = why
+                }
+            }
+            if outcome == .saved { chrome.say(done ? "Note finished" : "Note reopened") }
+        }
+    }
+
+    private func deleteLive() {
+        working = true
+        let store = store
+        let id = item.id
+        Task {
+            let outcome = await store.deleteLive(id)
+            withAnimation(Motion.snappy) {
+                working = false
+                switch outcome {
+                case .saved: failure = nil
+                case .busy: failure = "Wait a moment for the last change to this note to save."
+                case .failed(let why): failure = why
+                }
+            }
+            if outcome == .saved {
+                Haptics.thud()
+                chrome.say("Note deleted")
+                dismiss()
+            }
+        }
     }
 }

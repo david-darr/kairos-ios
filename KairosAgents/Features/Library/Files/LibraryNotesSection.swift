@@ -7,6 +7,7 @@ struct LibraryNotesSection: View {
     @Environment(ChromeState.self) private var chrome
     @Environment(AppRouter.self) private var router
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     private let store: NotesStore
     private let start: NotesDebug?
@@ -17,6 +18,8 @@ struct LibraryNotesSection: View {
     @State private var flipping: Set<String> = []
     @State private var sheet: NotesSheetItem?
     @State private var confirmClear = false
+    /// Paired: the finished notes the person was asked about. Only these can be cleared.
+    @State private var clearIDs: Set<String> = []
     @State private var deleting: KNote?
     @State private var started = false
     @FocusState private var captureFocused: Bool
@@ -31,13 +34,23 @@ struct LibraryNotesSection: View {
         self.start = start
     }
 
+    /// Showing the paired desktop's notes.
+    private var live: Bool { !store.isSample }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            NotesCaptureCard(draft: $draft, hasDue: $hasDue, due: $draftDue, focused: $captureFocused, add: addDraft)
+            NotesCaptureCard(draft: draftText, hasDue: draftHasDue, due: draftDueDate, focused: $captureFocused,
+                             busy: live && store.adding, add: addDraft)
                 .arrives(0)
-            stats
-                .arrives(1)
-            if store.notes.isEmpty {
+            if live { liveLines }
+            if !live || store.liveLoad == .loaded || !store.notes.isEmpty {
+                stats
+                    .arrives(1)
+            }
+            if live && store.notes.isEmpty && store.liveLoad != .loaded {
+                // Still reading, or the read failed: the line above says which. Never "No notes yet".
+                EmptyView()
+            } else if store.notes.isEmpty {
                 FilesEmpty(
                     symbol: "note.text",
                     title: "No notes yet",
@@ -64,7 +77,7 @@ struct LibraryNotesSection: View {
             Button("Clear finished", role: .destructive, action: clearFinished)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Delete \(NotesCopy.count(store.finishedCount, "finished note"))? This can't be undone.")
+            Text("Delete \(NotesCopy.count(live ? clearIDs.count : store.finishedCount, "finished note"))? This can't be undone.")
         }
         .confirmationDialog("Delete this note?", isPresented: deletingShown, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -75,12 +88,46 @@ struct LibraryNotesSection: View {
             Text("This can't be undone.")
         }
         .onAppear(perform: applyStart)
+        .task(id: NotesStore.connectionKey) {
+            // Only the shared store follows the desktop; the debug pictures keep their own sample stores.
+            guard store === NotesStore.shared else { return }
+            store.followConnection()
+            await store.loadLive()
+        }
+        .onChange(of: scenePhase) {
+            // Back from the background: the desktop may have changed meanwhile.
+            guard scenePhase == .active, live, store === NotesStore.shared else { return }
+            Task { await store.loadLive() }
+        }
         .onChange(of: chrome.addTick) {
             if router.tab == .library { captureFocused = true }
         }
     }
 
     // MARK: - Parts
+
+    /// Paired only: reading, a failed read, notes that could not be shown, and what last went wrong.
+    @ViewBuilder
+    private var liveLines: some View {
+        switch store.liveLoad {
+        case .idle, .loading:
+            if store.notes.isEmpty { NotesLiveLine(text: "Reading your notes") }
+        case .failed(let why):
+            NotesLiveLine(text: why, action: "Try again") {
+                Task { await store.loadLive() }
+            }
+        case .loaded:
+            EmptyView()
+        }
+        if store.skipped > 0 {
+            NotesLiveLine(text: "\(NotesCopy.count(store.skipped, "note")) could not be shown. Update this app to see \(store.skipped == 1 ? "it" : "them").")
+        }
+        if let problem = store.problem {
+            NotesLiveLine(text: problem, action: "Dismiss") {
+                withAnimation(Motion.snappy) { store.problem = nil }
+            }
+        }
+    }
 
     private var stats: some View {
         HStack(spacing: 10) {
@@ -105,9 +152,10 @@ struct LibraryNotesSection: View {
                     .foregroundStyle(Palette.inkFaint)
                     .contentTransition(.numericText())
                 Spacer()
-                if store.finishedCount > 0 {
+                if store.finishedCount > 0 && !store.clearing {
                     Button {
                         Haptics.tap()
+                        if live { clearIDs = Set(store.notes.filter(\.done).map(\.id)) }
                         confirmClear = true
                     } label: {
                         Label("Clear finished", systemImage: "trash")
@@ -186,6 +234,7 @@ struct LibraryNotesSection: View {
         NotesCard(
             note: note,
             showsDone: note.done != flipping.contains(note.id),
+            canPin: !live,
             toggle: { toggle(note) },
             act: { action in handle(action, on: note) }
         )
@@ -205,6 +254,19 @@ struct LibraryNotesSection: View {
         })
     }
 
+    // Paired, the note being typed lives in the store, so it survives switching sections while it is sent.
+    private var draftText: Binding<String> {
+        live ? Binding(get: { store.liveDraft }, set: { store.liveDraft = $0 }) : $draft
+    }
+
+    private var draftHasDue: Binding<Bool> {
+        live ? Binding(get: { store.liveDraftHasDue }, set: { store.liveDraftHasDue = $0 }) : $hasDue
+    }
+
+    private var draftDueDate: Binding<Date> {
+        live ? Binding(get: { store.liveDraftDue }, set: { store.liveDraftDue = $0 }) : $draftDue
+    }
+
     private var deletingShown: Binding<Bool> {
         Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
     }
@@ -212,9 +274,13 @@ struct LibraryNotesSection: View {
     // MARK: - Actions
 
     private func addDraft() {
-        let clean = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = draftText.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else {
             captureFocused = true
+            return
+        }
+        if live {
+            addLive(clean)
             return
         }
         Haptics.success()
@@ -226,10 +292,43 @@ struct LibraryNotesSection: View {
         }
     }
 
+    /// Sent once. The typed text and due time stay in the card until the desktop has the note.
+    private func addLive(_ text: String) {
+        guard !store.adding else { return }
+        let due = store.liveDraftHasDue ? store.liveDraftDue : nil
+        let sent = store.liveDraft
+        let store = store
+        Task {
+            let outcome = await store.createLive(text: text, due: due)
+            switch outcome {
+            case .saved:
+                Haptics.success()
+                withAnimation(Motion.snappy) {
+                    // Only clear what was sent: anything typed since stays.
+                    if store.liveDraft == sent {
+                        store.liveDraft = ""
+                        store.liveDraftHasDue = false
+                        store.liveDraftDue = NotesDue.suggested()
+                    }
+                    store.problem = nil
+                }
+            case .busy:
+                break
+            case .failed(let why):
+                Haptics.thud()
+                withAnimation(Motion.snappy) { store.problem = why }
+            }
+        }
+    }
+
     /// The strike-through shows at once; the note moves to its new group a moment later.
     private func toggle(_ note: KNote) {
         guard !flipping.contains(note.id) else { return }
         let target = !note.done
+        if live {
+            toggleLive(note, to: target)
+            return
+        }
         if target { Haptics.success() } else { Haptics.tap() }
         if reduceMotion {
             store.setDone(note.id, target)
@@ -247,12 +346,37 @@ struct LibraryNotesSection: View {
         }
     }
 
+    /// Paired: the strike-through shows at once, and goes back if the desktop does not save it.
+    private func toggleLive(_ note: KNote, to target: Bool) {
+        guard !store.busy.contains(note.id) else { return }
+        if target { Haptics.success() } else { Haptics.tap() }
+        let id = note.id
+        let store = store
+        let motion = !reduceMotion
+        if motion {
+            withAnimation(Motion.gentle) { _ = flipping.insert(id) }
+        } else {
+            flipping.insert(id)
+        }
+        let work = Task { await store.setDoneLive(id, target) }
+        Task {
+            if motion { try? await Task.sleep(for: .milliseconds(320)) }
+            let result = await work.value
+            withAnimation(motion ? Motion.snappy : nil) {
+                flipping.remove(id)
+                if case .failed(let why) = result { store.problem = why }
+            }
+            if case .failed = result { Haptics.thud() }
+        }
+    }
+
     private func handle(_ action: NotesCardAction, on note: KNote) {
         switch action {
         case .edit: sheet = NotesSheetItem(id: note.id, focus: .text)
         case .details: sheet = NotesSheetItem(id: note.id)
         case .due: sheet = NotesSheetItem(id: note.id, focus: .due)
         case .pin:
+            guard !live else { return }
             Haptics.select()
             withAnimation(Motion.snappy) { store.togglePin(note.id) }
             chrome.say(note.pinned ? "Note unpinned" : "Note pinned")
@@ -262,6 +386,24 @@ struct LibraryNotesSection: View {
     }
 
     private func delete(_ note: KNote) {
+        if live {
+            deleting = nil
+            let id = note.id
+            let store = store
+            Task {
+                let outcome = await store.deleteLive(id)
+                switch outcome {
+                case .saved:
+                    Haptics.thud()
+                    chrome.say("Note deleted")
+                case .busy:
+                    withAnimation(Motion.snappy) { store.problem = "Wait a moment for the last change to this note to save." }
+                case .failed(let why):
+                    withAnimation(Motion.snappy) { store.problem = why }
+                }
+            }
+            return
+        }
         Haptics.thud()
         withAnimation(Motion.snappy) { store.delete(id: note.id) }
         deleting = nil
@@ -269,6 +411,33 @@ struct LibraryNotesSection: View {
     }
 
     private func clearFinished() {
+        if live {
+            let store = store
+            let confirmed = clearIDs
+            Task {
+                let result = await store.clearFinishedLive(confirmed: confirmed)
+                if result.deleted > 0 { Haptics.thud() }
+                if result.unchecked {
+                    Haptics.thud()
+                    withAnimation(Motion.snappy) {
+                        store.problem = "Nothing was deleted, because your notes could not be checked with your desktop first. Try again."
+                    }
+                } else if result.failed == 0 && result.kept == 0 {
+                    chrome.say("Deleted \(NotesCopy.count(result.deleted, "finished note"))")
+                } else {
+                    var parts = ["Deleted \(NotesCopy.count(result.deleted, "finished note"))."]
+                    if result.kept > 0 {
+                        let one = result.kept == 1
+                        parts.append("\(NotesCopy.count(result.kept, "note")) \(one ? "is" : "are") open again, so \(one ? "it was" : "they were") kept.")
+                    }
+                    if result.failed > 0 {
+                        parts.append("\(result.failed) could not be deleted." + (result.why.map { " " + $0 } ?? ""))
+                    }
+                    withAnimation(Motion.snappy) { store.problem = parts.joined(separator: " ") }
+                }
+            }
+            return
+        }
         Haptics.thud()
         var count = 0
         withAnimation(Motion.snappy) { count = store.clearFinished() }
@@ -282,8 +451,8 @@ struct LibraryNotesSection: View {
         case .details:
             if let first = store.shown(done: false).first { sheet = NotesSheetItem(id: first.id) }
         case .composing:
-            draft = "Pick up the new bike stand from the supplier"
-            hasDue = true
+            draftText.wrappedValue = "Pick up the new bike stand from the supplier"
+            draftHasDue.wrappedValue = true
             captureFocused = true
         default:
             break
