@@ -355,7 +355,11 @@ nonisolated final class NotificationRelay: NSObject, UNUserNotificationCenterDel
         [.banner, .list, .sound]
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+    /// The completion handler form, on purpose. iOS requires "done" to be said on the main thread.
+    /// The async form of this method says it from whichever thread the function ends on, and iOS
+    /// ends the app for that: every tap on a notification crashed on a real phone.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
         let action = response.actionIdentifier
         let text = (response as? UNTextInputNotificationResponse)?.userText
         var info: [String: String] = [:]
@@ -363,7 +367,10 @@ nonisolated final class NotificationRelay: NSObject, UNUserNotificationCenterDel
             if let key = key as? String, let value = value as? String { info[key] = value }
         }
         let snapshot = info
-        await NativeNotifications.shared.handle(action: action, text: text, info: snapshot)
+        Task { @MainActor in
+            await NativeNotifications.shared.handle(action: action, text: text, info: snapshot)
+            completionHandler()
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, openSettingsFor notification: UNNotification?) {
