@@ -123,3 +123,13 @@ The state of one ring, so the phone can end a call screen for a ring that was an
 ## Everything else
 
 Chats, bots, the inbox, approvals, files and settings use the desktop's existing routes unchanged (for example `/api/sessions`, `/api/chat/live`, `/api/chat/live/events`, `/api/agents`, `/api/bot-chat/...`, `/api/bot-attention/...`, `/api/permissions/...`). The app reads their shapes from the desktop's source.
+
+## What a phone token is refused
+
+A phone token is the account, with the same rights as its browser session, except on the routes the desktop keeps for itself. These answer a phone token with a refusal before the route runs:
+
+- starting a pairing, the push relay, every `/api/auth/*` route except `status`, `/api/remote*`, `/api/system/backup*` and `/api/system/wipe*`;
+- saved Browse passwords: `/api/browse/passwords*`;
+- the Forge terminal: `/api/forge/sessions/{id}/terminals*`. `PUT /api/forge/terminal/settings` refuses `enabled: true` from a phone; a phone may still read the switch and turn it off.
+
+Routes that answer only the desktop's own machine (loopback) never answer a phone either. On top of this the app itself holds back: it sends no key, password, token, sign-in or other change that widens access, and it acts on the real computer only where the screen says so.

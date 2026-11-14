@@ -292,7 +292,7 @@ final class DeskForgeLive {
     static let changesAndFilesLive = true
     static let computerLive = false
     static let browseLive = false
-    static let localModelsLive = false
+    static let localModelsLive = true
     static let pcFilesLive = false
     /// True while at least one Desktop home tile is still closed: the one line about them shows.
     static var desktopTilesWaiting: Bool { !(computerLive && browseLive && localModelsLive && pcFilesLive) }

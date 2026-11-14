@@ -947,8 +947,10 @@ struct BotKnowConnectionsPage: View {
                 }
                 Text(users.isEmpty ? "No bots use it yet" : "Used by \(users.joined(separator: ", "))")
                     .font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).lineLimit(1)
-                if let reason = app.reason, !reason.isEmpty, app.state != "connected" {
-                    Text(reason).font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.goldText).lineLimit(2)
+                // Fixed words by state. The desktop's own failure text is never read: it can name a server, a
+                // program path or an account.
+                if let why = stateReason(app.state) {
+                    Text(why).font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.goldText).lineLimit(2)
                 }
             }
             Spacer(minLength: 0)
@@ -956,6 +958,17 @@ struct BotKnowConnectionsPage: View {
         .padding(14)
         .kCard(radius: 20)
         .accessibilityElement(children: .combine)
+    }
+
+    private func stateReason(_ state: String?) -> String? {
+        switch state ?? "" {
+        case "failed": "The server did not answer at its last check. See why in Kairos on your desktop."
+        case "pending": "Not tested yet."
+        case "expired": "Sign in again in Kairos on your desktop."
+        case "unavailable": "Not set up. See Kairos on your desktop."
+        case "off": "Switched off."
+        default: nil
+        }
     }
 
     private func stateWord(_ state: String?) -> String {

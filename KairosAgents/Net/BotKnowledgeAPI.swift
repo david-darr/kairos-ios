@@ -396,7 +396,7 @@ nonisolated struct BotKnowAppDTO: Decodable, Sendable {
     var category: String?
     var description: String?
     var state: String?
-    var reason: String?
+    // `reason` (the desktop's failure text) is left out on purpose: it can name a server, a path or an account.
     var enabled: Bool?
     var usedBy: [BotKnowLossy<BotKnowAppUserDTO>]?
 }
