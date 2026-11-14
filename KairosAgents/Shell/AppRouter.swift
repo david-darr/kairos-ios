@@ -91,7 +91,13 @@ final class AppRouter {
             select(.desktop)
         case .computer, .browse:
             paths[.desktop] = []
-            push(.area(area), on: .desktop)
+            // Until these screens read the desktop, a paired phone lands on Desktop, which says where to use them.
+            let live = area == .computer ? DeskForgeLive.computerLive : DeskForgeLive.browseLive
+            if Connection.shared.usesSampleData || live {
+                push(.area(area), on: .desktop)
+            } else {
+                select(.desktop)
+            }
         case .toolStore, .addTab:
             push(.area(area))
         }
