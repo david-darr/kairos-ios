@@ -270,6 +270,9 @@ final class ChatStore {
         clearOpenUnread()
     }
 
+    /// Whether this bot's conversation is on screen right now.
+    func isOpen(bot botID: String) -> Bool { openBots.contains(botID) }
+
     private func clearOpenUnread() {
         for index in conversations.indices where conversations[index].unread {
             switch conversations[index].kind {
@@ -463,6 +466,17 @@ final class ChatStore {
 // MARK: - One model chat
 
 /// Everything one model chat screen shows and does. Made by `ChatStore.modelChat(_:)`.
+/// What decides where design cards sit. Small and cheap to compare: no text, so a streamed token never changes it.
+nonisolated struct ChatCardsStamp: Equatable, Sendable {
+    var designs: Int
+    var count: Int
+    var first: String?
+    var last: String?
+    var turn: String?
+    var running: Bool
+    var started: Bool
+}
+
 @Observable
 final class ModelChatState {
     nonisolated enum Phase: Equatable, Sendable { case idle, loading, loaded, failed(String) }
@@ -493,7 +507,7 @@ final class ModelChatState {
     @ObservationIgnored private var keptSteps: [StepLine] = []
     @ObservationIgnored private var loadedOnce = false
     /// Where design cards sit, worked out again when the chat, the turn or the design list changes.
-    @ObservationIgnored private var cardsStamp = ""
+    @ObservationIgnored private var cardsStamp: ChatCardsStamp?
     @ObservationIgnored private var cardsPlaced: [String: [ChatThumbDesign]] = [:]
 
     init(store: ChatStore, id: String?) {
@@ -530,7 +544,6 @@ final class ModelChatState {
         live.steps = run.steps
         live.files = parsed.files
         live.sources = parsed.sources
-        live.designs = parsed.designs
         live.streaming = run.isRunning
         switch run.status {
         case .failed: live.failure = run.error ?? "The reply failed. Check the model's connection, or pick another model."
@@ -871,15 +884,18 @@ final class ModelChatState {
     func designCards(for entry: TranscriptEntry) -> [ChatThumbDesign] {
         guard let key = thumbKey else { return [] }
         let designs = ChatThumbDesigns.shared
-        let listed = designs.designs(in: key)
-        let stamp = "\(designs.stamp)|\(entries.count)|\(entries.last?.id ?? "")|\(run?.turnID ?? "")|\(run?.isRunning == true)|\(run?.text.count ?? 0)"
+        // A chat with no designs: one lookup, nothing else, however many tokens stream.
+        if entry.designs.isEmpty, !designs.hasDesigns(in: key) { return [] }
+        // Worked out again only when the design list, the saved messages or the turn change, never per token.
+        let stamp = ChatCardsStamp(designs: designs.stamp, count: entries.count, first: entries.first?.id, last: entries.last?.id,
+                                   turn: run?.turnID, running: run?.isRunning == true, started: run?.text.isEmpty == false)
         if stamp != cardsStamp {
             cardsStamp = stamp
             cardsPlaced = ChatThumbPlacement.place(
                 slots: transcript.map {
                     ChatThumbSlot(id: $0.id, assistant: $0.isAssistant, saved: $0.index != nil, time: $0.time, refs: $0.designs)
                 },
-                listed: listed)
+                listed: designs.designs(in: key))
         }
         return cardsPlaced[entry.id] ?? []
     }
@@ -948,7 +964,7 @@ final class BotChatState {
     @ObservationIgnored private var queueRevision = 0
     @ObservationIgnored private var loadedOnce = false
     /// Where design cards sit, worked out again when the chat, the turn or the design list changes.
-    @ObservationIgnored private var cardsStamp = ""
+    @ObservationIgnored private var cardsStamp: ChatCardsStamp?
     @ObservationIgnored private var cardsPlaced: [String: [ChatThumbDesign]] = [:]
 
     init(store: ChatStore, botID: String) {
@@ -974,10 +990,9 @@ final class BotChatState {
         if !run.prompt.isEmpty, run.isRunning, result.last(where: { $0.kind == .mine })?.text != run.prompt {
             result.append(BotEntry(id: "live-mine-\(run.turnID)", kind: .mine, text: run.prompt, time: run.startedAt))
         }
-        let parsed = TranscriptParsing.body(run.text)
-        let text = parsed.text
-        if !text.isEmpty || !parsed.designs.isEmpty, result.last(where: { $0.kind == .theirs })?.text != text {
-            result.append(BotEntry(id: "live-\(run.turnID)", kind: .theirs, text: text, time: run.startedAt, designs: parsed.designs))
+        let text = TranscriptParsing.body(run.text).text
+        if !text.isEmpty, result.last(where: { $0.kind == .theirs })?.text != text {
+            result.append(BotEntry(id: "live-\(run.turnID)", kind: .theirs, text: text, time: run.startedAt))
         }
         return result
     }
@@ -986,15 +1001,16 @@ final class BotChatState {
     func designCards(for entry: BotEntry) -> [ChatThumbDesign] {
         guard !isSample, let key = threadID else { return [] }
         let designs = ChatThumbDesigns.shared
-        let listed = designs.designs(in: key)
-        let stamp = "\(designs.stamp)|\(entries.count)|\(entries.last?.id ?? "")|\(run?.turnID ?? "")|\(run?.text.count ?? 0)"
+        if entry.designs.isEmpty, !designs.hasDesigns(in: key) { return [] }
+        let stamp = ChatCardsStamp(designs: designs.stamp, count: entries.count, first: entries.first?.id, last: entries.last?.id,
+                                   turn: run?.turnID, running: run?.isRunning == true, started: run?.text.isEmpty == false)
         if stamp != cardsStamp {
             cardsStamp = stamp
             cardsPlaced = ChatThumbPlacement.place(
                 slots: transcript.map {
                     ChatThumbSlot(id: $0.id, assistant: $0.kind == .theirs, saved: !$0.id.hasPrefix("live-"), time: $0.time, refs: $0.designs)
                 },
-                listed: listed)
+                listed: designs.designs(in: key))
         }
         return cardsPlaced[entry.id] ?? []
     }
@@ -1066,7 +1082,8 @@ final class BotChatState {
         Task {
             guard let page = try? await store.source.newestBotMessages(threadID: threadID) else { return }
             merge(page)
-            if !isSample { ChatThumbDesigns.shared.refresh(chat: threadID) }
+            // Only the conversation on screen reads its designs; the others wait until they are opened.
+            if !isSample, store.isOpen(bot: botID) { ChatThumbDesigns.shared.refresh(chat: threadID) }
         }
     }
 

@@ -280,7 +280,7 @@ final class LiveBackend: ChatBackend {
             onEvent?(.background(chatID: chatID, items: (packet.items ?? []).map(TranscriptParsing.background)))
         case "bg_followup":
             guard let chatID = packet.sessionId, let message = packet.message else { return }
-            let parsed = TranscriptParsing.body(message.content ?? "")
+            let parsed = TranscriptParsing.body(message.content ?? "", takeDesigns: true)
             var entry = TranscriptEntry(id: "followup-\(message.ts ?? 0)", role: .assistant, text: parsed.text,
                                         time: message.ts.map { Date(timeIntervalSince1970: $0) })
             entry.files = parsed.files

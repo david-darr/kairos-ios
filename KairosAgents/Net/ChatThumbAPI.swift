@@ -399,13 +399,19 @@ nonisolated enum ChatThumbSamples {
             return "\(design.title), \(design.boardCount) boards"
         },
         DecodeCheck("chatthumb.links") {
-            let body = TranscriptParsing.body(reply)
+            let body = TranscriptParsing.body(reply, takeDesigns: true)
             try expect(body.designs == [ChatThumbRef(id: "0a1b2c3d4e5f", title: "Booking page")], "design ref")
             try expect(!body.text.contains("/designs/") && body.text.contains("Tell me what to change."), "link taken out of the words")
-            let twice = TranscriptParsing.body(reply + "\n\n[Design: Booking page](/designs/0a1b2c3d4e5f)")
+            let kept = TranscriptParsing.body(reply)
+            try expect(kept.designs.isEmpty && kept.text.contains("/designs/0a1b2c3d4e5f"), "by default the link stays in the text")
+            let twice = TranscriptParsing.body(reply + "\n\n[Design: Booking page](/designs/0a1b2c3d4e5f)", takeDesigns: true)
             try expect(twice.designs.count == 1, "a design linked twice is one card")
-            let short = TranscriptParsing.body("[Design: x](/designs/abc)")
+            let short = TranscriptParsing.body("[Design: x](/designs/abc)", takeDesigns: true)
             try expect(short.designs.isEmpty, "an id that is not 12 hex characters is no design")
+            let inline = TranscriptParsing.body("I made [Design: Flyer](/designs/0a1b2c3d4e5f) for you.", takeDesigns: true)
+            try expect(inline.text == "I made Flyer for you." && inline.designs.count == 1, "a link inside a sentence leaves its title")
+            let code = TranscriptParsing.body("Use `[Design: x](/designs/0a1b2c3d4e5f)` like this.", takeDesigns: true)
+            try expect(code.designs.isEmpty && code.text.contains("/designs/0a1b2c3d4e5f"), "a link in code is left alone")
             try expect(ChatThumbWire.linkTitle("Design: Flyer") == "Flyer" && ChatThumbWire.linkTitle("  ") == "Design", "link title")
             return "1 design in the reply"
         },

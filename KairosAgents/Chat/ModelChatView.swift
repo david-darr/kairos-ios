@@ -40,6 +40,8 @@ private struct ModelChatScreen: View {
     @State private var showModel = false
     @State private var showTools = false
     @State private var viewer: ViewerStart?
+    /// The design open in the full-screen cover. Held here, not by a card, so it stays open when the turn ends.
+    @State private var openDesign: ChatThumbOpen?
     @State private var showDetails = false
     @State private var confirmFull = false
     @FocusState private var typing: Bool
@@ -101,6 +103,11 @@ private struct ModelChatScreen: View {
             } else {
                 FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData, thumbChat: chat.thumbKey).kSheet()
             }
+        }
+        .fullScreenCover(item: $openDesign) { design in
+            ChatThumbDesignCover(designID: design.id)
+                .environment(router)
+                .environment(chrome)
         }
         .task { await chat.load() }
         .readsWhileOpen(chat)
@@ -284,7 +291,7 @@ private struct ModelChatScreen: View {
             }
             let designs = chat.designCards(for: entry)
             if let key = chat.thumbKey, !designs.isEmpty {
-                ChatThumbCards(designs: designs, chat: key)
+                ChatThumbCards(designs: designs, chat: key) { openDesign = ChatThumbOpen(id: $0) }
             }
             ForEach(entry.sources) { source in
                 SourceCard(site: source.site, title: source.title)

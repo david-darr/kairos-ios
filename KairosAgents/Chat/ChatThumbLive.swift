@@ -40,18 +40,34 @@ final class ChatThumbLive {
     }
 
     private var account: String?
-    private var images: [String: UIImage] = [:]
-    private var order: [String] = []
+    /// The pictures made, bounded by how much memory they take once decoded (and by number), not by number alone.
+    private let pictures: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 30
+        cache.totalCostLimit = 24_000_000
+        return cache
+    }()
     private var failures: [String: Failure] = [:]
     private var active = 0
+
+    private init() {
+        // The system is short of memory: every picture goes (they are made again when a card comes on screen).
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.dropPictures() }
+        }
+    }
+
+    private func dropPictures() {
+        pictures.removeAllObjects()
+        failures = [:]
+    }
 
     // MARK: Account
 
     /// Everything goes: the phone was unpaired, or a different desktop or account came.
     func reset() {
-        images = [:]
-        order = []
-        failures = [:]
+        dropPictures()
         account = ChatThumbAccount.key
     }
 
@@ -84,7 +100,17 @@ final class ChatThumbLive {
     /// A thumbnail already made for this file, if there is one.
     func cached(_ file: ChatFile, chat: String) -> UIImage? {
         guard let account = current() else { return nil }
-        return images[cacheKey(account, chat, file)]
+        return pictures.object(forKey: cacheKey(account, chat, file) as NSString)
+    }
+
+    /// The picture already made for a design's first board, if there is one.
+    func cachedDesign(_ design: ChatThumbDesign) -> UIImage? {
+        guard let board = design.firstBoard, let account = current() else { return nil }
+        return pictures.object(forKey: designKey(account, design, board) as NSString)
+    }
+
+    private func designKey(_ account: String, _ design: ChatThumbDesign, _ board: String) -> String {
+        account + "|design|\(design.id)|\(design.version)|" + board
     }
 
     // MARK: Slots, the memory and the failures
@@ -101,10 +127,10 @@ final class ChatThumbLive {
     }
 
     private func remember(_ image: UIImage, _ key: String) {
-        if images[key] == nil { order.append(key) }
-        images[key] = image
-        // A few dozen small pictures at most.
-        while order.count > 30 { images[order.removeFirst()] = nil }
+        // Cost is the decoded size: width times height times four bytes.
+        let cost = image.cgImage.map { $0.width * $0.height * 4 }
+            ?? Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+        pictures.setObject(image, forKey: key as NSString, cost: cost)
     }
 
     private func blocked(_ key: String) -> Bool {
@@ -124,7 +150,7 @@ final class ChatThumbLive {
         guard ChatThumbLive.wants(file), let plan = ChatThumbLive.plan(for: file.kind),
               let account = current(), let client = Connection.shared.client else { return nil }
         let key = cacheKey(account, chat, file)
-        if let hit = images[key] { return hit }
+        if let hit = pictures.object(forKey: key as NSString) { return hit }
         if blocked(key) { return nil }
         // The transcript knows the size of a file the person sent: over the cap there is nothing to ask.
         if let size = file.size, plan.start == nil, size > plan.whole {
@@ -169,7 +195,7 @@ final class ChatThumbLive {
     func thumbnail(fromBytes data: Data, for file: ChatFile, chat: String) async -> UIImage? {
         guard file.sampleLook == nil, let account = current() else { return nil }
         let key = cacheKey(account, chat, file)
-        if let hit = images[key] { return hit }
+        if let hit = pictures.object(forKey: key as NSString) { return hit }
         if blocked(key) { return nil }
         guard await takeSlot() else { return nil }
         defer { active -= 1 }
@@ -252,12 +278,33 @@ final class ChatThumbLive {
 
     // MARK: A design's first board
 
+    /// The board picture at three times the tile's width (252 px), from the top, at most 600 px tall.
+    private static func shrunk(_ data: Data) async -> UIImage? {
+        let work = Task.detached(priority: .utility) { () -> UIImage? in
+            guard let full = UIImage(data: data), let source = full.cgImage, source.width > 0, source.height > 0 else { return nil }
+            let width = CGFloat(source.width)
+            let scale = min(1, 252 / width)
+            let size = CGSize(width: max(1, (width * scale).rounded(.down)),
+                              height: max(1, (CGFloat(source.height) * scale).rounded(.down)))
+            guard let small = full.preparingThumbnail(of: size), let cg = small.cgImage else { return nil }
+            if cg.height > 600, let top = cg.cropping(to: CGRect(x: 0, y: 0, width: cg.width, height: 600)) {
+                return UIImage(cgImage: top, scale: 1, orientation: .up)
+            }
+            return UIImage(cgImage: cg, scale: 1, orientation: .up)
+        }
+        return await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+    }
+
     /// The picture of a design's first board. nil keeps the drawn card (the desktop answers 404 when it cannot draw it).
     func designImage(_ design: ChatThumbDesign) async -> UIImage? {
         guard let board = design.firstBoard, ChatThumbWire.isSlug(board),
               let account = current(), let client = Connection.shared.client else { return nil }
-        let key = account + "|design|\(design.id)|\(design.version)|" + board
-        if let hit = images[key] { return hit }
+        let key = designKey(account, design, board)
+        if let hit = pictures.object(forKey: key as NSString) { return hit }
         if blocked(key) { return nil }
         guard await takeSlot() else { return nil }
         defer { active -= 1 }
@@ -265,7 +312,10 @@ final class ChatThumbLive {
         do {
             let data = try await client.chatThumbDesignImage(id: design.id, board: board)
             guard !Task.isCancelled, ChatThumbAccount.key == account else { return nil }
-            guard let image = UIImage(data: data) else {
+            // Shrunk to the tile's size, off the main thread, before it is kept.
+            let image = await ChatThumbLive.shrunk(data)
+            guard !Task.isCancelled, ChatThumbAccount.key == account else { return nil }
+            guard let image else {
                 fail(key, permanent: true)
                 return nil
             }
@@ -343,6 +393,11 @@ final class ChatThumbDesigns {
 
     // MARK: Reading
 
+    /// Whether the chat has any design read for it. One lookup, no allocation.
+    func hasDesigns(in chat: String) -> Bool {
+        !(lists[chat]?.isEmpty ?? true)
+    }
+
     /// The designs of one chat, as last read.
     func designs(in chat: String) -> [ChatThumbDesign] {
         guard ChatThumbAccount.key != nil, account == ChatThumbAccount.key else { return [] }
@@ -393,6 +448,8 @@ final class ChatThumbDesigns {
         if let rows {
             if lists[chat] != rows {
                 lists[chat] = rows
+                // A design read by its own id is read again: it may be gone now (a 404 marks it so).
+                known = [:]
                 stamp += 1
             }
             if loadedChats.insert(chat).inserted { stamp += 1 }
@@ -446,32 +503,39 @@ final class ChatThumbDesigns {
 struct ChatThumbCards: View {
     let designs: [ChatThumbDesign]
     let chat: String
+    /// Opens a design. The chat screen holds the cover, so it stays open when a card moves to another row.
+    let open: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(designs) { design in
-                ChatThumbDesignCard(design: design, chat: chat)
+                ChatThumbDesignCard(design: design, chat: chat, open: open)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
+/// The design a chat screen has open in its full-screen cover.
+struct ChatThumbOpen: Identifiable, Hashable {
+    let id: String
+}
+
 /// A design made in a chat: its first board as a picture (a drawn card until it arrives), its name and its size.
-/// A tap opens the design in a full-screen cover, the same screen Make opens.
+/// A tap asks the chat screen to open the design in a full-screen cover, the same screen Make opens.
 struct ChatThumbDesignCard: View {
     let design: ChatThumbDesign
     let chat: String
+    let open: (String) -> Void
 
-    @Environment(AppRouter.self) private var router
-    @Environment(ChromeState.self) private var chrome
     @State private var image: UIImage?
-    @State private var shown = false
     @State private var onScreen = false
 
     private var store: ChatThumbDesigns { ChatThumbDesigns.shared }
     private var current: ChatThumbDesign { store.merged(design) }
     private var gone: Bool { store.gone.contains(design.id) }
+    /// What is drawn: the picture this card got, else one already made (a card that changed rows starts with it).
+    private var shownImage: UIImage? { image ?? ChatThumbLive.shared.cachedDesign(current) }
 
     private var detail: String {
         if gone { return "Design · no longer available" }
@@ -483,7 +547,7 @@ struct ChatThumbDesignCard: View {
     var body: some View {
         Button {
             Haptics.tap()
-            shown = true
+            open(design.id)
         } label: {
             HStack(spacing: 12) {
                 picture
@@ -526,19 +590,17 @@ struct ChatThumbDesignCard: View {
             guard !gone, let picture = await ChatThumbLive.shared.designImage(current) else { return }
             image = picture
         }
-        .fullScreenCover(isPresented: $shown) {
-            ChatThumbDesignCover(designID: design.id)
-                .environment(router)
-                .environment(chrome)
-        }
     }
 
     @ViewBuilder
     private var picture: some View {
-        if let image {
+        if let image = shownImage {
             ZStack {
                 Color(hex: 0xF4F1EC)
+                // A tall board is shown from its top, not from its middle.
                 Image(uiImage: image).resizable().scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .clipped()
             }
         } else {
             ZStack {
@@ -557,7 +619,7 @@ struct ChatThumbDesignCard: View {
 }
 
 /// The real design, full screen, in the same cover Make puts a design in. Its store and toasts are made only when it opens.
-private struct ChatThumbDesignCover: View {
+struct ChatThumbDesignCover: View {
     let designID: String
     @State private var store = MakeStore()
     @State private var toast = MakeToast()
