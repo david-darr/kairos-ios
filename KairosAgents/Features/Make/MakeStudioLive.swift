@@ -809,11 +809,17 @@ final class MakeStudioLive {
         return decide(post.publish)
     }
 
+    /// Another change to this post is on its way or unconfirmed (approve, reject, redraft, prepare, or approve all).
+    private func postLocked(_ postID: String) -> Bool {
+        isBusy("approveAll") || ["approve:", "reject:", "redraft:", "prepare:"].contains { isBusy($0 + postID) }
+    }
+
     private func lostWords(_ what: String) -> String {
         "Your desktop did not confirm \(what). It may already have it. Check again reads your desktop; nothing is sent twice."
     }
 
     func approve(_ postID: String) async -> MakeStudioOutcome {
+        guard !postLocked(postID) else { return .busy }
         guard let id = Int(postID) else { return .refused("That post is not on your desktop.") }
         return await perform("approve:" + postID, done: "Approved. It is in Publishing, ready to prepare.",
                              notApplied: "Your desktop still has this post waiting. It was not approved.",
@@ -830,6 +836,7 @@ final class MakeStudioLive {
         let ids = studio.scoped(studio.posts).filter { $0.publish == .awaiting }.map(\.id)
         let numbers = ids.compactMap { Int($0) }
         guard !numbers.isEmpty, numbers.count == ids.count else { return .refused("There are no posts waiting to approve.") }
+        guard !ids.contains(where: { postLocked($0) }) else { return .busy }
         return await perform("approveAll", done: "Approved.", notApplied: "Your desktop still has those posts waiting. None was approved.",
                              lostLine: lostWords("the approvals"),
                              verify: { [weak self] in
@@ -849,6 +856,7 @@ final class MakeStudioLive {
     }
 
     func reject(_ postID: String, reason: String) async -> MakeStudioOutcome {
+        guard !postLocked(postID) else { return .busy }
         guard let id = Int(postID) else { return .refused("That post is not on your desktop.") }
         return await perform("reject:" + postID, done: "Rejected.", notApplied: "Your desktop still has this post as it was. It was not rejected.",
                              lostLine: lostWords("the rejection"),
@@ -868,6 +876,7 @@ final class MakeStudioLive {
     }
 
     func redraft(_ postID: String) async -> MakeStudioOutcome {
+        guard !postLocked(postID) else { return .busy }
         guard let id = Int(postID) else { return .refused("That post is not on your desktop.") }
         return await perform("redraft:" + postID, done: "Sent back for a new draft.", notApplied: "Your desktop still has this post as rejected.",
                              lostLine: lostWords("the redraft"),
@@ -879,6 +888,7 @@ final class MakeStudioLive {
     }
 
     func prepare(_ postID: String) async -> MakeStudioOutcome {
+        guard !postLocked(postID) else { return .busy }
         guard let id = Int(postID) else { return .refused("That post is not on your desktop.") }
         return await perform("prepare:" + postID, done: "Prepared. Open its checklist to see what is ready.",
                              notApplied: "Your desktop did not prepare this post.",
