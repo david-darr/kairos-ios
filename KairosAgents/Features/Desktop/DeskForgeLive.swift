@@ -1075,31 +1075,40 @@ final class DeskForgeLive {
         if startChecks.values.contains(where: { $0.phase == .checking }) {
             return DeskForgeStartNotice(text: Self.startChecking, sessionID: nil, checking: true)
         }
+        // A found session is shown before an ended check, so it is never cleared unseen.
         for check in startChecks.values {
-            switch check.phase {
-            case .found(let id):
+            if case .found(let id) = check.phase {
                 return DeskForgeStartNotice(text: "Your desktop made the session after all. Your task is in its box, not sent yet.", sessionID: id, checking: false)
-            case .over(let checked):
+            }
+        }
+        for check in startChecks.values {
+            if case .over(let checked) = check.phase {
                 let text = checked
                     ? "This phone did not see a new session for this task. It may still be in the making on your desktop. Check this project's sessions before you start again."
                     : "This phone could not read your desktop to check. Look at this project's sessions in Kairos on your desktop before you start again."
                 return DeskForgeStartNotice(text: text, sessionID: nil, checking: false)
-            case .checking:
-                break
             }
         }
         return nil
     }
 
+    /// Clears the one notice on screen: a found session first, else one ended check. Never the others.
     func clearStartNotice() {
-        startChecks = startChecks.filter { $0.value.phase == .checking }
+        if let key = startChecks.first(where: { if case .found = $0.value.phase { return true } else { return false } })?.key {
+            startChecks[key] = nil
+            return
+        }
+        if let key = startChecks.first(where: { if case .over = $0.value.phase { return true } else { return false } })?.key {
+            startChecks[key] = nil
+        }
     }
 
     private func watchStart(_ start: DeskForgeStart, before: Set<String>, account: String) {
         let key = Self.startKey(start)
         let projectID = start.projectID
         let task = start.task.trimmingCharacters(in: .whitespacesAndNewlines)
-        clearStartNotice()
+        // Ended checks go; a found session stays until the person opens it.
+        startChecks = startChecks.filter { if case .over = $0.value.phase { return false } else { return true } }
         startChecks[key] = DeskForgeStartCheck(start: start, phase: .checking)
         startTasks[key]?.cancel()
         startTasks[key] = Task { [weak self] in
@@ -1723,7 +1732,10 @@ struct DeskForgeRequestText: View {
         if case .string(let text) = value { return text.isEmpty ? nil : text }
         let object = foundation(value)
         // A bare number or true/false is not a JSON document on its own: show it as it is.
-        guard JSONSerialization.isValidJSONObject(object) else { return "\(object)" }
+        guard JSONSerialization.isValidJSONObject(object) else {
+            if let number = object as? Double, number == number.rounded(), abs(number) < 1e15 { return String(Int64(number)) }
+            return "\(object)"
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
               let text = String(data: data, encoding: .utf8) else { return nil }
         return text

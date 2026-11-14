@@ -838,7 +838,8 @@ struct DeskForgeSessionView: View {
     private func takeSettledSend() {
         guard let text = live.settledSend(sessionID) else { return }
         if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text.trimmingCharacters(in: .whitespacesAndNewlines) { draft = "" }
-        notice = nil
+        // Only the send's own line goes: a line about an approval or an undo stays.
+        if notice?.contains("did not confirm this message") == true { notice = nil }
         live.clearSettledSend(sessionID)
     }
 
