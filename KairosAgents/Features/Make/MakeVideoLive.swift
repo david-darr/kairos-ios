@@ -29,6 +29,9 @@ nonisolated final class MakeVideoIDs {
     private var counter = 0
     private var trackID: String?
     private(set) var taken: Set<String> = []
+    /// The highest number handed to a beat or clip the person made. New numbers always go above it.
+    private(set) var highestMinted = MakeVideoIDs.firstNew - 1
+    private var beatSnapshots: [Int: (raw: [String: Any], filled: EditorBeat)] = [:]
 
     func handle(_ scope: String, _ id: String) -> Int {
         let key = scope + ":" + id
@@ -61,8 +64,26 @@ nonisolated final class MakeVideoIDs {
         taken.insert(id)
         handles[scope + ":" + id] = handle
         names[handle] = id
+        if handle >= MakeVideoIDs.firstNew { highestMinted = max(highestMinted, handle) }
         return id
     }
+
+    /// The number the next new beat or clip gets: above every number in use.
+    var nextNew: Int { max(MakeVideoIDs.firstNew, highestMinted + 1) }
+
+    /// Keep a copy of the beat a duplicate was made from, as the desktop held it then, so the duplicate can still be
+    /// saved if the desktop later deletes the original.
+    func snapshotBeat(copy handle: Int, of source: Int, doc: MakeVideoDoc?, filled: EditorState) {
+        if let did = desktopID(source),
+           let raw = doc?.beats.first(where: { MakeVideoWire.str($0["id"]) == did }),
+           let was = filled.beats.first(where: { $0.id == source }) {
+            beatSnapshots[handle] = (raw, was)
+        } else if let inherited = beatSnapshots[source] {
+            beatSnapshots[handle] = inherited
+        }
+    }
+
+    func beatSnapshot(_ handle: Int) -> (raw: [String: Any], filled: EditorBeat)? { beatSnapshots[handle] }
 
     /// An overlay track the person adds when the video has none.
     func newTrackID() -> String {
@@ -146,7 +167,7 @@ nonisolated enum MakeVideoCodec {
             clips = MakeVideoWire.dicts(track["clips"]).compactMap { clip($0, ids: ids) }
         }
         return EditorState(beats: beats, clips: clips, trackHidden: hidden, trackLocked: locked, trackRemoved: removed,
-                           nextID: MakeVideoIDs.firstNew)
+                           nextID: ids.nextNew)
     }
 
     static func chapters(_ doc: MakeVideoDoc, ids: MakeVideoIDs) -> [(beat: Int, title: String)] {
@@ -399,6 +420,12 @@ nonisolated enum MakeVideoCodec {
                 copy["id"] = did
                 apply(beat, over: from, to: &copy)
                 beats.append(copy)
+            } else if let snap = ids.beatSnapshot(beat.id) {
+                // The beat it was copied from is gone from the desktop: save from the copy kept when it was made.
+                var copy = snap.raw
+                copy["id"] = did
+                apply(beat, over: snap.filled, to: &copy)
+                beats.append(copy)
             }
         }
         raw["beats"] = beats
@@ -605,6 +632,8 @@ nonisolated struct MakeVideoDraft {
     var state: EditorState
     var filled: EditorState
     var ids: MakeVideoIDs
+    /// The desktop's version the draft was made on.
+    var version: Int
 }
 
 /// Unsaved edits kept in memory when the person leaves a video without saving (a swipe back, a tab change), and
@@ -670,12 +699,18 @@ final class MakeVideoLive {
     // Narration
     var narrating = false
     var narrationLine: String?
+    /// A narrate answer never arrived and no line is spoken yet: Narrate stays off until the desktop settles it.
+    var narrateUnconfirmed = false
+    var narrateChecking = false
 
     // Ask Kairos
     var review: MakeVideoReviewDTO?
     var askBusy = false
     var askLine: String?
     var askUnconfirmed = false
+    /// 15 minutes passed since the lost request with no new run: asking again is possible, through a confirm.
+    var askMayRepeat = false
+    var askChecking = false
     var latestRun: MakeVideoRunDTO?
 
     @ObservationIgnored var readSerial = 0
@@ -685,6 +720,9 @@ final class MakeVideoLive {
     @ObservationIgnored var pendingSent: (state: EditorState, version: Int)?
     @ObservationIgnored var knownJobs: Set<String> = []
     @ObservationIgnored var knownRuns: Set<String> = []
+    @ObservationIgnored var narrateMissing = 0
+    @ObservationIgnored var askSince: Date?
+    @ObservationIgnored var askWatchTask: Task<Void, Never>?
     @ObservationIgnored var restoreFrom: Int?
     /// The person chose to leave without saving: nothing is kept for next time.
     @ObservationIgnored var abandoned = false
@@ -693,6 +731,9 @@ final class MakeVideoLive {
         self.videoID = videoID
         account = MakeVideoLive.accountKey
     }
+
+    /// The start of the line shown when a re-read failed. A later successful read clears it.
+    static let unreadPrefix = "Your desktop could not be read"
 
     /// Which desktop and which account the live video belongs to, or "sample".
     static var accountKey: String {
@@ -726,7 +767,7 @@ extension EditorModel {
 
     var canSaveLive: Bool {
         guard let live, live.phase == .ready else { return false }
-        return isDirty && !live.saving && live.unconfirmed == nil && !live.restoring
+        return isDirty && !live.saving && live.unconfirmed == nil && !live.restoring && !live.checking && live.pendingSent == nil
     }
 
     /// A long video's chapters point at beats, so adding, moving and removing beats stays on the desktop.
@@ -786,6 +827,7 @@ extension EditorModel {
     func enterLive() {
         pause()
         live?.watchTask?.cancel()
+        live?.askWatchTask?.cancel()
         playhead = 0
         selection = nil
         sheet = nil
@@ -799,7 +841,7 @@ extension EditorModel {
             next.pendingDraft = draft
         }
         live = next
-        state = EditorState(beats: [], clips: [], nextID: MakeVideoIDs.firstNew)
+        state = EditorState(beats: [], clips: [], nextID: next.ids.nextNew)
         comments = []
         chapters = []
         resetHistory()
@@ -807,6 +849,7 @@ extension EditorModel {
 
     func leaveLive() {
         live?.watchTask?.cancel()
+        live?.askWatchTask?.cancel()
         live = nil
         confirm = nil
         sheet = nil
@@ -849,7 +892,7 @@ extension EditorModel {
                     live.phase = .failed("This video could not be read from your desktop. " + error.plainWords)
                 } else {
                     live.renderLine = nil
-                    live.saveProblem = "Your desktop could not be read. " + error.plainWords
+                    live.saveProblem = MakeVideoLive.unreadPrefix + ". " + error.plainWords
                 }
                 return false
             }
@@ -863,11 +906,19 @@ extension EditorModel {
         let filledNew = MakeVideoCodec.state(doc, ids: live.ids)
         var merged: MakeVideoMerge?
         var restored = false
+        var draftDropped = false
         if let draft = live.pendingDraft {
             live.pendingDraft = nil
-            let result = MakeVideoCodec.rebase(base: draft.filled, theirs: filledNew, mine: draft.state)
-            merged = result
-            restored = !result.state.sameContent(filledNew)
+            if draft.version == doc.version {
+                let result = MakeVideoCodec.rebase(base: draft.filled, theirs: filledNew, mine: draft.state)
+                merged = result
+                restored = !result.state.sameContent(filledNew)
+            } else {
+                // The desktop has a newer version than the one the draft was made on: never lay it over that.
+                state = filledNew
+                resetHistory()
+                draftDropped = true
+            }
         } else if live.doc == nil || dropEdits {
             state = filledNew
             resetHistory()
@@ -883,6 +934,10 @@ extension EditorModel {
                 live.notice = "Your unsaved changes from before are back."
             }
         }
+        if draftDropped { live.notice = "This video changed on your desktop, so the unsaved edits from before were not kept." }
+        // A successful read settles an earlier "could not be read" line.
+        if live.saveProblem?.hasPrefix(MakeVideoLive.unreadPrefix) == true { live.saveProblem = nil }
+        if live.narrateUnconfirmed, doc.unspokenLines < live.narrateMissing { live.narrateUnconfirmed = false }
         live.doc = doc
         live.filled = filledNew
         live.overlayTrackID = MakeVideoCodec.overlayTrackID(doc)
@@ -913,7 +968,10 @@ extension EditorModel {
     func liveMint(_ scope: String, prefix: String, handle: Int, copying source: Int? = nil) {
         guard let live else { return }
         _ = live.ids.mint(scope, prefix: prefix, handle: handle)
-        if let source { live.ids.setCopy(handle, from: source) }
+        if let source {
+            live.ids.setCopy(handle, from: source)
+            if scope == "beat" { live.ids.snapshotBeat(copy: handle, of: source, doc: live.doc, filled: live.filled) }
+        }
     }
 
     // MARK: Saving
@@ -982,16 +1040,21 @@ extension EditorModel {
 
     /// The saved project is what the editor is filled from now. Edits made while the save was on its way stay.
     private func adoptSaved(_ saved: MakeVideoDoc, sent: EditorState, live: MakeVideoLive) {
-        let savedState = MakeVideoCodec.state(saved, ids: live.ids)
+        // A late answer never moves the remembered version backwards.
+        var newest = saved
+        if let current = live.doc, current.version > saved.version { newest = current }
+        let savedState = MakeVideoCodec.state(newest, ids: live.ids)
         let merged = MakeVideoCodec.rebase(base: sent, theirs: savedState, mine: state)
         state = merged.state
         resetHistory()
-        live.doc = saved
+        live.doc = newest
         live.filled = savedState
-        live.seconds = saved.seconds
+        live.seconds = newest.seconds
         live.pendingSent = nil
         live.unconfirmed = nil
-        title = saved.title
+        live.saveProblem = nil
+        title = newest.title
+        discardDraft()
     }
 
     /// A save whose answer never arrived: read the desktop and compare it with what was SENT.
@@ -1047,7 +1110,7 @@ extension EditorModel {
     /// Keep unsaved edits for the next time this video is opened.
     func stashDraft() {
         guard let live, live.phase == .ready, !live.abandoned, isDirty else { return }
-        MakeVideoDrafts.put(MakeVideoDraft(state: state, filled: live.filled, ids: live.ids), account: live.account, video: projectID)
+        MakeVideoDrafts.put(MakeVideoDraft(state: state, filled: live.filled, ids: live.ids, version: live.doc?.version ?? 0), account: live.account, video: projectID)
     }
 
     func discardDraft() {
@@ -1293,7 +1356,10 @@ extension EditorModel {
         }
     }
 
-    func stopWatching() { live?.watchTask?.cancel() }
+    func stopWatching() {
+        live?.watchTask?.cancel()
+        live?.askWatchTask?.cancel()
+    }
 
     func stopRenderLive() async {
         guard let live, let job = live.job, job.isActive, !live.stopping, stillLive(live) else { return }
@@ -1333,7 +1399,28 @@ extension EditorModel {
     var canNarrateLive: Bool {
         guard let live, live.phase == .ready, let doc = live.doc else { return false }
         return doc.unspokenLines > 0 && !isDirty && !live.narrating && !live.saving && live.unconfirmed == nil
-            && live.job?.isActive != true
+            && live.job?.isActive != true && !live.narrateUnconfirmed && !live.narrateChecking
+    }
+
+    /// Read the video again after a narrate answer that never arrived. Narrate comes back on only when a line
+    /// shows as spoken.
+    func checkNarrateLive() async {
+        guard let live, live.narrateUnconfirmed, !live.narrateChecking, !live.narrating, stillLive(live) else { return }
+        live.narrateChecking = true
+        defer { live.narrateChecking = false }
+        do {
+            let read = try await liveClient().makeVideoGet(projectID)
+            guard stillLive(live) else { return }
+            fill(from: read, live: live, dropEdits: false)
+            if read.unspokenLines < live.narrateMissing {
+                live.narrationLine = "Your desktop did not confirm it, but \(live.narrateMissing - read.unspokenLines) of the lines are spoken now."
+            } else {
+                live.narrationLine = "No new line is spoken yet. Your desktop may still be working, so Narrate stays off. Check again in a minute."
+            }
+        } catch {
+            guard stillLive(live) else { return }
+            live.narrationLine = "Your desktop could not be read to check. Narrate stays off. Try again in a moment."
+        }
     }
 
     /// Speak the lines not spoken yet. One at a time; an answer that never arrives is settled by reading the video.
@@ -1360,6 +1447,9 @@ extension EditorModel {
                 live.narrationLine = "Your desktop did not speak the lines. " + Self.serverText(error)
                 return
             }
+            // Narrate stays off until the desktop shows a spoken line.
+            live.narrateMissing = missing
+            live.narrateUnconfirmed = true
             do {
                 let read = try await liveClient().makeVideoGet(projectID)
                 guard stillLive(live) else { return }
@@ -1367,10 +1457,10 @@ extension EditorModel {
                 if read.unspokenLines < missing {
                     live.narrationLine = "Your desktop did not confirm it, but \(missing - read.unspokenLines) of the lines are spoken now."
                 } else {
-                    live.narrationLine = "Your desktop did not confirm it, and no new line is spoken yet. It may still be working. Check again in a minute before asking again."
+                    live.narrationLine = "Your desktop did not confirm it, and no new line is spoken yet. It may still be working, so Narrate stays off. Check again in a minute."
                 }
             } catch {
-                live.narrationLine = "Your desktop did not confirm it, and it could not be read to check. Check the video before asking again."
+                live.narrationLine = "Your desktop did not confirm it, and it could not be read to check. Narrate stays off until it can be."
             }
         }
     }
@@ -1379,14 +1469,28 @@ extension EditorModel {
 
     /// Ask is on while nothing is unsaved: Kairos works on the version saved on the desktop.
     var canAskLive: Bool {
-        guard let live, live.phase == .ready else { return false }
-        return !isDirty && !live.askBusy && !live.askUnconfirmed && live.unconfirmed == nil && !live.saving
+        guard let live else { return false }
+        return askReady && !live.askUnconfirmed
     }
 
-    /// One model turn on the desktop. No request id exists, so it is sent once; after a lost answer the runs are
-    /// read, and it is never sent again from here.
-    func askLive(_ text: String, includeComments: Bool) async {
-        guard let live, canAskLive, stillLive(live) else { return }
+    private var askReady: Bool {
+        guard let live, live.phase == .ready else { return false }
+        return !isDirty && !live.askBusy && !live.askChecking && live.unconfirmed == nil && !live.saving
+    }
+
+    /// After 15 minutes with no new run on the desktop, the person may ask again, only through a confirm.
+    var canAskAgain: Bool {
+        guard let live else { return false }
+        return askReady && live.askUnconfirmed && live.askMayRepeat
+    }
+
+    static let askRepeatAfter: TimeInterval = 15 * 60
+    static let askRepeatDetail = "Your first request may still be running on your desktop, and it may be charged twice. Ask again only if you are sure it is not."
+
+    /// One model turn on the desktop. No request id exists, so it is sent once. After a lost answer the runs are
+    /// read about every 15 seconds, and it is sent again only after 15 minutes with no new run and a confirm (`again`).
+    func askLive(_ text: String, includeComments: Bool, again: Bool = false) async {
+        guard let live, again ? canAskAgain : canAskLive, stillLive(live) else { return }
         let request = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let openComments = includeComments ? (live.review?.comments.filter(\.open).map(\.id) ?? []) : []
         guard !request.isEmpty || !openComments.isEmpty else { return }
@@ -1401,6 +1505,12 @@ extension EditorModel {
         live.askLine = nil
         live.writeSerial += 1
         let before = live.knownRuns
+        let sentAt = Date()
+        if again {
+            live.askUnconfirmed = false
+            live.askMayRepeat = false
+            live.askWatchTask?.cancel()
+        }
         defer {
             live.writeSerial += 1
             live.askBusy = false
@@ -1419,7 +1529,23 @@ extension EditorModel {
                 return
             }
             live.askUnconfirmed = true
+            live.askMayRepeat = false
+            live.askSince = sentAt
             await settleAsk(live: live, before: before)
+            watchAsk()
+        }
+    }
+
+    /// While the answer is unconfirmed and the editor is showing, read the runs about every 15 seconds.
+    func watchAsk() {
+        guard let live, live.askUnconfirmed else { return }
+        live.askWatchTask?.cancel()
+        live.askWatchTask = Task { [weak self, weak live] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled, let self, let live, self.stillLive(live), live.askUnconfirmed else { return }
+                await self.checkAskLive(quiet: true)
+            }
         }
     }
 
@@ -1433,39 +1559,46 @@ extension EditorModel {
             if let fresh = read.runs.first(where: { !before.contains($0.id) }) {
                 live.latestRun = fresh
                 live.askUnconfirmed = false
+                live.askMayRepeat = false
+                live.askSince = nil
                 live.askLine = "Your desktop did not confirm the answer, but Kairos did reply there."
                 await afterRun(live: live)
             } else {
-                live.askLine = "Your desktop did not confirm the answer, and no new reply is there yet. Kairos may still be working. Check again in a minute before asking again."
+                live.askLine = "Your desktop did not confirm the answer, and no new reply is there yet. Kairos may still be working. Ask stays off, and this screen keeps checking."
             }
         } catch {
             guard stillLive(live) else { return }
-            live.askLine = "Your desktop did not confirm the answer, and it could not be read to check. Check again before asking again."
+            live.askLine = "Your desktop did not confirm the answer, and it could not be read to check. Ask stays off, and this screen keeps trying."
         }
     }
 
-    /// Read the desktop again after Kairos may have changed the video.
-    func checkAskLive() async {
-        guard let live, live.askUnconfirmed, !live.askBusy, stillLive(live) else { return }
-        live.askBusy = true
-        defer { live.askBusy = false }
+    /// Read the desktop again after Kairos may have changed the video. Finding nothing new never turns Ask back on:
+    /// only a new run does, or 15 minutes without one (then a confirm is needed to ask again).
+    func checkAskLive(quiet: Bool = false) async {
+        guard let live, live.askUnconfirmed, !live.askBusy, !live.askChecking, stillLive(live) else { return }
+        live.askChecking = true
+        defer { live.askChecking = false }
         do {
             let read = try await liveClient().makeVideoReview(projectID)
-            guard stillLive(live) else { return }
+            guard stillLive(live), live.askUnconfirmed else { return }
             live.review = read
             if let fresh = read.runs.first(where: { !live.knownRuns.contains($0.id) }) {
                 live.knownRuns.formUnion(read.runs.map(\.id))
                 live.latestRun = fresh
                 live.askUnconfirmed = false
+                live.askMayRepeat = false
+                live.askSince = nil
                 live.askLine = "Kairos did reply on your desktop."
                 await afterRun(live: live)
+            } else if let since = live.askSince, Date().timeIntervalSince(since) >= Self.askRepeatAfter {
+                live.askMayRepeat = true
+                live.askLine = "Nothing new has shown up on your desktop in 15 minutes. You can ask again, but the first request may still be running there."
             } else {
-                live.askUnconfirmed = false
-                live.askLine = "Nothing new arrived on your desktop. You can ask again."
+                live.askLine = "Nothing new has shown up on your desktop yet. Kairos may still be working. Ask stays off until it does."
             }
         } catch {
             guard stillLive(live) else { return }
-            live.askLine = "Your desktop could not be read to check. Try again in a moment."
+            if !quiet { live.askLine = "Your desktop could not be read to check. Try again in a moment." }
         }
     }
 
@@ -1615,6 +1748,12 @@ struct EditorLiveTools: View {
                 }
                 if let text = live.narrationLine {
                     HintLine(text: text, symbol: "info.circle")
+                }
+                if live.narrateUnconfirmed {
+                    MakePillButton(title: live.narrateChecking ? "Checking" : "Check again", symbol: "arrow.clockwise") {
+                        Task { await model.checkNarrateLive() }
+                    }
+                    .editorEnabled(!live.narrateChecking && !live.narrating)
                 }
                 if model.isDirty {
                     HintLine(text: "Save your changes to render, ask Kairos or narrate. They work on the saved version.", symbol: "arrow.down.doc")
@@ -1876,6 +2015,7 @@ struct EditorLiveAskSheet: View {
     @State private var text = ""
     @State private var includeComments = false
     @State private var undoRun: MakeVideoRunDTO?
+    @State private var askAgain = false
 
     private let ideas = ["Make the opening shorter", "Warmer caption for this beat", "Punchier last line", "Say the sale ends Friday"]
 
@@ -1929,8 +2069,14 @@ struct EditorLiveAskSheet: View {
                     .foregroundStyle(Palette.inkFaint)
                 if let line = live?.askLine { HintLine(text: line, symbol: "info.circle") }
                 if live?.askUnconfirmed == true {
-                    MakePillButton(title: "Check again", symbol: "arrow.clockwise") { Task { await model.checkAskLive() } }
-                        .editorEnabled(live?.askBusy != true)
+                    MakePillButton(title: live?.askChecking == true ? "Checking" : "Check again", symbol: "arrow.clockwise") {
+                        Task { await model.checkAskLive() }
+                    }
+                    .editorEnabled(live?.askBusy != true && live?.askChecking != true)
+                    if live?.askMayRepeat == true {
+                        MakePillButton(title: "Ask again anyway", symbol: "exclamationmark.triangle") { askAgain = true }
+                            .editorEnabled(model.canAskAgain && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || includeComments))
+                    }
                 }
                 if let run = live?.latestRun ?? live?.review?.runs.first {
                     runCard(run)
@@ -1940,6 +2086,12 @@ struct EditorLiveAskSheet: View {
             .padding(.bottom, 24)
         }
         .interactiveDismissDisabled(live?.askBusy == true)
+        .sheet(isPresented: $askAgain) {
+            ConfirmSheet(title: "Ask again?", detail: EditorModel.askRepeatDetail, confirm: "Ask again") {
+                let request = text
+                Task { await model.askLive(request, includeComments: includeComments, again: true) }
+            }
+        }
         .sheet(item: $undoRun) { run in
             ConfirmSheet(title: "Undo this change?",
                          detail: "Your desktop takes back what Kairos changed in this run, unless you changed it again since.",

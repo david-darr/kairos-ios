@@ -87,7 +87,12 @@ struct VideoEditorScreen: View {
             model.stopWatching()
             model.stashDraft()
         }
-        .onAppear { model.watchJob() }
+        .onAppear {
+            model.watchJob()
+            model.watchAsk()
+            // The editor is in memory again, so a draft kept when it was left is older than what is on screen.
+            model.discardDraft()
+        }
     }
 
     private var renderTitle: String {
@@ -930,7 +935,12 @@ final class EditorModel {
         let end = clip.end
         switch edge {
         case .start:
-            let newStart = frame(min(max(room.prevEnd, clip.start + delta), end - oneFrame))
+            // A video clip on the desktop moves its `in` point by the same amount as its start, so the footage
+            // stays where it was and cannot start before the beginning of the file.
+            let followsFile = live != nil && clip.kind == .video
+            let earliest = followsFile ? max(room.prevEnd, clip.start - clip.source) : room.prevEnd
+            let newStart = frame(min(max(earliest, clip.start + delta), end - oneFrame))
+            if followsFile { clip.source = max(0, clip.source + (newStart - clip.start)) }
             clip.start = newStart
             clip.length = end - newStart
         case .end:
