@@ -1851,7 +1851,7 @@ struct YouBotsDiscordScreen: View {
             ConfirmSheet(title: "Set #\(change.label) to \(change.to.title.lowercased())?",
                          detail: Self.changeWords(change),
                          confirm: "Set to \(change.to.title)", danger: false) {
-                Task { await live.setOverrideMode(bot: change.bot, entry: change.id, mode: change.to.rawValue) }
+                Task { await live.setOverrideMode(bot: change.bot, entry: change.id, mode: change.to.rawValue, saidAllowedUser: change.hasAllowedUser) }
             }
         }
         .sheet(item: $removing) { entry in

@@ -1046,6 +1046,9 @@ final class YouBotsLive {
                              // The person is told what the desktop has now, so a second Save carries their edits on top of it.
                              if edits.days != nil { housekeepingEdits.fromDays = base.days }
                              if edits.megabytes != nil { housekeepingEdits.fromMegabytes = wholeNow }
+                             // The form's base moves to what was just read too, so the lowered-value confirm is judged
+                             // against the desktop's real value at once, whether or not the read after this lands.
+                             showHousekeeping(base)
                              throw YouBotsNotSent(plain: "Housekeeping changed on your desktop (it now keeps \(base.days) days and \(wholeNow) MB), so nothing was sent. Your edits are kept here. Save again to use them.")
                          }
                          let next = YouBotsHousekeeping(days: edits.days ?? base.days,
@@ -1065,13 +1068,19 @@ final class YouBotsLive {
 
     /// Set one channel override to silent, or from open to normal. The phone never sets one to open, and never makes a
     /// silent one answer again: on the desktop that can open the channel to everyone when the bot has no allowed user.
-    func setOverrideMode(bot: String, entry: String, mode: String) async {
+    /// `saidAllowedUser` is what the confirm the person read said about the bot's allowed user.
+    func setOverrideMode(bot: String, entry: String, mode: String, saidAllowedUser: Bool) async {
         guard mode == "normal" || mode == "silent" else { return }
         guard let cachedBot = discordBots.first(where: { $0.id == bot }),
               let current = cachedBot.overrides.first(where: { $0.id == entry }), current.mode != mode else { return }
         let moved = "#\(current.label) changed on your desktop, so nothing was sent. What your desktop has now is shown."
+        let userMoved = "\(cachedBot.name)'s allowed user changed on your desktop, so nothing was sent. What your desktop has now is shown."
         guard current.mode == "open" || mode == "silent" else {
             notice[.discord] = moved
+            return
+        }
+        guard mode != "normal" || cachedBot.hasAllowedUser == saidAllowedUser else {
+            notice[.discord] = userMoved
             return
         }
         await change(.discord, key: "override:" + entry,
@@ -1092,9 +1101,11 @@ final class YouBotsLive {
                                let now = freshBot.overrides.first(where: { $0.id == entry }) else {
                              throw YouBotsNotSent(plain: "This override is not on your desktop any more, so nothing was sent.")
                          }
-                         guard now.mode == current.mode, now.mode == "open" || mode == "silent",
-                               mode != "normal" || freshBot.hasAllowedUser == cachedBot.hasAllowedUser else {
+                         guard now.mode == current.mode, now.mode == "open" || mode == "silent" else {
                              throw YouBotsNotSent(plain: moved)
+                         }
+                         guard mode != "normal" || freshBot.hasAllowedUser == saidAllowedUser else {
+                             throw YouBotsNotSent(plain: userMoved)
                          }
                          try await client.youBotsOverrideMode(bot: bot, entry: entry, mode: mode)
                      },
@@ -1137,9 +1148,11 @@ final class YouBotsLive {
                                let now = freshBot.overrides.first(where: { $0.id == entry }) else {
                              throw YouBotsNotSent(plain: "This override is not on your desktop any more, so nothing was sent.")
                          }
-                         guard now.mode != "silent", now.mode == current.mode,
-                               freshBot.hasAllowedUser == cachedBot.hasAllowedUser else {
+                         guard now.mode != "silent", now.mode == current.mode else {
                              throw YouBotsNotSent(plain: moved)
+                         }
+                         guard freshBot.hasAllowedUser == cachedBot.hasAllowedUser else {
+                             throw YouBotsNotSent(plain: "\(cachedBot.name)'s allowed user changed on your desktop, so nothing was sent. What your desktop has now is shown.")
                          }
                          try await client.youBotsRemoveOverride(bot: bot, entry: entry)
                      },
