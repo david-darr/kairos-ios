@@ -1281,7 +1281,7 @@ struct YouVoiceModelsScreen: View {
     // MARK: A connection
 
     private func connectionRow(_ connection: YouVoiceModel) -> some View {
-        let testing = live.testingID != nil
+        let testing = live.testingID != nil || live.testBlocked.contains(connection.id)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Image(systemName: connection.kind.symbol)

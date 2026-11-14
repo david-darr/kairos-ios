@@ -861,6 +861,8 @@ extension VoiceEngineChoice {
 struct YouVoiceVoiceScreen: View {
     private let live = YouVoiceLive.shared
     @State private var confirming: YouVoiceNamed?
+    /// The account the open paid-voice question was asked for; a confirm for another account does nothing.
+    @State private var confirmAccount = ""
     @State private var askUseDesktop = false
 
     var body: some View {
@@ -889,13 +891,23 @@ struct YouVoiceVoiceScreen: View {
             NoteText(text: "Keys, voice servers, downloads and the graphics card setup are changed on the desktop.", symbol: "desktopcomputer")
         }
         .animation(Motion.snappy, value: live.engines)
-        .task(id: YouVoiceLive.connectionKey) { await live.readVoice() }
+        .task(id: YouVoiceLive.connectionKey) {
+            confirming = nil
+            askUseDesktop = false
+            await live.readVoice()
+        }
+        .onChange(of: YouVoiceLive.accountKey) { _, _ in
+            confirming = nil
+            askUseDesktop = false
+        }
         .sheet(item: $confirming) { named in
             let choice = VoiceEngineChoice.allCases.first { $0.wireName == named.id }
             ConfirmSheet(title: "Use \(choice?.title ?? "this voice")?",
                          detail: paidWords(choice),
                          confirm: "Use \(choice?.title ?? "it")",
                          danger: false) {
+                // Dropped when the account changed since the question was asked.
+                guard confirmAccount == YouVoiceLive.accountKey else { return }
                 Task { await live.setChoice(named.id) }
             }
         }
@@ -911,9 +923,15 @@ struct YouVoiceVoiceScreen: View {
     private func paidWords(_ choice: VoiceEngineChoice?) -> String {
         switch choice {
         case .gptLive?:
-            return "GPT-Live may use your paid OpenAI account, about 5 cents a minute during calls and Open Mic. Your voice goes to OpenAI."
+            if let connection = live.gptLiveConnection() {
+                if let owner = connection.sharedBy {
+                    return "GPT-Live would run on \"\(connection.name)\" on your desktop, a connection shared with you by \(owner). It uses their OpenAI account and may cost them money. Your voice goes to OpenAI."
+                }
+                return "GPT-Live would run on your connection \"\(connection.name)\" on your desktop. It uses that OpenAI account and may cost money during calls and Open Mic. Your voice goes to OpenAI."
+            }
+            return "GPT-Live would run on an OpenAI connection on your desktop, and it may cost money during calls and Open Mic. Your voice goes to OpenAI."
         case .elevenLabs?:
-            return "ElevenLabs may use your paid ElevenLabs account, about 4 cents a minute of speech. Every spoken sentence goes to ElevenLabs."
+            return "ElevenLabs uses the ElevenLabs account set up on your desktop and may cost money. Every spoken sentence goes to ElevenLabs."
         default:
             return ""
         }
@@ -960,6 +978,7 @@ struct YouVoiceVoiceScreen: View {
             if choice == .kairos {
                 Task { await live.setChoice(choice.wireName) }
             } else {
+                confirmAccount = YouVoiceLive.accountKey
                 confirming = YouVoiceNamed(id: choice.wireName)
             }
         } label: {

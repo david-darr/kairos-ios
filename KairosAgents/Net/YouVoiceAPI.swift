@@ -172,6 +172,8 @@ nonisolated struct YouVoiceKairosDTO: Decodable, Sendable {
 nonisolated struct YouVoiceGPTLiveDTO: Decodable, Sendable {
     /// An OpenAI connection exists on the desktop that offers GPT-Live.
     var available: JSONValue?
+    /// The connection GPT-Live runs on (it can be one another account shares with you).
+    var endpointId: JSONValue?
     var pricePerMinute: JSONValue?
 }
 
@@ -216,12 +218,13 @@ nonisolated struct YouVoiceEngineStateDTO: Decodable, Sendable {
     }
 }
 
-/// One saved pronunciation (core/pronunciations.py). `phonemes` is the desktop's own spelling of the sound; it is
-/// sent back for a word the person did not touch, so the sound is kept.
+/// One saved pronunciation (core/pronunciations.py). `phonemes` is the desktop's own spelling of the sound. `typed` says
+/// the person typed those phonemes themselves; only then are they sent back, the way the desktop's own page does.
 nonisolated struct YouVoicePronDTO: Decodable, Sendable {
     var word: String
     var say: JSONValue?
     var phonemes: JSONValue?
+    var typed: JSONValue?
 }
 
 /// GET and PUT /api/voice-engines/pronunciations: {"items": [...]}, read word by word.
@@ -610,10 +613,16 @@ extension APIClient {
     }
 
     /// PUT /api/voice-engines/pronunciations: replaces the whole list. Each row: word, say, and phonemes ("" when the
-    /// desktop should work them out from the respelling).
+    /// desktop should work them out from the respelling). The desktop runs its respelling engine inside this call (its
+    /// first load is slow), so it gets 120 seconds.
     func youVoiceSavePronunciations(_ rows: [(word: String, say: String, phonemes: String)]) async throws -> YouVoicePronListDTO {
         let items: [[String: Any]] = rows.map { ["word": $0.word, "say": $0.say, "phonemes": $0.phonemes] }
-        return try await request("PUT", "/api/voice-engines/pronunciations", json: ["items": items])
+        let data = try await youVoiceRaw("PUT", "/api/voice-engines/pronunciations", json: ["items": items], timeout: 120)
+        do {
+            return try KJSON.decode(YouVoicePronListDTO.self, from: data)
+        } catch {
+            throw APIError.unreadable("pronunciations")
+        }
     }
 
     func youVoiceSpeech() async throws -> YouVoiceSpeechDTO {
@@ -709,7 +718,7 @@ nonisolated enum YouVoiceSamples {
 
     static let pronunciations = #"""
     {"items": [{"word": "Siobhan", "say": "shi-VAWN", "phonemes": "ʃɪvˈɔːn"}, {"word": "Kairos", "say": "KY-ross", "phonemes": "kˈIɹɑs"},
-               {"say": "no word"}]}
+               {"say": "no word"}, {"word": "Nguyen", "say": "", "phonemes": "wˈɪn", "typed": true}]}
     """#
 
     static let speech = #"""
@@ -795,7 +804,7 @@ nonisolated enum YouVoiceSamples {
             let read = try KJSON.decode(YouVoiceEngineStateDTO.self, from: YouVoiceSamples.engines)
             let state = YouVoiceLive.enginesState(from: read)
             guard state.choice == "kairos", state.quality == "standard", state.hdVoice == "iris",
-                  state.kokoroReady == true, state.gptAvailable, state.gptPrice == 0.05, !state.elevenHasKey,
+                  state.kokoroReady == true, state.gptAvailable, state.gptPrice == 0.05, state.gptEndpointID == "112233445566", !state.elevenHasKey,
                   state.hdInstalled, state.hdReady, state.hdVoices.map(\.id) == ["iris", "ryan"],
                   state.serverHost == nil else { throw SampleMismatch("engines") }
             var server = read
@@ -809,16 +818,32 @@ nonisolated enum YouVoiceSamples {
         DecodeCheck("youvoice.pronunciations") {
             let read = try KJSON.decode(YouVoicePronListDTO.self, from: YouVoiceSamples.pronunciations)
             let items = YouVoiceLive.pronItems(from: read)
-            guard items.count == 2, read.skipped == 1, items[0].word == "Siobhan", items[0].say == "shi-VAWN",
-                  items[0].phonemes == "ʃɪvˈɔːn" else { throw SampleMismatch("pronunciations") }
+            guard items.count == 3, read.skipped == 1, items[0].word == "Siobhan", items[0].say == "shi-VAWN",
+                  items[0].phonemes == "ʃɪvˈɔːn", !items[0].typed, items[2].typed else { throw SampleMismatch("pronunciations") }
             let rows = items.map(YouVoiceLive.pronRow)
             let same = YouVoiceLive.sameList(items, items)
             var edited = items
             edited[1].say = "KAI-ross"
-            guard rows.map(\.id) == ["w:siobhan", "w:kairos"], same, !YouVoiceLive.sameList(items, edited) else {
+            var typedChange = items
+            typedChange[2].typed = false
+            guard rows.map(\.id) == ["w:siobhan", "w:kairos", "w:nguyen"], same, !YouVoiceLive.sameList(items, edited),
+                  !YouVoiceLive.sameList(items, typedChange) else {
                 throw SampleMismatch("pronunciation rows")
             }
-            return "2 words, 1 skipped, same list and changed list told apart"
+            // An untouched list sends what the desktop's own page sends: phonemes only for a typed word, and its
+            // respelling box empty.
+            let untouched = YouVoiceLive.pronSend(zip(rows, items).map { (id: $0.id, item: $1) }, filled: items)
+            guard untouched.map(\.phonemes) == ["", "", "wˈɪn"], untouched.map(\.say) == ["shi-VAWN", "KY-ross", ""] else {
+                throw SampleMismatch("untouched pronunciations")
+            }
+            // A respelling the person changed, on a typed word, is sent as a respelling.
+            var changed = items
+            changed[2].say = "WIN"
+            let resent = YouVoiceLive.pronSend(zip(rows, changed).map { (id: $0.id, item: $1) }, filled: items)
+            guard resent[2].phonemes.isEmpty, resent[2].say == "WIN", resent[0].phonemes.isEmpty else {
+                throw SampleMismatch("changed typed word")
+            }
+            return "3 words, 1 skipped, typed read, untouched list sent as the desktop page sends it"
         },
         DecodeCheck("youvoice.speech") {
             let read = try KJSON.decode(YouVoiceSpeechDTO.self, from: YouVoiceSamples.speech)

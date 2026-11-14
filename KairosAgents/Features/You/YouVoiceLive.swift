@@ -67,6 +67,8 @@ nonisolated struct YouVoiceEngines: Hashable, Sendable {
     /// An OpenAI connection that offers GPT-Live is already set up on the desktop.
     var gptAvailable: Bool
     var gptPrice: Double?
+    /// The connection GPT-Live runs on, to be named before it is chosen.
+    var gptEndpointID: String?
     /// An ElevenLabs key is already saved on the desktop (a yes or no).
     var elevenHasKey: Bool
     var elevenPrice: Double?
@@ -102,6 +104,8 @@ nonisolated struct YouVoicePronItem: Hashable, Sendable {
     var word: String
     var say: String
     var phonemes: String
+    /// The desktop marks the phonemes as typed by the person (not worked out from the respelling).
+    var typed = false
 }
 
 /// One line of the pronunciation form. A word the desktop gave keeps its id (`w:` and the word in lower case) even when
@@ -155,6 +159,8 @@ final class YouVoiceLive {
     private(set) var skippedModels = 0
     private(set) var tests: [String: YouVoiceTest] = [:]
     private(set) var testingID: String?
+    /// Connections whose last test got no answer: no second test (a second paid turn) until the models are read again.
+    private(set) var testBlocked: Set<String> = []
     private(set) var autoCompact: Bool?
     /// "auto", "off" or a connection id; nil until read.
     private(set) var helperChoice: String?
@@ -187,6 +193,7 @@ final class YouVoiceLive {
     @ObservationIgnored private var writing: [YouVoicePart: Int] = [:]
     @ObservationIgnored private var stats: [String: YouVoiceStat] = [:]
     @ObservationIgnored private var player: AVAudioPlayer?
+    @ObservationIgnored private var sampleAudioOn = false
 
     private init() {}
 
@@ -207,13 +214,13 @@ final class YouVoiceLive {
     func followConnection() {
         let key = Self.accountKey
         guard key != liveAccount else { return }
-        player?.stop()
-        player = nil
+        endSampleAudio()
         loads = [:]
         models = []
         skippedModels = 0
         tests = [:]
         testingID = nil
+        testBlocked = []
         autoCompact = nil
         helperChoice = nil
         engines = nil
@@ -257,6 +264,7 @@ final class YouVoiceLive {
         case .models:
             await read(part, "Your models could not be read.", fetch: { try await $0.youVoiceModels() }) { dto in
                 self.skippedModels = dto.skipped
+                self.testBlocked = []
                 self.models = Self.modelRows(from: dto, stats: self.stats)
             }
         case .stats:
@@ -306,6 +314,8 @@ final class YouVoiceLive {
 
     func readVoice() async {
         await read(.engines)
+        // The paid-voice question names the connection GPT-Live runs on, so the models are read too.
+        await read(.models)
         await read(.pronunciations)
         await read(.speech)
         await read(.freeVoice)
@@ -400,6 +410,7 @@ final class YouVoiceLive {
             choice: choice, quality: dto.quality?.string ?? "standard", hdVoice: dto.hdVoice?.string ?? "iris",
             kokoroReady: dto.kairos?.kokoroReady?.bool, kokoroReason: dto.kairos?.kokoroReason?.string ?? "",
             gptAvailable: dto.gptLive?.available?.bool ?? false, gptPrice: dto.gptLive?.pricePerMinute?.double,
+            gptEndpointID: dto.gptLive?.endpointId?.string,
             elevenHasKey: dto.elevenlabs?.hasKey?.bool ?? false, elevenPrice: dto.elevenlabs?.pricePer1k?.double,
             serverHost: host,
             hdOffered: dto.hd?.offered?.bool ?? false, hdInstalled: dto.hd?.installed?.bool ?? false,
@@ -419,7 +430,31 @@ final class YouVoiceLive {
     }
 
     nonisolated static func pronItems(from dto: YouVoicePronListDTO) -> [YouVoicePronItem] {
-        dto.items.map { YouVoicePronItem(word: $0.word, say: $0.say?.string ?? "", phonemes: $0.phonemes?.string ?? "") }
+        dto.items.map {
+            YouVoicePronItem(word: $0.word, say: $0.say?.string ?? "", phonemes: $0.phonemes?.string ?? "",
+                             typed: $0.typed?.bool ?? false)
+        }
+    }
+
+    /// What a save sends, row by row, the way the desktop's own page does: phonemes only for a word whose phonemes the
+    /// person typed (the desktop marks it typed and the person did not change its respelling), with the respelling box
+    /// empty; an empty value for every other row, so the desktop works the sound out from the respelling again and an
+    /// untouched word is never turned into a typed one. `rows` are the form's lines with the id of the word each came from.
+    nonisolated static func pronSend(_ rows: [(id: String, item: YouVoicePronItem)], filled: [YouVoicePronItem]) -> [YouVoicePronItem] {
+        var was: [String: YouVoicePronItem] = [:]
+        for item in filled where was["w:" + item.word.lowercased()] == nil { was["w:" + item.word.lowercased()] = item }
+        return rows.map { row in
+            if let before = was[row.id], before.typed, !before.phonemes.isEmpty, row.item.say == before.say {
+                return YouVoicePronItem(word: row.item.word, say: "", phonemes: before.phonemes, typed: true)
+            }
+            return YouVoicePronItem(word: row.item.word, say: row.item.say, phonemes: "")
+        }
+    }
+
+    /// The connection GPT-Live runs on, by name, when the models are read (and the person it is shared by).
+    func gptLiveConnection() -> (name: String, sharedBy: String?)? {
+        guard let id = engines?.gptEndpointID, let found = models.first(where: { $0.id == id }) else { return nil }
+        return (found.name, found.sharedBy)
     }
 
     nonisolated static func pronRow(_ item: YouVoicePronItem) -> YouVoicePronRow {
@@ -470,7 +505,13 @@ final class YouVoiceLive {
                        send: (APIClient, String) async throws -> Void,
                        check: (APIClient) async throws -> Bool?,
                        done: () -> Void = {}) async {
+        // The connection is checked before anything shows or is sent: a tap on a screen of another account or desktop
+        // sends nothing (the old account's state is dropped, and the screen reads the new one).
         guard isLive else { return }
+        guard Self.accountKey == liveAccount else {
+            followConnection()
+            return
+        }
         guard !busy.contains(key), unconfirmed[part]?.contains(key) != true else { return }
         let account = liveAccount
         busy.insert(key)
@@ -486,7 +527,10 @@ final class YouVoiceLive {
             }
         }
         do {
-            try await send(try liveClient(), account)
+            try ensureLive(account)
+            let client = try liveClient()
+            try ensureLive(account)
+            try await send(client, account)
             guard stillLive(account) else { return }
             done()
             Haptics.success()
@@ -512,7 +556,13 @@ final class YouVoiceLive {
                 done()
                 YouStore.shared.say(words.done)
             case false?:
-                notice[part] = "Your desktop did not confirm this, and it has not happened there. " + Self.words(error)
+                if let api = error as? APIError, case .offline = api {
+                    // No answer in time: the change may still be on its way. Never "has not happened".
+                    unconfirmed[part, default: []].insert(key)
+                    notice[part] = "Your desktop did not confirm this in time, and it may still be saving. What it has now is shown. Look again in a moment before trying again."
+                } else {
+                    notice[part] = "Your desktop did not confirm this, and it has not happened there. " + Self.words(error)
+                }
             case nil:
                 unconfirmed[part, default: []].insert(key)
                 notice[part] = "Your desktop did not confirm this, and it could not be checked. Look again in a moment before trying again."
@@ -525,7 +575,7 @@ final class YouVoiceLive {
     /// Ask the desktop for one tiny model turn. One at a time; nothing on the desktop changes.
     func test(_ id: String) async {
         followConnection()
-        guard isLive, testingID == nil, models.contains(where: { $0.id == id }) else { return }
+        guard isLive, testingID == nil, !testBlocked.contains(id), models.contains(where: { $0.id == id }) else { return }
         let account = liveAccount
         testingID = id
         tests[id] = .testing
@@ -551,7 +601,8 @@ final class YouVoiceLive {
             if Self.wasRefused(error) {
                 tests[id] = .failed(Self.words(error))
             } else {
-                tests[id] = .unconfirmed("The desktop did not answer. The test may still be running there.")
+                tests[id] = .unconfirmed("The desktop did not answer. The test may still be running there. Test stays off for this connection until your models are read again.")
+                testBlocked.insert(id)
             }
             Haptics.thud()
         }
@@ -639,16 +690,30 @@ final class YouVoiceLive {
         followConnection()
         guard isLive, previewing == nil, engines?.hdReady == true else { return }
         let account = liveAccount
+        guard CallCenter.shared.session == nil else {
+            notice[.engines] = "You are on a call"
+            return
+        }
         previewing = voice
         notice[.engines] = nil
+        var mine: AVAudioPlayer?
+        defer { if let mine, player === mine { endSampleAudio() } }
         do {
             let data = try await liveClient().youVoiceHDPreview(voice)
             guard stillLive(account) else { previewing = nil; return }
+            // A call may have started while the sample loaded: leave its audio alone.
+            guard CallCenter.shared.session == nil else {
+                previewing = nil
+                notice[.engines] = "You are on a call"
+                return
+            }
+            let sample = try AVAudioPlayer(data: data)
             let session = AVAudioSession.sharedInstance()
             try? session.setCategory(.playback, mode: .default)
             try? session.setActive(true)
-            let sample = try AVAudioPlayer(data: data)
+            sampleAudioOn = true
             player = sample
+            mine = sample
             sample.prepareToPlay()
             sample.play()
             try? await Task.sleep(for: .seconds(sample.duration + 0.3))
@@ -666,6 +731,19 @@ final class YouVoiceLive {
         }
     }
 
+    /// Stop the sample and give the audio session back, so the person's music can carry on. A call's own audio is
+    /// never touched.
+    private func endSampleAudio() {
+        player?.stop()
+        player = nil
+        if sampleAudioOn {
+            sampleAudioOn = false
+            if CallCenter.shared.session == nil {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
+        }
+    }
+
     // MARK: Pronunciations
 
     /// The form is the person's while they have edits; otherwise it follows the desktop.
@@ -673,13 +751,17 @@ final class YouVoiceLive {
 
     var pronUnconfirmed: Bool { unconfirmed[.pronunciations]?.contains("pron") == true }
 
-    private func cleanedPron() -> [YouVoicePronItem] {
+    private func cleanedPronRows() -> [(id: String, item: YouVoicePronItem)] {
         pronRows.compactMap { row in
             let word = row.word.trimmingCharacters(in: .whitespaces)
             let say = row.say.trimmingCharacters(in: .whitespaces)
             if word.isEmpty && say.isEmpty && row.phonemes.isEmpty { return nil }
-            return YouVoicePronItem(word: word, say: say, phonemes: row.phonemes)
+            return (id: row.id, item: YouVoicePronItem(word: word, say: say, phonemes: row.phonemes))
         }
+    }
+
+    private func cleanedPron() -> [YouVoicePronItem] {
+        cleanedPronRows().map { $0.item }
     }
 
     /// Words and respellings only: the desktop works the sound out itself.
@@ -724,21 +806,19 @@ final class YouVoiceLive {
     /// list the form was filled from, nothing is sent and the person's edits stay. Otherwise the filled list plus the
     /// person's edits is sent.
     func savePronunciations() async {
-        let rows = cleanedPron()
+        let rows = cleanedPronRows()
         guard pronDirty, !pronUnconfirmed else { return }
         guard rows.count <= 200 else {
             notice[.pronunciations] = "Keep the list to 200 words."
             return
         }
-        let phonemesKept = Dictionary(pronFilled.map { ($0.word + "\u{1}" + $0.say, $0.phonemes) }, uniquingKeysWith: { first, _ in first })
-        if rows.contains(where: { ($0.word.isEmpty != $0.say.isEmpty) && $0.phonemes.isEmpty }) {
+        // Phonemes go only for a word whose phonemes the person typed and did not change; every other row sends none, so
+        // the desktop works the sound out from the respelling again (the same as its own page).
+        let sent = Self.pronSend(rows, filled: pronFilled)
+        if sent.contains(where: { ($0.word.isEmpty != $0.say.isEmpty) && $0.phonemes.isEmpty }) {
             notice[.pronunciations] = "Fill in both sides of each word."
             Haptics.thud()
             return
-        }
-        let sent = rows.map { item -> YouVoicePronItem in
-            // A word the person did not touch keeps the sound the desktop worked out for it.
-            YouVoicePronItem(word: item.word, say: item.say, phonemes: phonemesKept[item.word + "\u{1}" + item.say] ?? "")
         }
         let filled = pronFilled
         let box = YouVoiceSentBox()
