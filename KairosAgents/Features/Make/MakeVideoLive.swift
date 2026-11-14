@@ -1237,6 +1237,7 @@ extension EditorModel {
             guard stillLive(live) else { return }
             live.review = read
             live.knownRuns.formUnion(read.runs.map(\.id))
+            if live.askLine == Self.repliesUnread { live.askLine = nil }
             comments = read.comments.filter(\.open).map {
                 EditorComment(id: live.ids.handle("comment", $0.id), time: $0.t, text: $0.text)
             }
@@ -1244,7 +1245,7 @@ extension EditorModel {
             if error is CancellationError || Task.isCancelled { return }
             Connection.shared.note(error)
             if stillLive(live), live.review == nil, live.askLine == nil {
-                live.askLine = "Kairos's earlier replies could not be read from your desktop, so Ask is off for now. Leave this video and open it again to try once more."
+                live.askLine = Self.repliesUnread
             }
         }
     }
@@ -1540,6 +1541,7 @@ extension EditorModel {
         return askReady && live.askUnconfirmed && live.askMayRepeat
     }
 
+    static let repliesUnread = "Kairos's earlier replies could not be read from your desktop, so Ask is off for now. This screen tries again when you come back to it."
     static let askRepeatAfter: TimeInterval = 15 * 60
     static let askRepeatDetail = "Your first request may still be running on your desktop, and it may be charged twice. Ask again only if you are sure it is not."
 
@@ -1563,8 +1565,10 @@ extension EditorModel {
         // After "Ask again anyway" the first request may still reply: keep what was there before IT, and with the
         // same words wait for two new replies.
         let before = again ? live.askBefore : live.knownRuns
-        let need = again && request == live.askRequest ? live.askNeed + 1 : 1
+        let need = again && request == live.askRequest ? 2 : 1
         let sentAt = Date()
+        // The unconfirmed Ask this one replaces: put back if this one is refused or never leaves the phone.
+        let earlier = again ? MakeVideoAskStore.get(account: live.account, video: projectID) : nil
         if again {
             live.clearAsk()
             live.askWatchTask?.cancel()
@@ -1586,9 +1590,25 @@ extension EditorModel {
         } catch {
             Connection.shared.note(error)
             guard stillLive(live) else { return }
-            if Self.wasRefused(error) {
-                MakeVideoAskStore.clear(account: live.account, video: projectID)
-                live.askLine = "Kairos could not do that. " + Self.serverText(error)
+            // Refused, or it never left the phone: this request is certainly not running on the desktop.
+            let notSent = Self.neverSent(error)
+            if Self.wasRefused(error) || notSent {
+                if let earlier {
+                    // The earlier unconfirmed Ask is still open: it goes back as it was.
+                    MakeVideoAskStore.put(earlier, account: live.account, video: projectID)
+                    live.askUnconfirmed = true
+                    live.askSince = earlier.since
+                    live.askBefore = earlier.before
+                    live.askRequest = earlier.request
+                    live.askNeed = earlier.need
+                    live.askMayRepeat = Date().timeIntervalSince(earlier.since) >= Self.askRepeatAfter
+                    watchAsk()
+                } else {
+                    MakeVideoAskStore.clear(account: live.account, video: projectID)
+                }
+                live.askLine = notSent
+                    ? "Your request was not sent. " + APIError.plain(error)
+                    : "Kairos could not do that. " + Self.serverText(error)
                 return
             }
             live.askUnconfirmed = true
@@ -1600,6 +1620,22 @@ extension EditorModel {
             await settleAsk(live: live)
             watchAsk()
         }
+    }
+
+    /// The request never left the phone: no network, no such address, or no secure connection. (A timeout or a
+    /// dropped connection is not in this list: the desktop may have got the request.)
+    private static func neverSent(_ error: Error) -> Bool {
+        guard case .offline(let text)? = error as? APIError else { return false }
+        return text.hasPrefix("This iPhone is offline") || text.hasPrefix("That address could not be found")
+            || text.hasPrefix("A secure connection could not be made") || text.hasPrefix("The address must be a secure one")
+    }
+
+    /// How many of this Ask's replies the desktop has so far.
+    private static func askSeen(in runs: [MakeVideoRunDTO], live: MakeVideoLive) -> Int {
+        runs.filter { run in
+            !live.askBefore.contains(run.id)
+                && run.request.trimmingCharacters(in: .whitespacesAndNewlines) == live.askRequest
+        }.count
     }
 
     /// While the answer is unconfirmed and the editor is showing, read the runs about every 15 seconds.
@@ -1664,6 +1700,10 @@ extension EditorModel {
             } else if let since = live.askSince, Date().timeIntervalSince(since) >= Self.askRepeatAfter {
                 live.askMayRepeat = true
                 live.askLine = "Nothing new has shown up on your desktop in 15 minutes. You can ask again, but the first request may still be running there."
+            } else if Self.askSeen(in: read.runs, live: live) > 0 {
+                // Two requests with these words went out and one reply is here: the other may still be working.
+                live.knownRuns.formUnion(read.runs.map(\.id))
+                live.askLine = "One reply is on your desktop. Your other request with the same words may still be running, so Ask stays off until it replies or 15 minutes pass."
             } else {
                 live.askLine = "Nothing new has shown up on your desktop yet. Kairos may still be working. Ask stays off until it does."
             }
@@ -1736,7 +1776,7 @@ struct EditorLiveNote: View {
                 EmptyLine(text: "Pick a video from the list in Make.")
             case .failed(let text):
                 EmptyLine(text: text)
-                MakePillButton(title: "Try again", symbol: "arrow.clockwise") { Task { await model.loadLive() } }
+                MakePillButton(title: "Try again", symbol: "arrow.clockwise") { Task { await model.follow() } }
             }
         }
         .padding(14)
