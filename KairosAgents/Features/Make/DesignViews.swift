@@ -586,6 +586,8 @@ struct DesignWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.dataDetectorTypes = []
+        // Nothing this view loads, the token in a picture's address included, is written to disk.
+        configuration.websiteDataStore = WKWebsiteDataStore.nonPersistent()
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.isOpaque = false
         view.backgroundColor = .clear

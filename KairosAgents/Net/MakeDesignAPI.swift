@@ -289,7 +289,7 @@ nonisolated enum MakeDesignWire {
     static func guarded(page: String, origin: String, designID: String) -> String {
         let rule = "default-src 'none'; style-src 'unsafe-inline'; font-src \(origin)/api/design-fonts/; "
             + "img-src data: \(origin)/api/designs/\(designID)/; script-src 'none'; connect-src 'none'; "
-            + "form-action 'none'; frame-src 'none'; object-src 'none'"
+            + "form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"
         let meta = "<meta http-equiv=\"Content-Security-Policy\" content=\"\(rule)\">"
         guard let head = page.range(of: "<head>") else { return meta + page }
         return page.replacingCharacters(in: head, with: "<head>" + meta)

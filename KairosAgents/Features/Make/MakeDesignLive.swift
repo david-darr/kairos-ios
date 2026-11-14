@@ -230,6 +230,9 @@ nonisolated struct MakeDesignTurn: Equatable, Sendable {
     var turnID: String?
 
     var isOpen: Bool { state == .sending || state == .working || state == .waiting }
+    var isLost: Bool { if case .lost = state { return true } else { return false } }
+    /// No other message for this design may go while a turn is open or its send is unresolved.
+    var blocksSend: Bool { isOpen || isLost }
 }
 
 /// "Design with a model", kept so a retry carries on from where it stopped.
@@ -267,16 +270,21 @@ final class MakeDesignLive {
     @ObservationIgnored private var listSerial = 0
     @ObservationIgnored private var listWrites = 0
     @ObservationIgnored private var docSerial: [String: Int] = [:]
+    @ObservationIgnored private var versionsSerial: [String: Int] = [:]
     @ObservationIgnored private var writeSerial: [String: Int] = [:]
     @ObservationIgnored private var starting: MakeDesignStart?
     @ObservationIgnored private var startBusy = false
     @ObservationIgnored private var watchers: [String: Task<Void, Never>] = [:]
-    /// Board pages, in memory only and only while their design is open: their picture links carry a token.
-    @ObservationIgnored private var pages: [String: MakeDesignPage] = [:]
     @ObservationIgnored private var thumbs: [String: UIImage] = [:]
 
     private static let desktopChanged = "Your paired desktop changed. Try again."
     private static let sample = "This design is a sample."
+    private static let changedUnconfirmed = "Your paired desktop changed before this was confirmed. It may have reached the first desktop. Check it there."
+
+    /// After a request whose answer did not arrive, once the desktop or account is no longer the one it went to.
+    private static func lostAfterChange(_ error: Error) -> MakeDesignOutcome {
+        wasRefused(error) ? .failed(desktopChanged) : .unconfirmed(changedUnconfirmed)
+    }
 
     // MARK: Which desktop
 
@@ -316,8 +324,8 @@ final class MakeDesignLive {
         drafts = [:]
         starting = nil
         startBusy = false
-        pages = [:]
         thumbs = [:]
+        versionsSerial = [:]
         account = now
     }
 
@@ -427,17 +435,19 @@ final class MakeDesignLive {
     @discardableResult
     func loadVersions(_ id: String) async -> Bool {
         guard let account = ready() else { return false }
+        let mine = (versionsSerial[id] ?? 0) + 1
+        versionsSerial[id] = mine
         if versionsLoad[id] != .loaded { versionsLoad[id] = .loading }
         do {
             let read = try await liveClient().makeDesignVersions(id)
-            guard stillLive(account) else { return false }
+            guard stillLive(account), mine == versionsSerial[id] else { return false }
             versions[id] = read.compactMap(\.value).compactMap { MakeDesignVersionRow($0) }.sorted { $0.id > $1.id }
             versionsLoad[id] = .loaded
             return true
         } catch {
             if error is CancellationError || Task.isCancelled { return false }
             Connection.shared.note(error)
-            guard stillLive(account) else { return false }
+            guard stillLive(account), mine == versionsSerial[id] else { return false }
             if versionsLoad[id] != .loaded { versionsLoad[id] = .failed("The versions could not be read. " + error.plainWords) }
             return false
         }
@@ -456,11 +466,10 @@ final class MakeDesignLive {
         }
     }
 
-    /// One board as the desktop draws it, now (`stamp` is the design's version) or at a past version.
+    /// One board as the desktop draws it, now or at a past version. Not kept here: its picture links carry a
+    /// token, so the page lives only in the board frame that shows it.
     func page(_ id: String, board: String, stamp: Int, version: Int?) async throws -> MakeDesignPage {
         guard let account = ready() else { throw APIError.notPaired }
-        let key = "\(id)/\(board)/" + (version.map { "v\($0)" } ?? "now\(stamp)")
-        if let kept = pages[key] { return kept }
         let client = try liveClient()
         let data = try await client.makeDesignRender(id, board: board, version: version)
         guard stillLive(account) else { throw CancellationError() }
@@ -469,14 +478,7 @@ final class MakeDesignLive {
         if let port = client.base.port { origin += ":\(port)" }
         let page = MakeDesignPage(html: MakeDesignWire.guarded(page: String(decoding: data, as: UTF8.self), origin: origin, designID: id),
                                   base: base)
-        if pages.count > 48 { pages = [:] }
-        pages[key] = page
         return page
-    }
-
-    /// The design's screen closed: its pages go.
-    func forgetPages(_ id: String) {
-        pages = pages.filter { !$0.key.hasPrefix(id + "/") }
     }
 
     private func forgetElements(_ id: String) {
@@ -551,7 +553,10 @@ final class MakeDesignLive {
             thrown = error
         }
         writeSerial[id, default: 0] += 1
-        guard stillLive(account) else { return thrown == nil ? .saved : .failed(Self.desktopChanged) }
+        guard stillLive(account) else {
+            if let thrown { return Self.lostAfterChange(thrown) }
+            return .saved
+        }
         guard let failure = thrown else {
             await loadDoc(id, afterWrite: true)
             return .saved
@@ -564,7 +569,7 @@ final class MakeDesignLive {
         }
         // The change may have reached the desktop before the answer was lost: read what it really has.
         let read = await loadDoc(id, afterWrite: true)
-        guard stillLive(account) else { return .failed(Self.desktopChanged) }
+        guard stillLive(account) else { return .unconfirmed(Self.changedUnconfirmed) }
         if read, let landed, await landed() { return .saved }
         if read {
             return .unconfirmed("Your desktop did not confirm this. The design was read again and shows what it has now. Check it before trying again.")
@@ -598,10 +603,10 @@ final class MakeDesignLive {
         } catch {
             listWrites += 1
             Connection.shared.note(error)
-            guard stillLive(account) else { return (.failed(Self.desktopChanged), nil) }
+            guard stillLive(account) else { return (Self.lostAfterChange(error), nil) }
             if Self.wasRefused(error) { return (.failed("The design was not made. " + error.plainWords), nil) }
             let read = await loadList()
-            guard stillLive(account) else { return (.failed(Self.desktopChanged), nil) }
+            guard stillLive(account) else { return (.unconfirmed(Self.changedUnconfirmed), nil) }
             let fresh = rows.filter { row in
                 !before.contains(row.id) && (source == nil ? row.title == "Untitled design" : row.title.hasSuffix("(copy)"))
             }
@@ -773,7 +778,7 @@ final class MakeDesignLive {
     /// the same request id.
     func send(_ id: String, sessionID: String, message: String, references: [MakeDesignReference]) async -> MakeDesignOutcome {
         guard let account = ready() else { return .failed(Self.sample) }
-        if turns[id]?.isOpen == true { return .busy }
+        if turns[id]?.blocksSend == true { return .busy }
         open(id, sessionID: sessionID, message: message, references: references)
         return await deliver(id, account)
     }
@@ -787,17 +792,20 @@ final class MakeDesignLive {
         return await deliver(key, account)
     }
 
+    /// Give up on a message whose answer was lost. The person chooses this; nothing else clears it.
+    func discardTurn(_ key: String) {
+        guard let turn = turns[key], turn.isLost else { return }
+        turns[key] = nil
+        if key == Self.startKey { starting = nil }
+    }
+
     func clearTurn(_ key: String) {
         guard let turn = turns[key], !turn.isOpen else { return }
         turns[key] = nil
     }
 
     private func open(_ key: String, sessionID: String, message: String, references: [MakeDesignReference]) {
-        var requestID = UUID().uuidString.lowercased()
-        if let last = turns[key], case .lost = last.state, last.sessionID == sessionID, last.message == message,
-           last.references == references {
-            requestID = last.requestID
-        }
+        let requestID = UUID().uuidString.lowercased()
         turns[key] = MakeDesignTurn(sessionID: sessionID, message: message, references: references,
                                     requestID: requestID, state: .sending, turnID: nil)
     }
@@ -815,7 +823,7 @@ final class MakeDesignLive {
             return .saved
         } catch {
             Connection.shared.note(error)
-            guard stillLive(account) else { return .failed(Self.desktopChanged) }
+            guard stillLive(account) else { return Self.lostAfterChange(error) }
             if Self.wasRefused(error) {
                 let words = "Your message was not sent. " + error.plainWords
                 turn.state = .failed(words)
@@ -824,7 +832,7 @@ final class MakeDesignLive {
             }
             // The answer was lost. If the turn is running on the desktop, it arrived.
             let running = try? await liveClient().chatSnapshot().runs?[turn.sessionID]
-            guard stillLive(account) else { return .failed(Self.desktopChanged) }
+            guard stillLive(account) else { return .unconfirmed(Self.changedUnconfirmed) }
             if let run = running ?? nil, run.status == "processing", run.prompt == turn.message {
                 turn.turnID = run.turnId
                 turn.state = .working
@@ -842,6 +850,19 @@ final class MakeDesignLive {
     private func watch(_ key: String, _ account: String) {
         watchers[key]?.cancel()
         watchers[key] = Task { await watchTurn(key, account) }
+    }
+
+    /// The turn's screen went away: stop following it. The turn and what it says stay.
+    func pauseWatch(_ key: String) {
+        watchers[key]?.cancel()
+        watchers[key] = nil
+    }
+
+    /// The turn's screen is back: follow it again when it is still open on the desktop.
+    func resumeWatch(_ key: String) {
+        guard let account = ready(), watchers[key] == nil, let turn = turns[key],
+              turn.state == .working || turn.state == .waiting else { return }
+        watch(key, account)
     }
 
     private func refresh(_ key: String) async {
@@ -898,7 +919,7 @@ final class MakeDesignLive {
     func startWithModel(prompt: String, format: String) async -> MakeDesignOutcome {
         guard let account = ready() else { return .failed(Self.sample) }
         let key = Self.startKey
-        if turns[key]?.isOpen == true || startBusy { return .busy }
+        if turns[key]?.blocksSend == true || startBusy { return .busy }
         startBusy = true
         defer { if self.account == account { startBusy = false } }
         let message = prompt + "\n\nFormat: " + format
@@ -925,10 +946,10 @@ final class MakeDesignLive {
                 job.sessionID = try await liveClient().makeDesignChatStart(designID: nil, title: job.title).sessionId
             } catch {
                 Connection.shared.note(error)
-                guard stillLive(account) else { return .failed(Self.desktopChanged) }
+                guard stillLive(account) else { return Self.lostAfterChange(error) }
                 if Self.wasRefused(error) { return .failed("The design chat was not made. " + error.plainWords) }
                 let after = try? await liveClient().chatSessions()
-                guard stillLive(account) else { return .failed(Self.desktopChanged) }
+                guard stillLive(account) else { return .unconfirmed(Self.changedUnconfirmed) }
                 let fresh = (after ?? []).filter { !before.contains($0.id) && $0.title == job.title }
                 guard after != nil else {
                     return .unconfirmed("Your desktop did not confirm the new chat, and your chats could not be read to check. Look at your chats before trying again.")
@@ -1185,8 +1206,8 @@ struct MakeDesignListLive: View {
                         .disabled(live.creating)
                         .opacity(live.creating ? 0.5 : 1)
                     MakePillButton(title: "Design with a model", symbol: "sparkles", expand: true) { starting = true }
-                        .disabled(live.turns[MakeDesignLive.startKey]?.isOpen == true)
-                        .opacity(live.turns[MakeDesignLive.startKey]?.isOpen == true ? 0.5 : 1)
+                        .disabled(live.turns[MakeDesignLive.startKey]?.blocksSend == true)
+                        .opacity(live.turns[MakeDesignLive.startKey]?.blocksSend == true ? 0.5 : 1)
                 }
                 if live.creating { MakeDesignLine(text: "Making a design on your desktop...", working: true) }
                 if let notice { MakeDesignLine(text: notice, action: "OK") { self.notice = nil } }
@@ -1209,6 +1230,8 @@ struct MakeDesignListLive: View {
             live.follow()
             await live.loadList()
         }
+        .onAppear { live.resumeWatch(MakeDesignLive.startKey) }
+        .onDisappear { live.pauseWatch(MakeDesignLive.startKey) }
         .kScreen()
     }
 
@@ -1254,6 +1277,7 @@ struct MakeDesignListLive: View {
                 MakeDesignLine(text: words, action: "OK") { live.clearTurn(MakeDesignLive.startKey) }
             case .lost(let words):
                 MakeDesignLine(text: words, action: "Send again") { Task { _ = await live.sendAgain(MakeDesignLive.startKey) } }
+                QuietButton(title: "Discard") { live.discardTurn(MakeDesignLive.startKey) }
             }
         }
     }
@@ -1350,6 +1374,11 @@ struct MakeDesignStartLive: View {
     @State private var problem: String?
 
     private var blank: Bool { prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// The words of an unresolved send. While there is one, only "Send again" and "Discard" are offered.
+    private var lostWords: String? {
+        if let turn = MakeDesignLive.shared.turns[MakeDesignLive.startKey], case .lost(let words) = turn.state { return words }
+        return nil
+    }
 
     var body: some View {
         FittedSheet(estimate: 580) {
@@ -1357,7 +1386,7 @@ struct MakeDesignStartLive: View {
                 MakeSheetTitle(title: "Design with a model",
                                detail: "A model on your desktop builds the boards. That can use your plan or cost money.")
                 MakeField(label: "Describe it", text: $prompt, prompt: "A booking page for a bike shop", limit: 2000, lines: 3...6)
-                    .disabled(sending)
+                    .disabled(sending || lostWords != nil)
                 VStack(alignment: .leading, spacing: 6) {
                     SectionLabel(text: "Format")
                     HStack(spacing: 6) {
@@ -1369,16 +1398,25 @@ struct MakeDesignStartLive: View {
                                 Chip(text: item.rawValue, filled: format == item).frame(minHeight: 44).contentShape(Rectangle())
                             }
                             .buttonStyle(PressStyle())
-                            .disabled(sending)
+                            .disabled(sending || lostWords != nil)
                             .accessibilityAddTraits(format == item ? .isSelected : [])
                         }
                     }
                 }
                 if sending { MakeDesignLine(text: "Sending to your desktop...", working: true) }
-                if let problem { HintLine(text: problem, color: Palette.danger) }
-                GoldButton(title: problem == nil ? "Start" : "Try again") { start() }
-                    .disabled(blank || sending)
-                    .opacity(blank || sending ? 0.5 : 1)
+                if let problem, lostWords == nil { HintLine(text: problem, color: Palette.danger) }
+                if let lostWords {
+                    HintLine(text: lostWords, color: Palette.danger)
+                    GoldButton(title: "Send again") { sendAgain() }
+                        .disabled(sending)
+                        .opacity(sending ? 0.5 : 1)
+                    QuietButton(title: "Discard") { MakeDesignLive.shared.discardTurn(MakeDesignLive.startKey) }
+                        .disabled(sending)
+                } else {
+                    GoldButton(title: problem == nil ? "Start" : "Try again") { start() }
+                        .disabled(blank || sending)
+                        .opacity(blank || sending ? 0.5 : 1)
+                }
                 QuietButton(title: "Cancel") { dismiss() }
                     .disabled(sending)
             }
@@ -1386,6 +1424,27 @@ struct MakeDesignStartLive: View {
             .padding(.bottom, 18)
         }
         .interactiveDismissDisabled(sending)
+    }
+
+    private func sendAgain() {
+        guard !sending else { return }
+        sending = true
+        problem = nil
+        Task {
+            let outcome = await MakeDesignLive.shared.sendAgain(MakeDesignLive.startKey)
+            sending = false
+            switch outcome {
+            case .saved:
+                Haptics.success()
+                dismiss()
+            case .busy:
+                problem = "This message is already on its way."
+            case .failed(let text):
+                problem = text
+            case .unconfirmed:
+                break
+            }
+        }
     }
 
     private func start() {
@@ -1516,7 +1575,8 @@ struct MakeDesignScreenLive: View {
                 await live.loadDoc(designID)
                 begin()
             }
-            .onDisappear { live.forgetPages(designID) }
+            .onAppear { live.resumeWatch(designID) }
+            .onDisappear { live.pauseWatch(designID) }
             .kScreen()
     }
 
@@ -1761,7 +1821,7 @@ struct MakeDesignScreenLive: View {
     }
 
     private func composer(_ doc: MakeDesignDoc) -> some View {
-        let open = turn?.isOpen == true
+        let open = turn?.blocksSend == true
         let typed = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let canSend = sendChat != nil && !open && previewing == nil && (typed || !picks.isEmpty)
         return VStack(alignment: .leading, spacing: 6) {
@@ -1801,7 +1861,7 @@ struct MakeDesignScreenLive: View {
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1...5)
                     .padding(.vertical, 11)
-                    .disabled(turn?.state == .sending)
+                    .disabled(turn?.blocksSend == true)
                 Button { send() } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 16, weight: .bold))
@@ -1846,6 +1906,10 @@ struct MakeDesignScreenLive: View {
             case .lost(let words):
                 Text(words).foregroundStyle(Palette.danger)
                 Button("Send again") { Task { await finishSend(live.sendAgain(designID)) } }
+                    .font(KFont.ui(13, .semibold, relativeTo: .footnote))
+                    .foregroundStyle(Palette.goldText)
+                    .frame(minHeight: 44)
+                Button("Discard") { live.discardTurn(designID) }
                     .font(KFont.ui(13, .semibold, relativeTo: .footnote))
                     .foregroundStyle(Palette.goldText)
                     .frame(minHeight: 44)
@@ -1998,7 +2062,7 @@ struct MakeDesignScreenLive: View {
                 withAnimation(Motion.snappy) { picks.removeAll { $0.id == pick.id } }
             } else if picks.count >= 10 {
                 toast.say("At most 10 selections or comments per message")
-            } else if turn?.isOpen == true {
+            } else if turn?.blocksSend == true {
                 toast.say("Wait for the model to finish first.")
             } else {
                 Haptics.select()
@@ -2552,11 +2616,18 @@ struct MakeDesignTextLive: View {
     }
 
     private func save() {
-        guard !sending, changed, let element = target.element else { return }
+        guard !sending, changed, let element = target.element, let before = filled else { return }
         sending = true
         problem = nil
         let sent = text
         Task {
+            // The desktop replaces everything inside the element, so look again just before sending.
+            let now = await MakeDesignLive.shared.elementText(designID, board: target.board, element: element.id)
+            guard now == before else {
+                sending = false
+                problem = "This text changed on your desktop or could not be checked, so nothing was saved. Your words are kept here."
+                return
+            }
             let outcome = await MakeDesignLive.shared.setText(designID, board: target.board, element: element.id, text: sent)
             sending = false
             switch outcome {
@@ -2638,9 +2709,11 @@ struct MakeDesignTokensLive: View {
         filled = Dictionary(doc.tokens.map { ($0.id, $0.value) }, uniquingKeysWith: { first, _ in first })
     }
 
-    /// Back at the value the form was filled from (a colour in other letter case is the same colour): no edit.
+    /// Back at the value the desktop holds now (a colour in other letter case is the same colour): no edit.
+    /// Any other value is an edit, an older value the form was filled with included.
     private func edit(_ name: String, _ value: String) {
-        if value.lowercased() == filled?[name]?.lowercased() { edits[name] = nil } else { edits[name] = value }
+        let held = doc?.tokens.first(where: { $0.id == name })?.value
+        if value.lowercased() == held?.lowercased() { edits[name] = nil } else { edits[name] = value }
     }
 
     private func row(_ token: MakeDesignToken, changedHere: Bool) -> some View {
@@ -3066,7 +3139,8 @@ struct MakeDesignCommentsLive: View {
         let chosen = picks.intersection(openIDs)
         let working = live.busy.contains(designID)
         let turnOpen = live.turns[designID]?.isOpen == true
-        let canSend = !chosen.isEmpty && chosen.count <= 10 && chat != nil && !turnOpen && !working
+        let turnLost = live.turns[designID]?.isLost == true
+        let canSend = !chosen.isEmpty && chosen.count <= 10 && chat != nil && !turnOpen && !turnLost && !working
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 MakeSheetTitle(title: "Comments", detail: openIDs.count == 1 ? "1 open" : "\(openIDs.count) open")
@@ -3081,7 +3155,8 @@ struct MakeDesignCommentsLive: View {
                     EmptyLine(text: "Link this design to a chat to send comments to a model.")
                     MakePillButton(title: "Link a chat", symbol: "link") { onLink() }
                 } else {
-                    HintLine(text: turnOpen ? "Your desktop is working. A model is on the last message."
+                    HintLine(text: turnLost ? "Your last message was not confirmed. Send it again or discard it on the design first."
+                             : turnOpen ? "Your desktop is working. A model is on the last message."
                              : "Sending starts a model on your desktop. That can use your plan or cost money.")
                 }
                 if chosen.count > 10 { HintLine(text: "At most 10 comments per message.") }
