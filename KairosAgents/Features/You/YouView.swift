@@ -112,20 +112,26 @@ struct YouHome: View {
     @State private var pinFor: DeviceAccount?
     @State private var confirmSignOut = false
     @State private var signInFor: DeviceAccount?
+    @State private var confirmUnpair = false
+    @State private var goPair = false
+    private let live = YouAccessLive.shared
+
+    /// Paired with a desktop: the header is the paired account and Sign out is Unpair this phone.
+    private var paired: Bool { YouAccessLive.isPaired }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header.arrives(0)
-                switcher.arrives(1)
+                if paired { pairedSwitcher.arrives(1) } else { switcher.arrives(1) }
                 SearchField(prompt: "Search settings", text: $query).arrives(2)
 
                 if !query.isEmpty {
                     results
                 } else {
                     SettingsGroup {
-                        YouNavRow(title: "Your account", detail: "Colour, PIN, password and two-step sign-in", symbol: "person.crop.circle", to: .account)
-                        YouNavRow(title: "Your desktop", detail: "Connected on sample data", symbol: "desktopcomputer", to: .connection)
+                        YouNavRow(title: "Your account", detail: paired ? "Who this phone is paired as" : "Colour, PIN, password and two-step sign-in", symbol: "person.crop.circle", to: .account)
+                        YouNavRow(title: "Your desktop", detail: paired ? Connection.shared.statusLine : "Connected on sample data", symbol: "desktopcomputer", to: .connection)
                     }
                     .arrives(3)
 
@@ -138,9 +144,11 @@ struct YouHome: View {
                         .arrives(index + 4)
                     }
 
-                    SettingsGroup("Your tabs") {
-                        ForEach(SampleData.addedTabs) { tab in
-                            YouNavRow(title: tab.title, symbol: tab.symbol, to: .addedTab(tab.title))
+                    if !paired {
+                        SettingsGroup("Your tabs") {
+                            ForEach(SampleData.addedTabs) { tab in
+                                YouNavRow(title: tab.title, symbol: tab.symbol, to: .addedTab(tab.title))
+                            }
                         }
                     }
 
@@ -158,13 +166,26 @@ struct YouHome: View {
                         YouNavRow(title: "Help", detail: "What each part does, the version and updates", symbol: "questionmark.circle", to: .help)
                     }
 
-                    SettingsGroup {
-                        ActionRow(title: store.accounts.count > 1 ? "Sign out of \(store.current.name)" : "Sign out", symbol: "rectangle.portrait.and.arrow.right", tone: .danger) {
-                            confirmSignOut = true
+                    if paired {
+                        if let note = live.thisPhoneNotice {
+                            NoteText(text: note, symbol: "exclamationmark.triangle")
+                        }
+                        SettingsGroup {
+                            ActionRow(title: live.unpairingThisPhone ? "Unpairing..." : "Unpair this phone",
+                                      detail: "Ends this phone's access to your desktop. Your chats and bots stay there.",
+                                      symbol: "rectangle.portrait.and.arrow.right", tone: .danger) {
+                                if !live.unpairingThisPhone { confirmUnpair = true }
+                            }
+                        }
+                    } else {
+                        SettingsGroup {
+                            ActionRow(title: store.accounts.count > 1 ? "Sign out of \(store.current.name)" : "Sign out", symbol: "rectangle.portrait.and.arrow.right", tone: .danger) {
+                                confirmSignOut = true
+                            }
                         }
                     }
 
-                    Text("Kairos Agents 0.1 · sample data")
+                    Text(paired ? "Kairos Agents \(APIClient.appVersion)" : "Kairos Agents 0.1 · sample data")
                         .font(KFont.ui(13, relativeTo: .footnote))
                         .foregroundStyle(Palette.inkFaint)
                         .frame(maxWidth: .infinity)
@@ -190,9 +211,28 @@ struct YouHome: View {
         } message: {
             Text(signOutMessage)
         }
+        .sheet(isPresented: $confirmUnpair) {
+            ConfirmSheet(title: "Unpair this phone?",
+                         detail: "This phone's access to your desktop ends at once, and it goes back to sample data. Your chats and bots stay on your desktop. To use it again, pair it with a new code from your desktop.",
+                         confirm: "Unpair this phone") {
+                unpairThisPhone()
+            }
+        }
+        .navigationDestination(isPresented: $goPair) {
+            ConnectionScreen()
+        }
         .onAppear {
             if !startQuery.isEmpty { query = startQuery }
-            if startPin { pinFor = store.accounts.first { $0.pin != nil } }
+            if startPin && !paired { pinFor = store.accounts.first { $0.pin != nil } }
+        }
+    }
+
+    private func unpairThisPhone() {
+        Task {
+            if await live.unpairThisPhone() {
+                Haptics.success()
+                goPair = true
+            }
         }
     }
 
@@ -207,7 +247,7 @@ struct YouHome: View {
     }
 
     private var header: some View {
-        let account = store.current
+        let account = YouAccessLive.pairedAccount ?? store.current
         return VStack(spacing: 8) {
             AccountAvatar(account: account, size: 92, ring: 3)
                 .id(account.id)
@@ -215,7 +255,7 @@ struct YouHome: View {
             Text(account.name)
                 .font(KFont.display(36))
                 .foregroundStyle(Palette.ink)
-            Text("\(account.role) · on your desktop")
+            Text(paired ? "\(account.role) · this phone is paired as this account" : "\(account.role) · on your desktop")
                 .font(KFont.ui(14.5, relativeTo: .subheadline))
                 .foregroundStyle(Palette.inkFaint)
         }
@@ -262,6 +302,34 @@ struct YouHome: View {
             }
             .scrollIndicators(.hidden)
             .scrollClipDisabled()
+        }
+    }
+
+    /// Paired, the phone is one account: its chip, and Manage explains where accounts are changed.
+    private var pairedSwitcher: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                SectionLabel(text: "Account on this phone")
+                NavigationLink(value: YouRoute.accounts) {
+                    Text("Manage").font(KFont.ui(14, .medium, relativeTo: .footnote)).foregroundStyle(Palette.goldText)
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(PressStyle())
+            }
+            .padding(.leading, 6)
+            if let account = YouAccessLive.pairedAccount {
+                VStack(spacing: 6) {
+                    AccountAvatar(account: account, size: 56, ring: 3)
+                        .overlay { Circle().strokeBorder(Palette.ink.opacity(0.45), lineWidth: 1).padding(-5) }
+                    Text(account.name).font(KFont.ui(13, .semibold, relativeTo: .footnote)).foregroundStyle(Palette.ink).lineLimit(1)
+                    Text("Paired").font(KFont.ui(11.5, relativeTo: .caption2)).foregroundStyle(Palette.goldText)
+                }
+                .frame(minWidth: 64)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 6)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(account.name), the account this phone is paired as")
+            }
         }
     }
 
@@ -397,6 +465,11 @@ struct PinSheet: View {
     }
 
     private func submit() {
+        // Paired, no PIN is ever typed, kept or compared on the phone.
+        guard !YouAccessLive.isPaired else {
+            note = "Passwords, PINs and accounts are managed in Kairos on your desktop."
+            return
+        }
         guard triesLeft > 0 else { return }
         guard pin.count >= 4 else {
             note = "Enter the 4 to 8 digit PIN."
@@ -431,6 +504,13 @@ struct HelpScreen: View {
         ("square.grid.2x2", "Jump to", "Hold the tab bar to see every area. Drag one onto the bar to keep it there."),
         ("person.crop.circle", "You", "Accounts, every setting, the Tool Store and your added tabs."),
     ]
+
+    /// The paired desktop's own name and version, as /api/phone/session gave them.
+    private var desktopVersion: String {
+        guard let desktop = Connection.shared.desktop else { return "Not known yet" }
+        let name = desktop.serverName.isEmpty ? "Kairos" : desktop.serverName
+        return desktop.serverVersion.isEmpty ? "\(name), version not known" : "\(name) \(desktop.serverVersion)"
+    }
 
     var body: some View {
         SettingsPage("Help", subtitle: "How Kairos is laid out on your phone.") {
@@ -475,8 +555,13 @@ struct HelpScreen: View {
             }
 
             SettingsGroup("About", footer: "Kairos Agents is free and open source. It connects to your own Kairos desktop; nothing is bought here.") {
-                ValueRow(title: "This app", value: "0.1.0")
-                ValueRow(title: "Your desktop", value: "Kairos 2.3.0")
+                if YouAccessLive.isPaired {
+                    ValueRow(title: "This app", value: APIClient.appVersion)
+                    ValueRow(title: "Your desktop", value: desktopVersion)
+                } else {
+                    ValueRow(title: "This app", value: "0.1.0")
+                    ValueRow(title: "Your desktop", value: "Kairos 2.3.0")
+                }
                 RowLabel(title: "Updates", detail: "Your desktop updates itself the next time you quit it. This app updates through the App Store.", symbol: nil)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
