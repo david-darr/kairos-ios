@@ -663,7 +663,9 @@ nonisolated enum DeskChangesReaderText {
     static let maxWidth = 2000
 
     static func cut(_ text: String) -> (lines: [String], short: Bool) {
-        let pieces = text.split(separator: "\n", maxSplits: maxLines, omittingEmptySubsequences: false)
+        // "\r\n" is one Character in Swift, so a file with Windows line ends needs it named here.
+        let pieces = text.split(maxSplits: maxLines, omittingEmptySubsequences: false,
+                                whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" })
         var short = pieces.count > maxLines
         var lines: [String] = []
         lines.reserveCapacity(min(pieces.count, maxLines))
@@ -711,6 +713,9 @@ struct DeskChangesReaderView: View {
         .defaultScrollAnchor(.topLeading)
         .scrollIndicators(.hidden)
         .task(id: text) {
+            // Another text: the old lines go before the new ones are ready.
+            ready = false
+            lines = []
             let source = text
             let result = await Task.detached(priority: .userInitiated) { DeskChangesReaderText.cut(source) }.value
             if Task.isCancelled { return }

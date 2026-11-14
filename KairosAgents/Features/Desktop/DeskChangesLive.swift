@@ -410,16 +410,26 @@ final class DeskChangesLive {
     /// Otherwise a newer text is only kept aside in `newer`: what the editor shows never changes under the person.
     private func apply(_ dto: DeskChangesFileTextDTO, key: String, force: Bool) {
         edit(key) { state in
+            // A read in the background never takes the text away from under the person: it only says so.
+            let underEdit = state.load == .loaded && !force
             if dto.binary == true {
+                if underEdit {
+                    state.line = "This file changed on your desktop and can no longer be shown as text. Reload to see it."
+                    return
+                }
                 state.binary = true
                 state.filled = ""
                 state.draft = nil
                 state.load = .loaded
                 return
             }
-            state.binary = false
             guard let desk = DeskChangesFileText(dto) else {
+                if underEdit {
+                    state.line = "This file could not be checked against your desktop just now. Reload before you save."
+                    return
+                }
                 // No hash or mtime: it can be read, never saved.
+                state.binary = false
                 state.filled = dto.content ?? ""
                 state.hash = ""
                 state.mtime = ""
@@ -427,6 +437,7 @@ final class DeskChangesLive {
                 state.load = .loaded
                 return
             }
+            state.binary = false
             if state.load != .loaded || force {
                 // First fill, or the person asked for it: the desktop's text, with its hash and mtime.
                 state.adopt(desk)

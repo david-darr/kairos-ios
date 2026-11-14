@@ -330,11 +330,11 @@ nonisolated enum DeskChangesWire {
     /// `id_dsa`, or is `.npmrc`, `.netrc`, `.pgpass` or `.htpasswd`. A path with a `.ssh`, `.aws`, `.gnupg` or
     /// `.kube` folder is secret whole.
     static func isSecret(_ path: String) -> Bool {
-        let endings = [".env", ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".kdbx"]
+        let endings = [".env", ".pem", ".key", ".p8", ".p12", ".pfx", ".keystore", ".jks", ".kdbx", ".tfvars"]
         let starts = [".env", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]
-        let words = ["credential", "secret", "password", "passwd"]
-        let names = [".npmrc", ".netrc", ".pgpass", ".htpasswd"]
-        let folders = [".ssh", ".aws", ".gnupg", ".kube"]
+        let words = ["credential", "secret", "password", "passwd", "service-account", "service_account"]
+        let names = [".npmrc", ".netrc", ".pgpass", ".htpasswd", ".pypirc", "token.json", "tokens.json"]
+        let folders = [".ssh", ".aws", ".gnupg", ".kube", ".docker"]
         for part in path.split(whereSeparator: { $0 == "/" || $0 == "\\" }) {
             let name = part.lowercased()
             if folders.contains(name) || names.contains(name) { return true }
