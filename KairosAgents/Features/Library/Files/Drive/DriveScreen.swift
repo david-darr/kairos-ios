@@ -568,10 +568,18 @@ struct DriveScreen: View {
     @State private var toaster: FilesToaster
     @State private var ui: DriveUI
 
-    init(debug: DriveDebug = .none) {
+    /// `startFile` opens Drive straight on one file the store holds (its preview, or the folder itself), with Back
+    /// leading to the top of Drive; used by Search. A file the store does not hold, or one in another Google
+    /// account than the one Drive is browsing, is not opened, and Drive opens at its top as usual. Without it,
+    /// Drive opens exactly as before.
+    init(debug: DriveDebug = .none, startFile: String? = nil) {
         let toaster = FilesToaster()
+        let ui = DriveUI(store: DriveStore.shared, toaster: toaster, debug: debug)
+        if let startFile, let file = ui.store.file(startFile), file.account == ui.store.currentAccountID {
+            ui.path = [ui.route(for: file)]
+        }
         _toaster = State(initialValue: toaster)
-        _ui = State(initialValue: DriveUI(store: DriveStore.shared, toaster: toaster, debug: debug))
+        _ui = State(initialValue: ui)
     }
 
     var body: some View {

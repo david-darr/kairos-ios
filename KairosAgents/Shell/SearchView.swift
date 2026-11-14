@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Search finds chats, bots, files, notes, settings and areas, and runs actions
 /// ("new note", "call Kip", "pause the content team"). It stands in for the desktop command palette.
+/// Not paired, it lists the sample data below; paired, `SearchLiveView` lists the desktop's own.
 struct SearchView: View {
     var startQuery = ""
     @Environment(AppRouter.self) private var router
@@ -154,6 +155,15 @@ struct SearchView: View {
     }
 
     var body: some View {
+        // Paired: the desktop's own bots, chats and files (SearchLive.swift), never a sample item.
+        if Connection.shared.usesSampleData {
+            sampleBody
+        } else {
+            SearchLiveView(startQuery: startQuery)
+        }
+    }
+
+    private var sampleBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").font(.system(size: 16, weight: .medium)).foregroundStyle(Palette.inkFaint)

@@ -66,8 +66,19 @@ struct TeamScreen: View {
                         Task { await store.loadRoster() }
                     }
                 }
-            } else if isLive {
+            } else if isLive && live.mapNote == .loaded && live.department(teamID) == nil {
                 BotsPage("Team", live: true) { EmptyNote(text: "This team is not on your desktop.", symbol: "person.3") }
+            } else if isLive {
+                // The bots were read but the team map was not (that read can fail on its own): no proof the team is gone.
+                BotsPage("Team", live: true) {
+                    BotsLoadNote(state: live.mapNote == .loaded ? .failed("This team could not be read.") : (live.mapNote == .idle ? .loading : live.mapNote),
+                                 waiting: "Reading this team from your desktop.") {
+                        Task {
+                            await store.loadRoster()
+                            _ = await live.loadMap()
+                        }
+                    }
+                }
             } else {
                 BotsPage("Team") { EmptyNote(text: "This team was deleted.", symbol: "person.3") }
             }
