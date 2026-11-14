@@ -80,6 +80,10 @@ nonisolated struct YouBotsHousekeeping: Hashable, Sendable {
 nonisolated struct YouBotsHousekeepingEdits: Hashable, Sendable {
     var days: Int?
     var megabytes: Int?
+    /// The desktop's value at the moment the field was first edited. A later read never moves it, so a save can tell
+    /// that the desktop changed the same field under the open form.
+    var fromDays: Int?
+    var fromMegabytes: Int?
 
     var isEmpty: Bool { days == nil && megabytes == nil }
 }
@@ -630,8 +634,15 @@ final class YouBotsLive {
     private func showHousekeeping(_ fresh: YouBotsHousekeeping?) {
         housekeepingFilled = fresh
         guard let fresh else { return }
-        if housekeepingEdits.days == fresh.days { housekeepingEdits.days = nil }
-        if housekeepingEdits.megabytes == Self.wholeMegabytes(fresh.megabytes) { housekeepingEdits.megabytes = nil }
+        // What an edit was made from (`fromDays`, `fromMegabytes`) is never moved by a read.
+        if housekeepingEdits.days == fresh.days {
+            housekeepingEdits.days = nil
+            housekeepingEdits.fromDays = nil
+        }
+        if housekeepingEdits.megabytes == Self.wholeMegabytes(fresh.megabytes) {
+            housekeepingEdits.megabytes = nil
+            housekeepingEdits.fromMegabytes = nil
+        }
     }
 
     nonisolated static func wholeMegabytes(_ value: Double) -> Int { max(1, Int(value.rounded())) }
@@ -985,14 +996,31 @@ final class YouBotsLive {
 
     func editHousekeeping(days: Int? = nil, megabytes: Int? = nil) {
         guard let base = housekeepingFilled else { return }
-        if let days { housekeepingEdits.days = days == base.days ? nil : days }
-        if let megabytes { housekeepingEdits.megabytes = megabytes == Self.wholeMegabytes(base.megabytes) ? nil : megabytes }
+        if let days {
+            if days == base.days {
+                housekeepingEdits.days = nil
+                housekeepingEdits.fromDays = nil
+            } else {
+                if housekeepingEdits.days == nil { housekeepingEdits.fromDays = base.days }
+                housekeepingEdits.days = days
+            }
+        }
+        if let megabytes {
+            let whole = Self.wholeMegabytes(base.megabytes)
+            if megabytes == whole {
+                housekeepingEdits.megabytes = nil
+                housekeepingEdits.fromMegabytes = nil
+            } else {
+                if housekeepingEdits.megabytes == nil { housekeepingEdits.fromMegabytes = whole }
+                housekeepingEdits.megabytes = megabytes
+            }
+        }
     }
 
     /// Save housekeeping. The route resets a value it is not sent, so both are always sent: the desktop's own, read
     /// again just before, with only the person's edits on top.
     func saveHousekeeping() async {
-        guard !housekeepingEdits.isEmpty, let filled = housekeepingFilled else { return }
+        guard !housekeepingEdits.isEmpty, housekeepingFilled != nil else { return }
         let edits = housekeepingEdits
         let box = YouBotsSentBox()
         await change(.housekeeping, key: "housekeeping",
@@ -1008,11 +1036,17 @@ final class YouBotsLive {
                          guard let base = fresh else {
                              throw YouBotsNotSent(plain: "Your desktop's housekeeping could not be read in full, so nothing was sent.")
                          }
-                         // A field the person edited that the desktop changed since the form was filled is never overwritten.
-                         let daysMoved = edits.days != nil && base.days != filled.days
-                         let sizeMoved = edits.megabytes != nil && Self.wholeMegabytes(base.megabytes) != Self.wholeMegabytes(filled.megabytes)
+                         // A field the person edited that the desktop changed since they first edited it is never
+                         // overwritten unseen. The compare is with the value the edit was made from, which no read
+                         // under the open form moves.
+                         let wholeNow = Self.wholeMegabytes(base.megabytes)
+                         let daysMoved = edits.days != nil && base.days != edits.fromDays
+                         let sizeMoved = edits.megabytes != nil && wholeNow != edits.fromMegabytes
                          if daysMoved || sizeMoved {
-                             throw YouBotsNotSent(plain: "Housekeeping changed on your desktop, so nothing was sent. Your edits are kept here.")
+                             // The person is told what the desktop has now, so a second Save carries their edits on top of it.
+                             if edits.days != nil { housekeepingEdits.fromDays = base.days }
+                             if edits.megabytes != nil { housekeepingEdits.fromMegabytes = wholeNow }
+                             throw YouBotsNotSent(plain: "Housekeeping changed on your desktop (it now keeps \(base.days) days and \(wholeNow) MB), so nothing was sent. Your edits are kept here. Save again to use them.")
                          }
                          let next = YouBotsHousekeeping(days: edits.days ?? base.days,
                                                         megabytes: edits.megabytes.map(Double.init) ?? base.megabytes)
@@ -1033,11 +1067,37 @@ final class YouBotsLive {
     /// silent one answer again: on the desktop that can open the channel to everyone when the bot has no allowed user.
     func setOverrideMode(bot: String, entry: String, mode: String) async {
         guard mode == "normal" || mode == "silent" else { return }
-        guard let current = discordBots.first(where: { $0.id == bot })?.overrides.first(where: { $0.id == entry }), current.mode != mode else { return }
-        guard current.mode == "open" || mode == "silent" else { return }
+        guard let cachedBot = discordBots.first(where: { $0.id == bot }),
+              let current = cachedBot.overrides.first(where: { $0.id == entry }), current.mode != mode else { return }
+        let moved = "#\(current.label) changed on your desktop, so nothing was sent. What your desktop has now is shown."
+        guard current.mode == "open" || mode == "silent" else {
+            notice[.discord] = moved
+            return
+        }
         await change(.discord, key: "override:" + entry,
                      words: YouBotsWords(done: "#\(current.label) is \(mode) now.", failed: "#\(current.label) was not changed.", missingIsDone: false),
-                     send: { client, _ in try await client.youBotsOverrideMode(bot: bot, entry: entry, mode: mode) },
+                     send: { client, account in
+                         // The screen can be old and the desktop's route takes no expected mode. So the bots are read
+                         // again here, and the change leaves only when the entry is still in the mode the person saw
+                         // (and, for normal, the bot's allowed user is as the confirm said). A silent entry is never
+                         // made to answer again, whatever the screen showed.
+                         let rows: [YouBotsDiscord]
+                         do {
+                             rows = Self.discordRows(try await client.youBotsDiscordBots()).rows
+                         } catch {
+                             throw YouBotsNotSent(plain: "Your desktop could not be read first, so nothing was sent.")
+                         }
+                         try ensureLive(account)
+                         guard let freshBot = rows.first(where: { $0.id == bot }),
+                               let now = freshBot.overrides.first(where: { $0.id == entry }) else {
+                             throw YouBotsNotSent(plain: "This override is not on your desktop any more, so nothing was sent.")
+                         }
+                         guard now.mode == current.mode, now.mode == "open" || mode == "silent",
+                               mode != "normal" || freshBot.hasAllowedUser == cachedBot.hasAllowedUser else {
+                             throw YouBotsNotSent(plain: moved)
+                         }
+                         try await client.youBotsOverrideMode(bot: bot, entry: entry, mode: mode)
+                     },
                      check: { client in
                          let fresh = Self.discordRows(try await client.youBotsDiscordBots()).rows
                          guard let found = fresh.first(where: { $0.id == bot })?.overrides.first(where: { $0.id == entry }) else { return nil }
@@ -1054,11 +1114,35 @@ final class YouBotsLive {
     /// Remove one channel override. The phone cannot add one back, and never removes a silent one: that would let the
     /// bot answer in that channel again.
     func removeOverride(bot: String, entry: String) async {
-        guard let current = discordBots.first(where: { $0.id == bot })?.overrides.first(where: { $0.id == entry }),
-              current.mode != "silent" else { return }
+        guard let cachedBot = discordBots.first(where: { $0.id == bot }),
+              let current = cachedBot.overrides.first(where: { $0.id == entry }) else { return }
+        let moved = "#\(current.label) changed on your desktop, so nothing was sent. What your desktop has now is shown."
+        guard current.mode != "silent" else {
+            notice[.discord] = moved
+            return
+        }
         await change(.discord, key: "override:" + entry,
                      words: YouBotsWords(done: "#\(current.label) was removed.", failed: "#\(current.label) was not removed.", missingIsDone: true),
-                     send: { client, _ in try await client.youBotsRemoveOverride(bot: bot, entry: entry) },
+                     send: { client, account in
+                         // Read again first, as for a mode change: removing an entry that was set to silent on the
+                         // desktop since the screen was read would make the bot answer there again.
+                         let rows: [YouBotsDiscord]
+                         do {
+                             rows = Self.discordRows(try await client.youBotsDiscordBots()).rows
+                         } catch {
+                             throw YouBotsNotSent(plain: "Your desktop could not be read first, so nothing was sent.")
+                         }
+                         try ensureLive(account)
+                         guard let freshBot = rows.first(where: { $0.id == bot }),
+                               let now = freshBot.overrides.first(where: { $0.id == entry }) else {
+                             throw YouBotsNotSent(plain: "This override is not on your desktop any more, so nothing was sent.")
+                         }
+                         guard now.mode != "silent", now.mode == current.mode,
+                               freshBot.hasAllowedUser == cachedBot.hasAllowedUser else {
+                             throw YouBotsNotSent(plain: moved)
+                         }
+                         try await client.youBotsRemoveOverride(bot: bot, entry: entry)
+                     },
                      check: { client in
                          let fresh = Self.discordRows(try await client.youBotsDiscordBots()).rows
                          guard let found = fresh.first(where: { $0.id == bot }) else { return nil }

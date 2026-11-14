@@ -1734,7 +1734,7 @@ struct YouBotsChannelScreen: View {
         case .refused(let words)?:
             return words
         case .unconfirmed?:
-            return "Your desktop did not answer, so this phone cannot tell whether the test was sent. It will not send another one until you say you checked. Look in the channel itself, and in Kairos on your desktop."
+            return "Your desktop did not answer, so this phone cannot tell whether the test was sent. While this phone stays paired as it is now, it will not send another one until you say you checked. Look in the channel itself, and in Kairos on your desktop."
         case .sending?:
             return nil
         case nil:
