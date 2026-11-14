@@ -174,9 +174,8 @@ struct MadeListScreen: View {
         switch live.opens[item.id] {
         case .some(.design(let id)):
             NavigationLink(value: MakeRoute.design(id)) { liveRowBody(item, linked: true) }
-        case .some(.video):
-            // The video editor does not read the desktop yet. Until it does, a paired phone never opens the sample one.
-            liveRowBody(item, linked: false)
+        case .some(.video(let id)):
+            NavigationLink(value: MakeRoute.editor(id)) { liveRowBody(item, linked: true) }
         case .some(.file):
             Button {
                 Haptics.tap()

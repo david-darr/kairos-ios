@@ -460,9 +460,9 @@ struct MakeView: View {
         case .some(.design(let id)):
             Haptics.tap()
             cover = .design(id)
-        case .some(.video):
-            // The video editor does not read the desktop yet. Until it does, a paired phone never opens the sample one.
-            chrome.say("Open this video in Kairos on your desktop")
+        case .some(.video(let id)):
+            Haptics.tap()
+            cover = .editor(id)
         case .some(.file):
             Haptics.tap()
             liveFile = live.fileViewing(item)

@@ -289,7 +289,7 @@ final class DeskForgeLive {
     // Screens that still show made-up data. While paired their links stay closed. The lead turns each one on
     // when the pass that makes it live is merged.
     /// Explorer, files, the Git sheet, Changes and Diff.
-    static let changesAndFilesLive = false
+    static let changesAndFilesLive = true
     static let computerLive = false
     static let browseLive = false
     static let localModelsLive = false
@@ -1712,7 +1712,7 @@ struct DeskForgeRequestText: View {
 
     /// `scheme://user:pass@host` as `scheme://host`. Nothing else is changed.
     static func hideSignIn(_ text: String) -> String {
-        text.replacingOccurrences(of: "([A-Za-z][A-Za-z0-9+.-]*://)[^/@\\s?#]+@", with: "$1", options: .regularExpression)
+        text.replacingOccurrences(of: "([A-Za-z][A-Za-z0-9+.-]*://)[^/\\s?#]*@", with: "$1", options: .regularExpression)
     }
 
     private static func foundation(_ value: JSONValue) -> Any {

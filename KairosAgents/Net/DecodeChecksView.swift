@@ -85,7 +85,8 @@ struct DecodeChecksView: View {
             + BotInboxSamples.checks + BotRoutineSamples.checks
             + BotSettingsSamples.checks + BotKnowledgeSamples.checks + BotRoomSamples.checks + BotTeamSamples.checks
             + DocsSamples.checks + DriveAPISamples.checks + SearchSamples.checks
-            + YouAccessSamples.checks + MakeHomeSamples.checks + MakeDesignSamples.checks + DeskForgeSamples.checks {
+            + YouAccessSamples.checks + MakeHomeSamples.checks + MakeDesignSamples.checks + DeskForgeSamples.checks
+            + MakeVideoSamples.checks + YouVoiceSamples.checks + DeskChangesSamples.checks {
             do {
                 result.append(Outcome(id: check.id, passed: true, detail: try check.run()))
             } catch {
