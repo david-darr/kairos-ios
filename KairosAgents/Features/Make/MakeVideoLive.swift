@@ -715,6 +715,10 @@ final class MakeVideoLive {
     var stopping = false
     var renderAspect = ""
     var jobsKnown = false
+    /// The newest finished MP4 for each aspect, as the desktop's own folder listing names them.
+    var renders: [MakeVideoRenderFile] = []
+    /// Downloading a finished render to watch it, and the player.
+    let watch = MakeVideoWatch()
 
     // Narration
     var narrating = false
@@ -867,6 +871,9 @@ extension EditorModel {
 
     func enterLive() {
         pause()
+        // A file one account downloaded never outlives it, and files a past launch left are cleared once.
+        live?.watch.discardAll()
+        MakeVideoWatchFiles.clearStale()
         live?.watchTask?.cancel()
         live?.askWatchTask?.cancel()
         playhead = 0
@@ -898,6 +905,7 @@ extension EditorModel {
     }
 
     func leaveLive() {
+        live?.watch.discardAll()
         live?.watchTask?.cancel()
         live?.askWatchTask?.cancel()
         live = nil
@@ -1263,7 +1271,7 @@ extension EditorModel {
 
     var showsRenderCard: Bool {
         guard let live else { return render != .idle }
-        return live.job != nil || live.renderLine != nil || live.renderBusy || live.renderUnchecked
+        return live.job != nil || live.renderLine != nil || live.renderBusy || live.renderUnchecked || !live.renders.isEmpty
     }
 
     /// First step: can the desktop render at all, and is this video already rendering? Then a confirm.
@@ -1283,6 +1291,7 @@ extension EditorModel {
             guard stillLive(live) else { return }
             live.knownJobs = Set(resources.jobs.map(\.id))
             live.jobsKnown = true
+            live.renders = resources.latestRenders()
             if let running = resources.jobs.last(where: { $0.videoID == projectID && !$0.isExport && $0.isActive }) {
                 live.job = running
                 live.renderLine = "This video is already rendering on your desktop."
@@ -1338,6 +1347,7 @@ extension EditorModel {
             let resources = try await liveClient().makeVideoResources(projectID)
             guard stillLive(live) else { return }
             live.renderUnchecked = false
+            live.renders = resources.latestRenders()
             live.knownJobs = Set(resources.jobs.map(\.id))
             if let started = resources.jobs.last(where: {
                 $0.videoID == projectID && !$0.isExport && $0.aspect == aspect && !known.contains($0.id)
@@ -1370,6 +1380,8 @@ extension EditorModel {
         guard let resources = try? await liveClient().makeVideoResources(projectID), stillLive(live) else { return }
         live.jobsKnown = true
         live.knownJobs = Set(resources.jobs.map(\.id))
+        // The newest finished render of each aspect, so Watch is there the moment the editor opens.
+        live.renders = resources.latestRenders()
         if live.job == nil, let running = resources.jobs.last(where: { $0.videoID == projectID && !$0.isExport && $0.isActive }) {
             live.job = running
             watchJob()
@@ -1394,6 +1406,7 @@ extension EditorModel {
                         if next.isReady {
                             Haptics.success()
                             self.toast?.say("Rendered on your desktop.")
+                            self.noteRenderReady(next)
                         }
                         return
                     }
@@ -1929,11 +1942,6 @@ struct EditorLiveRenderCard: View {
                         Text(readyLine(job))
                             .font(KFont.ui(15, relativeTo: .subheadline))
                             .foregroundStyle(Palette.ink)
-                        if let file = job.file {
-                            Text(file)
-                                .font(KFont.ui(13.5, relativeTo: .footnote))
-                                .foregroundStyle(Palette.inkFaint)
-                        }
                         ForEach(Array(job.notes.prefix(4).enumerated()), id: \.offset) { _, note in
                             HintLine(text: note, symbol: "exclamationmark.circle")
                         }
@@ -1945,6 +1953,9 @@ struct EditorLiveRenderCard: View {
                             .fixedSize(horizontal: false, vertical: true)
                         MakePillButton(title: "Close", expand: true) { model.dismissRender() }
                     }
+                }
+                if !live.renders.isEmpty {
+                    rendersList(live)
                 }
                 if let line = live.renderLine {
                     HintLine(text: line, symbol: "info.circle")
@@ -1974,6 +1985,92 @@ struct EditorLiveRenderCard: View {
                 }
             }
         }
+    }
+
+    // MARK: Finished renders: watch, and save from the player
+
+    @ViewBuilder private func rendersList(_ live: MakeVideoLive) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if live.job != nil { Palette.line.frame(height: 1) }
+            Text(live.renders.count == 1 ? "Finished render" : "Finished renders")
+                .font(KFont.ui(14.5, .semibold, relativeTo: .subheadline))
+                .foregroundStyle(Palette.inkDim)
+            ForEach(live.renders) { item in
+                renderRow(item, live: live)
+            }
+            Text("Watch downloads the video to this iPhone for now. The player lets you save it to Photos or Files, and the copy is deleted when you close it.")
+                .font(KFont.ui(13, relativeTo: .footnote))
+                .foregroundStyle(Palette.inkFaint)
+        }
+    }
+
+    private func sizeWords(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    @ViewBuilder private func renderRow(_ item: MakeVideoRenderFile, live: MakeVideoLive) -> some View {
+        let watch = live.watch
+        let active = watch.downloading == item.file
+        let failure = failureWords(watch, item)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(item.aspect) video")
+                        .font(KFont.ui(16, .medium, relativeTo: .body))
+                        .foregroundStyle(Palette.ink)
+                    Text(rowDetail(item, live: live))
+                        .font(KFont.ui(13, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 6)
+                if !active {
+                    MakePillButton(title: failure == nil ? "Watch" : "Try again", symbol: failure == nil ? "play.fill" : "arrow.clockwise",
+                                   filled: true) {
+                        model.watchRender(item)
+                    }
+                    .editorEnabled(!watch.busy)
+                }
+            }
+            if active {
+                bar(watch.total.map { $0 > 0 ? min(1, Double(watch.received) / Double($0)) : 0 })
+                HStack(spacing: 10) {
+                    Text(downloadWords(watch))
+                        .font(KFont.ui(14, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkDim)
+                        .contentTransition(.numericText())
+                    Spacer()
+                    MakePillButton(title: "Cancel", symbol: "xmark") { model.cancelWatch() }
+                }
+            }
+            if let failure {
+                HintLine(text: failure, symbol: "exclamationmark.circle", color: Palette.goldText)
+            }
+        }
+    }
+
+    private func failureWords(_ watch: MakeVideoWatch, _ item: MakeVideoRenderFile) -> String? {
+        if case .failed(let file, let words) = watch.phase, file == item.file { return words }
+        return nil
+    }
+
+    private func rowDetail(_ item: MakeVideoRenderFile, live: MakeVideoLive) -> String {
+        var parts: [String] = []
+        if let version = item.version {
+            parts.append("Rendered from version \(version)")
+            if let now = live.doc?.version, version < now { parts.append("the video has changed since") }
+        } else {
+            parts.append(item.file)
+        }
+        if let bytes = item.bytes { parts.append(sizeWords(bytes)) }
+        return parts.joined(separator: ", ")
+    }
+
+    private func downloadWords(_ watch: MakeVideoWatch) -> String {
+        if let total = watch.total, total > 0 {
+            return "Downloading, \(sizeWords(watch.received)) of \(sizeWords(total))"
+        }
+        return watch.received > 0 ? "Downloading, \(sizeWords(watch.received))" : "Starting the download"
     }
 
     private func readyLine(_ job: MakeVideoJobDTO) -> String {

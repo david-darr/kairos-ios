@@ -89,6 +89,100 @@ nonisolated enum MakeVideoWire {
 
     /// A time to two places, as the desktop keeps clip times to four.
     static func round4(_ value: Double) -> Double { (value * 10_000).rounded() / 10_000 }
+
+    /// The desktop's names for the aspect in a render's file name (video_render.py: the aspect with ":" as "-").
+    static let renderSlugs: [(slug: String, aspect: String)] = [("16-9", "16:9"), ("9-16", "9:16"), ("1-1", "1:1")]
+
+    /// A finished MP4's file name as the desktop writes it, "9-16-v2.mp4": its aspect and its number (the render's own
+    /// counter, not the video's version). Any other file in the renders folder (a thumbnail, a sheet, a WebM) is nil.
+    static func renderName(_ name: String) -> (aspect: String, number: Int)? {
+        guard name.hasSuffix(".mp4"), name.count <= 40 else { return nil }
+        let stem = String(name.dropLast(4))
+        guard let mark = stem.range(of: "-v", options: .backwards) else { return nil }
+        let slug = String(stem[..<mark.lowerBound])
+        let digits = String(stem[mark.upperBound...])
+        guard let aspect = renderSlugs.first(where: { $0.slug == slug })?.aspect,
+              !digits.isEmpty, digits.count <= 6, !digits.hasPrefix("0"),
+              digits.allSatisfy({ $0 >= "0" && $0 <= "9" }), let number = Int(digits) else { return nil }
+        return (aspect, number)
+    }
+}
+
+/// One finished MP4 render the desktop holds, as the render card offers it.
+nonisolated struct MakeVideoRenderFile: Equatable, Identifiable, Sendable {
+    var aspect: String
+    var file: String
+    /// The render's own counter in its file name.
+    var number: Int
+    /// The saved version of the video it was drawn from, when the desktop's job says.
+    var version: Int?
+    /// The size, when the desktop's job gives one. Otherwise the download tells it once it starts.
+    var bytes: Int64?
+    var id: String { file }
+
+    init?(file: String, version: Int?, bytes: Int64?) {
+        guard let parsed = MakeVideoWire.renderName(file) else { return nil }
+        self.file = file
+        aspect = parsed.aspect
+        number = parsed.number
+        self.version = version
+        self.bytes = bytes
+    }
+
+    /// A render job that has just finished.
+    init?(job: MakeVideoJobDTO) {
+        guard job.isReady, !job.isExport, let file = job.file else { return nil }
+        self.init(file: file, version: job.version, bytes: job.bytes.map(Int64.init))
+    }
+}
+
+/// Which pages and files the editor's preview web view may ask the desktop for, and how each is typed.
+nonisolated enum MakeVideoWebPaths {
+    private static func plain(_ text: Substring, extra: String = "") -> Bool {
+        !text.isEmpty && text.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" || $0 == "." || extra.unicodeScalars.contains($0)
+        }
+    }
+
+    /// The desktop's own player page for this video, its pictures, the look's fonts and the player's scripts, and
+    /// nothing else on the desktop.
+    static func allowed(_ path: String, video: String) -> Bool {
+        guard path.hasPrefix("/"), !path.contains("//"), !path.split(separator: "/").contains("..") else { return false }
+        let own = "/api/videos/\(video)/"
+        if path == own + "player" { return true }
+        if path.hasPrefix(own + "assets/") { return plain(path.dropFirst((own + "assets/").count), extra: "/") }
+        if path.hasPrefix("/api/design-fonts/") { return plain(path.dropFirst("/api/design-fonts/".count), extra: "/") }
+        if path.hasPrefix("/static/motion/") { return path.hasSuffix(".js") && plain(path.dropFirst("/static/motion/".count), extra: "/") }
+        if path.hasPrefix("/static/vendor/three/") { return path.hasSuffix(".js") && plain(path.dropFirst("/static/vendor/three/".count), extra: "/") }
+        return false
+    }
+
+    static func isPlayer(_ path: String, video: String) -> Bool { path == "/api/videos/\(video)/player" }
+
+    /// The type to answer with: by the file's ending, else by its first bytes.
+    static func mime(_ path: String, body: Data, video: String) -> String {
+        if isPlayer(path, video: video) { return "text/html; charset=utf-8" }
+        let name = path.split(separator: "/").last.map(String.init) ?? ""
+        switch name.split(separator: ".").last.map({ $0.lowercased() }) {
+        case "js"?, "mjs"?: return "text/javascript"
+        case "png"?: return "image/png"
+        case "jpg"?, "jpeg"?: return "image/jpeg"
+        case "gif"?: return "image/gif"
+        case "webp"?: return "image/webp"
+        case "svg"?: return "image/svg+xml"
+        case "ttf"?: return "font/ttf"
+        case "otf"?: return "font/otf"
+        case "woff"?: return "font/woff"
+        case "woff2"?: return "font/woff2"
+        default: break
+        }
+        let head = [UInt8](body.prefix(12))
+        if head.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
+        if head.starts(with: [0xFF, 0xD8]) { return "image/jpeg" }
+        if head.starts(with: [0x47, 0x49, 0x46]) { return "image/gif" }
+        if head.count >= 12, head[0..<4].elementsEqual([0x52, 0x49, 0x46, 0x46]), head[8..<12].elementsEqual([0x57, 0x45, 0x42, 0x50]) { return "image/webp" }
+        return "application/octet-stream"
+    }
 }
 
 // MARK: - The video
@@ -190,9 +284,12 @@ nonisolated struct MakeVideoJobDTO: Equatable {
     var file: String?
     var notes: [String]
     var seconds: Double?
+    /// The file's size, where the desktop's job says one (an export's does; an MP4 render's does not).
+    var bytes: Int?
 
     init?(_ raw: [String: Any]) {
         guard let id = MakeVideoWire.str(raw["id"]), !id.isEmpty, let status = MakeVideoWire.str(raw["status"]) else { return nil }
+        bytes = MakeVideoWire.int(raw["bytes"]).flatMap { $0 > 0 ? $0 : nil }
         self.id = id
         videoID = MakeVideoWire.str(raw["video_id"]) ?? ""
         aspect = MakeVideoWire.str(raw["aspect"]) ?? ""
@@ -236,11 +333,50 @@ nonisolated struct MakeVideoJobDTO: Equatable {
 /// GET /api/tab-studio/videos/{id}/resources: this video's render jobs (and files). Only the jobs are read.
 nonisolated struct MakeVideoResourcesDTO: Equatable {
     var jobs: [MakeVideoJobDTO]
+    /// The files in the video's renders folder, oldest first (core/tab_api.py: video_resources).
     var renders: [String]
+    /// A long video's stored renders (core/video_longform.py: describe): aspect, status, file, version.
+    var longRenders: [MakeVideoLongRenderDTO]
 
     init(_ raw: [String: Any]) {
         jobs = MakeVideoWire.dicts(raw["jobs"]).compactMap { MakeVideoJobDTO($0) }
         renders = MakeVideoWire.strings(raw["renders"])
+        longRenders = MakeVideoWire.dicts(raw["long_renders"]).map { MakeVideoLongRenderDTO($0) }
+    }
+
+    /// The newest finished MP4 for each aspect, named by the desktop's own folder listing, with the version it was
+    /// drawn from where a job or a stored long render says so. Nothing is started to read this.
+    func latestRenders() -> [MakeVideoRenderFile] {
+        var best: [String: MakeVideoRenderFile] = [:]
+        for name in renders {
+            var version: Int?
+            var bytes: Int64?
+            if let job = jobs.last(where: { $0.file == name && $0.isReady && !$0.isExport }) {
+                version = job.version
+                bytes = job.bytes.map(Int64.init)
+            } else if let long = longRenders.last(where: { $0.file == name && $0.status == "ready" }) {
+                version = long.version
+            }
+            guard let item = MakeVideoRenderFile(file: name, version: version, bytes: bytes) else { continue }
+            if let old = best[item.aspect], old.number >= item.number { continue }
+            best[item.aspect] = item
+        }
+        let order = MakeVideoWire.renderSlugs.map(\.aspect)
+        return best.values.sorted { (order.firstIndex(of: $0.aspect) ?? 9) < (order.firstIndex(of: $1.aspect) ?? 9) }
+    }
+}
+
+nonisolated struct MakeVideoLongRenderDTO: Equatable {
+    var aspect: String
+    var status: String
+    var file: String?
+    var version: Int?
+
+    init(_ raw: [String: Any]) {
+        aspect = MakeVideoWire.str(raw["aspect"]) ?? ""
+        status = MakeVideoWire.str(raw["status"]) ?? ""
+        file = MakeVideoWire.str(raw["file"])
+        version = MakeVideoWire.int(raw["version"])
     }
 }
 
@@ -382,6 +518,33 @@ extension APIClient {
         return job
     }
 
+    /// GET /api/videos/{id}/renders/{file}, signed with the phone's token in the header like every other request. The
+    /// caller downloads it to a file; nothing here reads the body.
+    func makeVideoRenderRequest(_ id: String, file: String) throws -> URLRequest {
+        let video = try MakeVideoWire.pathID(id)
+        guard MakeVideoWire.renderName(file) != nil else { throw APIError.unreadable("render") }
+        var request = try urlRequest("GET", "/api/videos/\(video)/renders/\(file)")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 60
+        return request
+    }
+
+    /// The desktop's address for a path the preview's web view asked for (a path that passed `MakeVideoWebPaths`).
+    func makeVideoDesktopURL(path: String, query: [String: String?] = [:]) throws -> URL {
+        try url(path, query: query)
+    }
+
+    /// One page or file for the preview's web view, through the same signed client. The web page never sees the token.
+    func makeVideoWebFetch(_ target: URL) async throws -> Data {
+        guard target.scheme == base.scheme, target.host == base.host, target.port == base.port else { throw APIError.badAddress }
+        var request = try urlRequest("GET", "/")
+        request.url = target
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        return try await send(request)
+    }
+
     /// GET /api/video-jobs/{id}.
     func makeVideoJob(_ jobID: String) async throws -> MakeVideoJobDTO {
         let job = try MakeVideoWire.pathPart(jobID)
@@ -509,6 +672,16 @@ nonisolated enum MakeVideoSamples {
               "not a job"]}
     """#
 
+    /// The folder listing and jobs after two renders of 9:16, an export, and a stored long render of 16:9.
+    static let rendersListed = #"""
+    {"assets": [], "renders": ["9-16-v1.mp4", "thumb-9-16.png", "16-9-v1.mp4", "9-16-v2.mp4", "9-16-v2.webm", "sheet-9-16.png", "9-16-v0.mp4"],
+     "thumbnail": "thumb-9-16.png",
+     "jobs": [{"id": "1111aaaa2222bbbb", "video_id": "a1b2c3d4e5f6", "aspect": "9:16", "version": 6, "status": "ready", "file": "9-16-v1.mp4"},
+              {"id": "3333cccc4444dddd", "video_id": "a1b2c3d4e5f6", "aspect": "9:16", "version": 7, "status": "ready", "file": "9-16-v2.mp4", "seconds": 12.4},
+              {"id": "5555eeee6666ffff", "video_id": "a1b2c3d4e5f6", "aspect": "9:16", "version": 7, "status": "ready", "kind": "export", "format": "webm", "file": "9-16-v2.webm", "bytes": 123456}],
+     "long_renders": [{"aspect": "16:9", "status": "ready", "file": "16-9-v1.mp4", "version": 5, "chapters": []}, "not a render"]}
+    """#
+
     static let review = #"""
     {"comments": [{"id": "m1a2b3c4d5", "t": 3.5, "x": 0.5, "y": 0.4, "text": "The caption feels long here.", "under": "", "status": "open", "created": 1793000100.0},
                   {"id": "m6e7f8a9b0", "t": 9, "x": 0.2, "y": 0.8, "text": "Music could dip lower.", "under": "", "status": "resolved", "created": 1793000200.0}],
@@ -577,6 +750,46 @@ nonisolated enum MakeVideoSamples {
             guard list.jobs.count == 2, list.jobs[0].words == "Putting it together", list.jobs[1].isExport,
                   list.renders.count == 2 else { throw SampleMismatch("resources") }
             return "3 jobs, progress, resources with 1 skipped"
+        },
+        DecodeCheck("makevideo.watch") {
+            // The newest finished MP4 for each aspect, named by the folder listing; an export, a thumbnail and a
+            // file that is not a render's name are never offered.
+            let list = MakeVideoResourcesDTO(try MakeVideoWire.object(Data(MakeVideoSamples.rendersListed.utf8)))
+            let latest = list.latestRenders()
+            guard list.longRenders.count == 1, latest.count == 2, latest[0].aspect == "16:9", latest[0].file == "16-9-v1.mp4",
+                  latest[0].version == 5, latest[1].aspect == "9:16", latest[1].file == "9-16-v2.mp4", latest[1].version == 7,
+                  latest[1].number == 2, latest[1].bytes == nil else { throw SampleMismatch("latest renders") }
+            let readyRaw = try MakeVideoWire.object(Data(MakeVideoSamples.jobReady.utf8))
+            let runningRaw = try MakeVideoWire.object(Data(MakeVideoSamples.jobRunning.utf8))
+            guard let done = MakeVideoJobDTO(readyRaw), let running = MakeVideoJobDTO(runningRaw),
+                  let file = MakeVideoRenderFile(job: done), file.file == "9-16-v1.mp4", file.aspect == "9:16", file.version == 7,
+                  MakeVideoRenderFile(job: running) == nil else { throw SampleMismatch("job to file") }
+            let export = list.jobs.first { $0.isExport }
+            guard export?.bytes == 123456, export.flatMap({ MakeVideoRenderFile(job: $0) }) == nil else { throw SampleMismatch("export size") }
+            guard MakeVideoWire.renderName("1-1-v12.mp4")?.number == 12, MakeVideoWire.renderName("9-16-v0.mp4") == nil,
+                  MakeVideoWire.renderName("9-16-v1.webm") == nil, MakeVideoWire.renderName("thumb-9-16.png") == nil,
+                  MakeVideoWire.renderName("../9-16-v1.mp4") == nil, MakeVideoWire.renderName("4-3-v1.mp4") == nil else {
+                throw SampleMismatch("render names")
+            }
+            // What the preview's web view may ask the desktop for.
+            let video = "a1b2c3d4e5f6"
+            guard MakeVideoWebPaths.allowed("/api/videos/\(video)/player", video: video),
+                  MakeVideoWebPaths.allowed("/api/videos/\(video)/assets/3f2a9c.png", video: video),
+                  MakeVideoWebPaths.allowed("/api/videos/\(video)/assets/media/ab12/7.jpg", video: video),
+                  MakeVideoWebPaths.allowed("/api/design-fonts/kairos/jost-0.woff2", video: video),
+                  MakeVideoWebPaths.allowed("/static/motion/engine.js", video: video),
+                  MakeVideoWebPaths.allowed("/static/vendor/three/three.module.js", video: video),
+                  !MakeVideoWebPaths.allowed("/api/videos/ffffffffffff/player", video: video),
+                  !MakeVideoWebPaths.allowed("/api/videos/\(video)", video: video),
+                  !MakeVideoWebPaths.allowed("/api/videos/\(video)/assets/../../chat", video: video),
+                  !MakeVideoWebPaths.allowed("/api/videos/\(video)/renders/9-16-v1.mp4", video: video),
+                  !MakeVideoWebPaths.allowed("/static/index.html", video: video),
+                  !MakeVideoWebPaths.allowed("/api/phone/session", video: video) else { throw SampleMismatch("web paths") }
+            guard MakeVideoWebPaths.mime("/static/motion/engine.js", body: Data(), video: video) == "text/javascript",
+                  MakeVideoWebPaths.mime("/api/videos/\(video)/player", body: Data(), video: video).hasPrefix("text/html"),
+                  MakeVideoWebPaths.mime("/api/videos/\(video)/assets/abc", body: Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]), video: video) == "image/png"
+            else { throw SampleMismatch("web types") }
+            return "2 newest renders, export and thumbnail left out, size, names, web paths"
         },
         DecodeCheck("makevideo.ask") {
             let review = MakeVideoReviewDTO(try MakeVideoWire.object(Data(MakeVideoSamples.review.utf8)))

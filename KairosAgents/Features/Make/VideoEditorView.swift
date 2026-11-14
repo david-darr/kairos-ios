@@ -36,7 +36,12 @@ struct VideoEditorScreen: View {
         ScrollView {
             VStack(spacing: 14) {
                 if model.showsEditor {
-                    EditorPreview(model: model)
+                    if model.isLive {
+                        // Paired: the desktop's own player for the saved version, never the phone's drawing.
+                        EditorLivePreview(model: model)
+                    } else {
+                        EditorPreview(model: model)
+                    }
                     transport
                     workArea
                     if model.isLive { EditorLiveBar(model: model) }
@@ -76,16 +81,26 @@ struct VideoEditorScreen: View {
         .sheet(item: $model.confirm) { confirm in
             confirmSheet(confirm)
         }
+        .fullScreenCover(item: Binding(get: { model.live?.watch.playing },
+                                       set: { if $0 == nil { model.live?.watch.closePlayer() } })) { file in
+            MakeVideoPlayerScreen(file: file) { model.live?.watch.closePlayer() }
+        }
         .task { await boot() }
         .task(id: MakeVideoLive.connectionKey) { await model.follow() }
         .onChange(of: scenePhase) {
             // Coming back to the front: read the video again. Unsaved edits stay on top of what changed.
-            if scenePhase == .active, model.isLive, model.live?.phase == .ready { Task { await model.loadLive() } }
+            if scenePhase == .active, model.isLive, model.live?.phase == .ready {
+                Task {
+                    await model.loadLive()
+                    await model.refreshRenders()
+                }
+            }
         }
         .onDisappear {
             model.pause()
             model.stopWatching()
             model.stashDraft()
+            model.leaveWatching()
         }
         .onAppear {
             model.watchJob()
