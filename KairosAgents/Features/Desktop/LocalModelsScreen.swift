@@ -374,6 +374,8 @@ struct DeskModelsScreen: View {
     @State private var showSetup = false
     @State private var deleting: DeskModelsInstalled?
     @State private var pulling: DeskModelsEntry?
+    /// The paired desktop and account a confirm was opened for.
+    @State private var sheetAccount = ""
     @State private var toast: String?
     @State private var notice: String?
     @State private var checking = false
@@ -417,13 +419,14 @@ struct DeskModelsScreen: View {
         }
         .sheet(item: $pulling) { entry in
             ConfirmSheet(title: "Download \(entry.title)?", detail: pullDetail(entry), confirm: "Download", danger: false) {
-                live.startPull(selected, entry)
+                live.startPull(selected, entry, from: sheetAccount)
             }
         }
         .sheet(item: $deleting) { model in
             ConfirmSheet(title: "Delete \(model.name)?", detail: deleteDetail(model), confirm: "Delete \(model.name)") {
                 let engine = selected
-                Task { report(await live.delete(engine, model.name), done: "\(model.name) deleted") }
+                let opened = sheetAccount
+                Task { report(await live.delete(engine, model.name, from: opened), done: "\(model.name) deleted") }
             }
         }
         .task(id: DeskForgeLive.connectionKey + "|" + selected.key) {
@@ -668,7 +671,7 @@ struct DeskModelsScreen: View {
         let registerHold = live.hold("register", engine, model.name)
         let engineBusy = live.isBusy(DeskModelsLive.engineKey)
         let deleteBusy = live.isBusy("delete|" + DeskModelsLive.progressKey(engine, model.name))
-        let canAdd = live.connectionsKnown && !inModels && registerHold == nil && !(builtIn && !model.running)
+        let canAdd = live.connectionsKnown && !inModels && registerHold == nil && !(builtIn && !model.running) && !(builtIn && engineBusy)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 Text(String(model.name.prefix(1)).uppercased())
@@ -723,6 +726,7 @@ struct DeskModelsScreen: View {
                         }
                     }
                     Button(role: .destructive) {
+                        sheetAccount = DeskForgeLive.accountKey
                         deleting = model
                     } label: {
                         Label(DeskModelsWire.pathOK(model.name) ? "Delete" : "Delete (on your desktop)", systemImage: "trash")
@@ -839,7 +843,7 @@ struct DeskModelsScreen: View {
                         Text("The \(verb == "Pull" ? "pull" : "download") failed on your desktop. Check its connection and disk space.")
                             .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.danger)
                         Spacer(minLength: 4)
-                        DeskPillButton(title: "Try again", symbol: "arrow.clockwise") { pulling = entry }
+                        DeskPillButton(title: "Try again", symbol: "arrow.clockwise") { sheetAccount = DeskForgeLive.accountKey; pulling = entry }
                     case .done?:
                         if live.finishedMissing(engine, entry.name) {
                             // Nothing was installed (an error inside the pull, or the model was removed outside
@@ -847,7 +851,7 @@ struct DeskModelsScreen: View {
                             Text("Your desktop says it finished, but the model is not installed.")
                                 .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                             Spacer(minLength: 4)
-                            DeskPillButton(title: verb, symbol: "arrow.down", filled: true) { pulling = entry }
+                            DeskPillButton(title: verb, symbol: "arrow.down", filled: true) { sheetAccount = DeskForgeLive.accountKey; pulling = entry }
                                 .disabled(!DeskModelsWire.pathOK(entry.name))
                         } else {
                             Text("Finished. Reading your installed list...")
@@ -855,7 +859,7 @@ struct DeskModelsScreen: View {
                             Spacer()
                         }
                     case .cancelled?, .notStarted?:
-                        DeskPillButton(title: verb, symbol: "arrow.down", filled: true) { pulling = entry }
+                        DeskPillButton(title: verb, symbol: "arrow.down", filled: true) { sheetAccount = DeskForgeLive.accountKey; pulling = entry }
                             .disabled(!DeskModelsWire.pathOK(entry.name))
                         Spacer()
                     }

@@ -235,6 +235,7 @@ final class DeskModelsLive {
 
     static let adminLine = "Local models need an admin account on your desktop."
     /// For a change that was already sent when the paired desktop changed: it may have happened.
+    private static let changedLine = "Your paired desktop changed. Nothing was sent."
     private static let movedAfterSend = "Your paired desktop changed before it answered, so this phone cannot tell whether it happened. Check that desktop."
 
     private var current: Bool { on && account == DeskForgeLive.accountKey }
@@ -260,7 +261,7 @@ final class DeskModelsLive {
         connectionsRead = false
         progressMap = [:]
         noteMap = [:]
-        busyKeys = []
+        // busyKeys stay: they are keyed by account, and a request sent to the old desktop may still be waiting.
         registeredNow = []
         missingAfterDone = []
         setupState = DeskModelsSetupState()
@@ -304,7 +305,7 @@ final class DeskModelsLive {
 
     func note(_ key: String) -> String? { current ? noteMap[key] : nil }
     func clearNote(_ key: String) { noteMap[key] = nil }
-    func isBusy(_ key: String) -> Bool { current && busyKeys.contains(key) }
+    func isBusy(_ key: String) -> Bool { current && busyKeys.contains(account + "|" + key) }
 
     static func progressKey(_ engine: ModelEngine, _ name: String) -> String { engine.key + "|" + name }
     /// The key of the note a model's own actions write.
@@ -559,9 +560,9 @@ final class DeskModelsLive {
     }
 
     @discardableResult
-    func refreshProgress(_ engine: ModelEngine, _ name: String, _ account: String) async -> Bool {
+    func refreshProgress(_ engine: ModelEngine, _ name: String, _ account: String, via: String = "") async -> Bool {
         let key = Self.progressKey(engine, name)
-        switch await read("progress:" + key, account, { try await $0.deskModelsPullStatus(engine, name) }) {
+        switch await read(via + "progress:" + key, account, { try await $0.deskModelsPullStatus(engine, name) }) {
         case .fresh(let dto):
             progressMap[key] = DeskModelsProgress(dto)
             return true
@@ -581,9 +582,9 @@ final class DeskModelsLive {
 
     /// The installed list (and what runs) again. True when it was read.
     @discardableResult
-    private func refreshInstalled(_ engine: ModelEngine, _ account: String) async -> Bool {
+    private func refreshInstalled(_ engine: ModelEngine, _ account: String, via: String = "") async -> Bool {
         if engine == .ollama {
-            switch await read("ollama.installed", account, { try await $0.deskModelsOllamaInstalled() }) {
+            switch await read(via + "ollama.installed", account, { try await $0.deskModelsOllamaInstalled() }) {
             case .fresh(let list):
                 ollamaState.installed = Self.installedRows(list, running: Set(ollamaState.loaded.map(\.name)))
                 ollamaState.skipped = list.skipped
@@ -592,7 +593,7 @@ final class DeskModelsLive {
                 return false
             }
         }
-        switch await read("engine.downloaded", account, { try await $0.deskModelsEngineDownloaded() }) {
+        switch await read(via + "engine.downloaded", account, { try await $0.deskModelsEngineDownloaded() }) {
         case .fresh(let list):
             builtInState.installed = Self.installedRows(list, running: builtInState.runningModel.map { [$0] } ?? [])
             builtInState.skipped = list.skipped
@@ -628,8 +629,8 @@ final class DeskModelsLive {
     }
 
     @discardableResult
-    private func readConnections(_ account: String) async -> Bool {
-        switch await read("connections", account, { try await $0.modelChoices() }) {
+    private func readConnections(_ account: String, via: String = "") async -> Bool {
+        switch await read(via + "connections", account, { try await $0.modelChoices() }) {
         case .fresh(let list):
             connectionList = list
             connectionsRead = true
@@ -661,7 +662,7 @@ final class DeskModelsLive {
         guard current else { return false }
         let prefix = engine.key + "|"
         if progressMap.contains(where: { $0.value.phase == .running && $0.key.hasPrefix(prefix) }) { return true }
-        return busyKeys.contains(Self.engineKey)
+        return busyKeys.contains(account + "|" + Self.engineKey)
     }
 
     // MARK: Changing the desktop
@@ -677,13 +678,13 @@ final class DeskModelsLive {
     }
 
     private func begin(_ key: String) -> String? {
-        guard let account = readyNow(), !busyKeys.contains(key) else { return nil }
-        busyKeys.insert(key)
+        guard let account = readyNow(), !busyKeys.contains(account + "|" + key) else { return nil }
+        busyKeys.insert(account + "|" + key)
         return account
     }
 
     private func finish(_ key: String, _ account: String) {
-        if self.account == account { busyKeys.remove(key) }
+        busyKeys.remove(account + "|" + key)
     }
 
     /// Send one change, once. Reads that overlap it are read again.
@@ -706,6 +707,13 @@ final class DeskModelsLive {
         }
     }
 
+    /// A check before sending. When it was overtaken (not failed) for a desktop that is still the paired one, it is read once more.
+    private func checkRead(_ account: String, _ read: () async -> Bool) async -> Bool {
+        if await read() { return true }
+        guard stillLive(account), !Task.isCancelled else { return false }
+        return await read()
+    }
+
     private static func unchecked(_ what: String, _ why: String) -> String {
         "Your desktop did not confirm \(what), and it could not be read to check. Look again in a moment before trying again. " + why
     }
@@ -715,9 +723,14 @@ final class DeskModelsLive {
     /// Start a pull (Ollama) or a download (built-in) of one catalog model. The hold is set here, before the
     /// request leaves; the name must be one the desktop's own catalog returned; a model with a hold, a status that
     /// says it runs, or an installed copy is never sent.
-    func startPull(_ engine: ModelEngine, _ entry: DeskModelsEntry) {
+    func startPull(_ engine: ModelEngine, _ entry: DeskModelsEntry, from sheet: String) {
         guard let account = readyNow(), DeskModelsWire.pathOK(entry.name),
               state(engine).catalog.contains(where: { $0.name == entry.name }) else { return }
+        // The confirm was opened for one desktop and account: it does nothing on another.
+        guard sheet == account else {
+            noteMap[Self.noteKey(engine, entry.name)] = Self.changedLine
+            return
+        }
         let key = Self.progressKey(engine, entry.name)
         let hold = holdKey("pull", engine, entry.name)
         guard holds[hold] == nil, !isInstalled(engine, entry.name),
@@ -732,9 +745,13 @@ final class DeskModelsLive {
         // The screen can be 15 seconds old, and the built-in engine starts a whole new download after a finished
         // one. So the hold is already set, and the desktop is read first: only a fresh status that says it is not
         // running and a fresh installed list without the model let the request leave. A read that fails sends nothing.
-        guard await refreshProgress(engine, name, account), let now = progressMap[Self.progressKey(engine, name)] else {
+        // The checks use their own read keys, so the screen's polls cannot overtake them; one overtaken anyway is
+        // tried once more. A note is written only for the desktop it is about.
+        func say(_ text: String) { if stillLive(account) { noteMap[note] = text } }
+        guard await checkRead(account, { await self.refreshProgress(engine, name, account, via: "send:") }),
+              let now = progressMap[Self.progressKey(engine, name)] else {
             holds[hold] = nil
-            noteMap[note] = "Your desktop could not be read, so nothing was downloaded. Try again."
+            say("Your desktop could not be read, so nothing was downloaded. Try again.")
             return
         }
         guard now.phase != .running else {
@@ -742,9 +759,11 @@ final class DeskModelsLive {
             holds[hold] = nil
             return
         }
-        guard await refreshInstalled(engine, account) else {
+        guard await checkRead(account, { await self.refreshInstalled(engine, account, via: "send:") }) else {
             holds[hold] = nil
-            noteMap[note] = "Your desktop could not be read, so nothing was downloaded. Try again."
+            say(engine == .ollama && !ollamaState.reachable
+                ? "Ollama is not running on your desktop, so nothing was downloaded."
+                : "Your desktop could not be read, so nothing was downloaded. Try again.")
             return
         }
         guard !isInstalled(engine, name) else {
@@ -821,13 +840,15 @@ final class DeskModelsLive {
     // MARK: Delete
 
     /// Delete one installed model. The screen draws its confirm first. A lost answer reads the installed list.
-    func delete(_ engine: ModelEngine, _ name: String) async -> DeskForgeOutcome {
+    func delete(_ engine: ModelEngine, _ name: String, from sheet: String) async -> DeskForgeOutcome {
         guard on, isAdmin, DeskModelsWire.pathOK(name) else {
             return .refused("This model's name cannot be sent from your phone. Delete it in Kairos on your desktop.")
         }
         let key = "delete|" + Self.progressKey(engine, name)
         guard let account = begin(key) else { return .busy }
         defer { finish(key, account) }
+        // The confirm was opened for one desktop and account: it does nothing on another.
+        guard sheet == account else { return .refused(Self.changedLine) }
         // begin() follows the paired desktop and account and empties the lists when either changed, so a model
         // that is not in the list now is one this phone has not read for this desktop.
         guard state(engine).installed.contains(where: { $0.name == name }) else {
@@ -881,16 +902,21 @@ final class DeskModelsLive {
             return .refused("It was not started. " + why)
         case .lost(let why):
             var checked = false
+            var lastSeen: String?
             for _ in 0..<20 {
                 try? await Task.sleep(for: .seconds(4))
                 if Task.isCancelled { break }
                 guard stillLive(account) else { return .unconfirmed(Self.movedAfterSend) }
                 if await refreshEngineStatus(account) {
                     checked = true
+                    lastSeen = builtInState.runningModel
                     // The desktop says "running" as soon as the process exists, and stops it again if it is not
                     // healthy after 60 seconds. So "running" counts only once that time has passed.
                     if builtInState.runningModel == name, Date().timeIntervalSince(sent) > 65 { return .done }
                 }
+            }
+            if lastSeen == name {
+                return .unconfirmed("Your desktop was starting \(name) when this phone last read it. Check on your desktop that it is running. " + why)
             }
             return .unconfirmed(checked
                 ? "Your desktop did not confirm the start, and it is not running \(name) now. " + why
@@ -925,6 +951,8 @@ final class DeskModelsLive {
     /// models list was read and shows none for this model, and never while one is on its way or being checked.
     func startRegister(_ engine: ModelEngine, _ name: String) {
         guard let account = readyNow(), connectionsRead, !connected(engine, name) else { return }
+        // While the engine is being started the desktop may still stop the model again: no connection to it yet.
+        guard !(engine == .builtIn && busyKeys.contains(account + "|" + Self.engineKey)) else { return }
         let hold = holdKey("register", engine, name)
         guard holds[hold] == nil else { return }
         holds[hold] = DeskModelsHold(phase: .sending)
@@ -935,9 +963,9 @@ final class DeskModelsLive {
     private func sendRegister(_ engine: ModelEngine, _ name: String, _ account: String, _ hold: String) async {
         let note = Self.noteKey(engine, name)
         // The list on the screen can be old, and register makes a new connection every time: read it again first.
-        guard await readConnections(account) else {
+        guard await checkRead(account, { await self.readConnections(account, via: "send:") }) else {
             holds[hold] = nil
-            noteMap[note] = "Your models could not be read. Try again."
+            if stillLive(account) { noteMap[note] = "Your models could not be read. Try again." }
             return
         }
         guard !connected(engine, name) else {
