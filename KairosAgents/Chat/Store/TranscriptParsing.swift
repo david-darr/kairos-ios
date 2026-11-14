@@ -10,8 +10,13 @@ nonisolated enum TranscriptParsing {
         var text: String
         var files: [ChatFile]
         var sources: [SourceLink]
+        /// Designs the reply links, each drawn as a card.
+        var designs: [ChatThumbRef] = []
     }
 
+    /// `[Design: title](/designs/<12 hex>)`, the link a chat writes for a design (the desktop's `DESIGN_URL`).
+    private static let designLink = try? NSRegularExpression(
+        pattern: #"\[([^\]]*)\]\(/designs/([a-f0-9]{12})\)"#)
     private static let fileLink = try? NSRegularExpression(
         pattern: #"!?\[([^\]]*)\]\((/(?:generated-files|generated-images|chat-files)/[^)\s]+)\)"#)
     private static let bareLink = try? NSRegularExpression(
@@ -21,8 +26,37 @@ nonisolated enum TranscriptParsing {
     private static let goalBlock = try? NSRegularExpression(
         pattern: #"<kairos-goal>[\s\S]*?(</kairos-goal>|$)"#)
 
+    /// Fenced blocks and backtick spans.
+    private static let codeSpan = try? NSRegularExpression(pattern: #"(?s)```.*?(?:```|\z)|`[^`\n]+`"#)
+
+    private static func codeRanges(in text: String) -> [NSRange] {
+        guard let codeSpan else { return [] }
+        return codeSpan.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length)).map(\.range)
+    }
+
+    /// Nothing but blanks around the match on its line.
+    private static func onItsOwnLine(_ range: NSRange, in text: NSString) -> Bool {
+        var before = range.location
+        while before > 0 {
+            let c = text.character(at: before - 1)
+            if c == 10 || c == 13 { break }
+            guard let scalar = Unicode.Scalar(c), CharacterSet.whitespaces.contains(scalar) else { return false }
+            before -= 1
+        }
+        var after = range.location + range.length
+        while after < text.length {
+            let c = text.character(at: after)
+            if c == 10 || c == 13 { break }
+            guard let scalar = Unicode.Scalar(c), CharacterSet.whitespaces.contains(scalar) else { return false }
+            after += 1
+        }
+        return true
+    }
+
     /// Split a saved or streaming reply into its words, the files it links and its sources.
-    static func body(_ raw: String) -> Body {
+    /// `takeDesigns` also lifts `[Design: title](/designs/id)` links out of the text as `designs`, for the places that
+    /// draw a card in their place. It is off by default, so a link stays in the text exactly as written (Forge, previews).
+    static func body(_ raw: String, takeDesigns: Bool = false) -> Body {
         var text = raw
         if let goalBlock {
             text = goalBlock.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
@@ -50,6 +84,33 @@ nonisolated enum TranscriptParsing {
             }
         }
 
+        // Only where a card is drawn in the link's place (saved replies of a chat). Everywhere else, and for the reply
+        // being streamed, the text is left exactly as written and no extra work is done.
+        var designs: [ChatThumbRef] = []
+        if takeDesigns, let designLink {
+            let ns = text as NSString
+            let matches = designLink.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            if !matches.isEmpty {
+                let code = codeRanges(in: text)
+                var seenDesigns = Set<String>()
+                var edits: [(range: NSRange, with: String)] = []
+                for match in matches {
+                    // A link shown inside a code block or a backtick span is not a link.
+                    if code.contains(where: { NSIntersectionRange($0, match.range).length > 0 }) { continue }
+                    let title = ChatThumbWire.linkTitle(ns.substring(with: match.range(at: 1)))
+                    let id = ns.substring(with: match.range(at: 2))
+                    if seenDesigns.insert(id).inserted { designs.append(ChatThumbRef(id: id, title: title)) }
+                    // On its own line the card replaces it; inside a sentence the title stays so the sentence reads whole.
+                    edits.append((match.range, onItsOwnLine(match.range, in: ns) ? "" : title))
+                }
+                if !edits.isEmpty {
+                    let changed = NSMutableString(string: text)
+                    for edit in edits.reversed() { changed.replaceCharacters(in: edit.range, with: edit.with) }
+                    text = changed as String
+                }
+            }
+        }
+
         var sources: [SourceLink] = []
         var kept: [String] = []
         for paragraph in text.components(separatedBy: "\n\n") {
@@ -61,7 +122,7 @@ nonisolated enum TranscriptParsing {
             }
             if !trimmed.isEmpty { kept.append(paragraph.trimmingCharacters(in: .newlines)) }
         }
-        return Body(text: kept.joined(separator: "\n\n"), files: files, sources: Array(sources.prefix(6)))
+        return Body(text: kept.joined(separator: "\n\n"), files: files, sources: Array(sources.prefix(6)), designs: designs)
     }
 
     static func file(url: String, label: String) -> ChatFile {
@@ -106,11 +167,12 @@ nonisolated enum TranscriptParsing {
                 result.append(entry)
                 continue
             }
-            let parsed = body(content)
+            let parsed = body(content, takeDesigns: true)
             var entry = TranscriptEntry(id: "m\(index)", role: .assistant, text: parsed.text, time: time)
             entry.index = index
             entry.files = parsed.files
             entry.sources = parsed.sources
+            entry.designs = parsed.designs
             if let followup = message.backgroundFollowup, !followup.isNull, followup.bool != false {
                 entry.caption = "After background work"
             }
@@ -122,7 +184,7 @@ nonisolated enum TranscriptParsing {
             case "interrupted":
                 entry.failure = content.isEmpty ? "The response was interrupted." : "The response was interrupted. The partial reply was saved."
             default:
-                if content.isEmpty && parsed.files.isEmpty { entry.failure = "No text response was returned." }
+                if content.isEmpty && parsed.files.isEmpty && parsed.designs.isEmpty { entry.failure = "No text response was returned." }
             }
             result.append(entry)
         }
@@ -287,14 +349,15 @@ nonisolated enum TranscriptParsing {
                 guard !content.isEmpty || !files.isEmpty else { continue }
                 result.append(BotEntry(id: message.id, kind: .mine, text: content, time: time, files: files))
             } else {
-                let parsed = body(content)
+                let parsed = body(content, takeDesigns: true)
                 let failed = message.status == "failed"
                 var text = parsed.text
                 if failed && text.isEmpty {
                     text = failureLine(kind: message.failureKind, model: message.failureModelName ?? botName, partial: false)
                 }
-                guard !text.isEmpty || !parsed.files.isEmpty else { continue }
-                result.append(BotEntry(id: message.id, kind: .theirs, text: text, time: time, files: parsed.files, failed: failed))
+                guard !text.isEmpty || !parsed.files.isEmpty || !parsed.designs.isEmpty else { continue }
+                result.append(BotEntry(id: message.id, kind: .theirs, text: text, time: time, files: parsed.files, failed: failed,
+                                       designs: parsed.designs))
             }
         }
         return result

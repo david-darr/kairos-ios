@@ -214,6 +214,8 @@ nonisolated struct TranscriptEntry: Identifiable, Hashable, Sendable {
     var index: Int?
     /// "After background work", above a follow-up.
     var caption: String?
+    /// Designs the reply links, drawn as cards while paired.
+    var designs: [ChatThumbRef] = []
 
     var isUser: Bool { role == .user }
     var isAssistant: Bool { role == .assistant }
@@ -493,6 +495,8 @@ nonisolated struct BotEntry: Identifiable, Hashable, Sendable {
     var time: Date?
     var files: [ChatFile] = []
     var failed = false
+    /// Designs the reply links, drawn as cards while paired.
+    var designs: [ChatThumbRef] = []
 }
 
 nonisolated struct BotThreadSummary: Identifiable, Hashable, Sendable {
@@ -555,4 +559,6 @@ nonisolated enum StoreEvent: Sendable {
     case botRequest(threadID: String, request: PendingRequest, open: Bool)
     /// Something in a bot conversation changed that is not a run: reload its newest messages.
     case botChanged(threadID: String)
+    /// A design changed on the desktop. `chatID` is the chat that changed it, nil when none did.
+    case designChanged(chatID: String?)
 }

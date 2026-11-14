@@ -40,6 +40,8 @@ private struct ModelChatScreen: View {
     @State private var showModel = false
     @State private var showTools = false
     @State private var viewer: ViewerStart?
+    /// The design open in the full-screen cover. Held here, not by a card, so it stays open when the turn ends.
+    @State private var openDesign: ChatThumbOpen?
     @State private var showDetails = false
     @State private var confirmFull = false
     @FocusState private var typing: Bool
@@ -99,9 +101,16 @@ private struct ModelChatScreen: View {
             if files.isEmpty {
                 DocumentViewer(documents: SampleData.documents, index: 0).kSheet()
             } else {
-                FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData).kSheet()
+                FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData, thumbChat: chat.thumbKey).kSheet()
             }
         }
+        .fullScreenCover(item: $openDesign) { design in
+            ChatThumbDesignCover(designID: design.id)
+                .environment(router)
+                .environment(chrome)
+        }
+        // A design opened from one desktop or account closes when the phone unpairs or the account changes.
+        .onChange(of: ChatThumbAccount.key) { openDesign = nil }
         .task { await chat.load() }
         .readsWhileOpen(chat)
         .onAppear {
@@ -280,7 +289,11 @@ private struct ModelChatScreen: View {
                 MarkdownText(text: entry.text, streaming: entry.streaming)
             }
             if !entry.files.isEmpty {
-                FileStack(files: entry.files, load: chat.fileData) { open($0) }
+                FileStack(files: entry.files, load: chat.fileData, thumbChat: chat.thumbKey) { open($0) }
+            }
+            let designs = chat.designCards(for: entry)
+            if let key = chat.thumbKey, !designs.isEmpty {
+                ChatThumbCards(designs: designs, chat: key) { openDesign = ChatThumbOpen(id: $0) }
             }
             ForEach(entry.sources) { source in
                 SourceCard(site: source.site, title: source.title)

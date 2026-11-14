@@ -39,6 +39,8 @@ private struct BotChatScreen: View {
     @State private var showModel = false
     @State private var modelAfterLoad = false
     @State private var viewer: ViewerStart?
+    /// The design open in the full-screen cover. Held here, not by a card, so it stays open when the turn ends.
+    @State private var openDesign: ChatThumbOpen?
     @FocusState private var typing: Bool
 
     private var bot: Bot { chat.bot }
@@ -86,6 +88,13 @@ private struct BotChatScreen: View {
                 FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData).kSheet()
             }
         }
+        .fullScreenCover(item: $openDesign) { design in
+            ChatThumbDesignCover(designID: design.id)
+                .environment(router)
+                .environment(chrome)
+        }
+        // A design opened from one desktop or account closes when the phone unpairs or the account changes.
+        .onChange(of: ChatThumbAccount.key) { openDesign = nil }
         .task { await chat.load() }
         .readsWhileOpen(chat)
         .onChange(of: chat.phase) {
@@ -191,6 +200,8 @@ private struct BotChatScreen: View {
             VStack(alignment: .leading, spacing: 6) {
                 if !entry.text.isEmpty { MessageBubble(message: ChatMessage(kind: .theirs(entry.text))) }
                 if !entry.files.isEmpty { SentFiles(files: entry.files) { open($0) } }
+                let designs = chat.designCards(for: entry)
+                if let key = chat.threadID, !designs.isEmpty { ChatThumbCards(designs: designs, chat: key) { openDesign = ChatThumbOpen(id: $0) } }
                 if entry.failed {
                     Text("This reply did not finish.")
                         .font(KFont.ui(12.5, relativeTo: .caption))

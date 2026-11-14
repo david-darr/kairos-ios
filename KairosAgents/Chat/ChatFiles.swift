@@ -42,15 +42,47 @@ final class FileCache {
 struct FileArt: View {
     let file: ChatFile
     let load: (ChatFile) async throws -> Data
+    /// The chat this file belongs to while the phone is paired. nil (not paired) keeps every file as it is drawn.
+    var thumbChat: String? = nil
     @State private var image: UIImage?
+    /// The file `image` was read for. A card in the stack moves to another file when the stack is swiped.
+    @State private var imageFile = ""
+    /// The system's thumbnail of a document, deck, sheet, PDF, text file or video: its first page or frame.
+    @State private var thumb: UIImage?
+    @State private var thumbFile = ""
+    @State private var onScreen = false
+
+    /// The thumbnail made for this file, or one already made earlier in this chat.
+    private var shownThumb: UIImage? {
+        if let thumb, thumbFile == file.id { return thumb }
+        guard let thumbChat, file.sampleLook == nil else { return nil }
+        return ChatThumbLive.shared.cached(file, chat: thumbChat)
+    }
 
     var body: some View {
         ZStack {
             if let look = file.sampleLook {
                 DocumentArt(look: look)
-            } else if let image {
+            } else if let image, imageFile == file.id {
                 Color(hex: 0xF4F1EC)
                 Image(uiImage: image).resizable().scaledToFill()
+            } else if let thumb = shownThumb {
+                Color(hex: 0xF4F1EC)
+                // A page is shown from its top; a slide or a video frame from its middle.
+                Image(uiImage: thumb).resizable().scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: file.kind == .video || file.kind == .deck ? .center : .top)
+                    .clipped()
+                if file.kind == .video {
+                    GeometryReader { proxy in
+                        let side = min(40, proxy.size.height * 0.4)
+                        Image(systemName: "play.fill")
+                            .font(.system(size: side * 0.4, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: side, height: side)
+                            .background(Color.black.opacity(0.45), in: Circle())
+                            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                    }
+                }
             } else {
                 Palette.paper
                 VStack(spacing: 8) {
@@ -73,15 +105,33 @@ struct FileArt: View {
             }
         }
         .task(id: file.id) {
-            guard file.sampleLook == nil, file.kind == .image, image == nil, !file.missing else { return }
+            guard file.sampleLook == nil, file.kind == .image, imageFile != file.id, !file.missing else { return }
+            let reading = file.id
             if let data = file.local ?? FileCache.shared.data(file.id) {
                 image = UIImage(data: data)
+                imageFile = reading
                 return
             }
-            if let data = try? await load(file) {
+            if let data = try? await load(file), reading == file.id {
                 FileCache.shared.keep(data, for: file.id)
                 image = UIImage(data: data)
+                imageFile = reading
+                // A picture this phone cannot decode itself (an SVG, say): the system draws it, while paired.
+                if image == nil, let thumbChat,
+                   let drawn = await ChatThumbLive.shared.thumbnail(fromBytes: data, for: file, chat: thumbChat), reading == file.id {
+                    thumb = drawn
+                    thumbFile = reading
+                }
             }
+        }
+        .onScrollVisibilityChange(threshold: 0.1) { onScreen = $0 }
+        .task(id: "\(file.id)|\(thumbChat ?? "")|\(onScreen)") {
+            // Paired only, and only while this card is on screen. Leaving the screen cancels the read.
+            guard onScreen, thumbFile != file.id, let thumbChat, ChatThumbLive.wants(file) else { return }
+            let reading = file.id
+            guard let made = await ChatThumbLive.shared.thumbnail(for: file, chat: thumbChat), reading == file.id else { return }
+            thumb = made
+            thumbFile = reading
         }
     }
 }
@@ -90,6 +140,8 @@ struct FileArt: View {
 struct FileStack: View {
     let files: [ChatFile]
     let load: (ChatFile) async throws -> Data
+    /// The chat these files belong to while the phone is paired (real thumbnails); nil keeps the drawn cards.
+    var thumbChat: String? = nil
     let open: (ChatFile) -> Void
 
     @State private var top = 0
@@ -100,7 +152,7 @@ struct FileStack: View {
             ZStack {
                 ForEach((0..<min(3, files.count)).reversed(), id: \.self) { depth in
                     let index = (top + depth) % files.count
-                    FileArt(file: files[index], load: load)
+                    FileArt(file: files[index], load: load, thumbChat: thumbChat)
                         .frame(width: 236, height: 178)
                         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
@@ -162,6 +214,8 @@ struct FileViewer: View {
     let files: [ChatFile]
     @State var index: Int
     let load: (ChatFile) async throws -> Data
+    /// The chat these files belong to while the phone is paired (real thumbnails below); nil keeps the drawn cards.
+    var thumbChat: String? = nil
 
     @State private var copied = false
     @State private var shareURL: URL?
@@ -234,7 +288,7 @@ struct FileViewer: View {
                                 Haptics.select()
                                 withAnimation(Motion.snappy) { index = offset }
                             } label: {
-                                FileArt(file: file, load: load)
+                                FileArt(file: file, load: load, thumbChat: thumbChat)
                                     .frame(width: 56, height: 42)
                                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                                     .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(offset == index ? Palette.gold : Palette.line, lineWidth: offset == index ? 2 : 1))

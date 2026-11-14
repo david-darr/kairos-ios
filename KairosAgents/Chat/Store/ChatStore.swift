@@ -80,6 +80,9 @@ final class ChatStore {
             threadOwners = [:]
             homeLoaded = false
             homeError = nil
+            // Pictures and design lists read from one desktop never stay for another, or for the sample chats.
+            ChatThumbLive.shared.reset()
+            ChatThumbDesigns.shared.reset()
             generation += 1
             publishNumbers()
         }
@@ -262,8 +265,13 @@ final class ChatStore {
             backend.markChatSeen(chatID)
         }
         if on { ConnectionSeam.chatOpened(chatID, botID) }
+        // The desktop's live design news is wanted for the chats on screen.
+        if let chatID, !isSample { ChatThumbDesigns.shared.watch(chatID, on) }
         clearOpenUnread()
     }
+
+    /// Whether this bot's conversation is on screen right now.
+    func isOpen(bot botID: String) -> Bool { openBots.contains(botID) }
 
     private func clearOpenUnread() {
         for index in conversations.indices where conversations[index].unread {
@@ -388,6 +396,8 @@ final class ChatStore {
             refreshHomeSoon()
         case .botChanged(let threadID):
             botChat(forThread: threadID)?.refreshNewest()
+        case .designChanged(let chatID):
+            ChatThumbDesigns.shared.changed(chat: chatID)
         }
     }
 
@@ -456,6 +466,17 @@ final class ChatStore {
 // MARK: - One model chat
 
 /// Everything one model chat screen shows and does. Made by `ChatStore.modelChat(_:)`.
+/// What decides where design cards sit. Small and cheap to compare: no text, so a streamed token never changes it.
+nonisolated struct ChatCardsStamp: Equatable, Sendable {
+    var designs: Int
+    var count: Int
+    var first: String?
+    var last: String?
+    var turn: String?
+    var running: Bool
+    var started: Bool
+}
+
 @Observable
 final class ModelChatState {
     nonisolated enum Phase: Equatable, Sendable { case idle, loading, loaded, failed(String) }
@@ -485,6 +506,9 @@ final class ModelChatState {
 
     @ObservationIgnored private var keptSteps: [StepLine] = []
     @ObservationIgnored private var loadedOnce = false
+    /// Where design cards sit, worked out again when the chat, the turn or the design list changes.
+    @ObservationIgnored private var cardsStamp: ChatCardsStamp?
+    @ObservationIgnored private var cardsPlaced: [String: [ChatThumbDesign]] = [:]
 
     init(store: ChatStore, id: String?) {
         self.store = store
@@ -550,6 +574,8 @@ final class ModelChatState {
             show(snapshot)
             phase = .loaded
             loadedOnce = true
+            // Paired: read the chat's designs too (each open, and after each turn). Not paired: nothing is read.
+            if !isSample { ChatThumbDesigns.shared.refresh(chat: id) }
         } catch {
             if !loadedOnce { phase = .failed(error.plainWords) } else { notice = error.plainWords }
         }
@@ -851,6 +877,29 @@ final class ModelChatState {
         return try await store.source.fileData(chatID: id, file: file)
     }
 
+    /// The chat's id for real thumbnails and design cards, or nil while the phone shows sample chats.
+    var thumbKey: String? { isSample ? nil : id }
+
+    /// The design cards that sit under one reply. Empty while not paired.
+    func designCards(for entry: TranscriptEntry) -> [ChatThumbDesign] {
+        guard let key = thumbKey else { return [] }
+        let designs = ChatThumbDesigns.shared
+        // A chat with no designs: one lookup, nothing else, however many tokens stream.
+        if entry.designs.isEmpty, !designs.hasDesigns(in: key) { return [] }
+        // Worked out again only when the design list, the saved messages or the turn change, never per token.
+        let stamp = ChatCardsStamp(designs: designs.stamp, count: entries.count, first: entries.first?.id, last: entries.last?.id,
+                                   turn: run?.turnID, running: run?.isRunning == true, started: run?.text.isEmpty == false)
+        if stamp != cardsStamp {
+            cardsStamp = stamp
+            cardsPlaced = ChatThumbPlacement.place(
+                slots: transcript.map {
+                    ChatThumbSlot(id: $0.id, assistant: $0.isAssistant, saved: $0.index != nil, time: $0.time, refs: $0.designs)
+                },
+                listed: designs.designs(in: key))
+        }
+        return cardsPlaced[entry.id] ?? []
+    }
+
     /// Stage a file from the photo library or Files and upload it to the desktop.
     func attach(name: String, data: Data) {
         guard staged.count < 10 else {
@@ -914,6 +963,9 @@ final class BotChatState {
     @ObservationIgnored private var lastID: String?
     @ObservationIgnored private var queueRevision = 0
     @ObservationIgnored private var loadedOnce = false
+    /// Where design cards sit, worked out again when the chat, the turn or the design list changes.
+    @ObservationIgnored private var cardsStamp: ChatCardsStamp?
+    @ObservationIgnored private var cardsPlaced: [String: [ChatThumbDesign]] = [:]
 
     init(store: ChatStore, botID: String) {
         self.store = store
@@ -939,10 +991,32 @@ final class BotChatState {
             result.append(BotEntry(id: "live-mine-\(run.turnID)", kind: .mine, text: run.prompt, time: run.startedAt))
         }
         let text = TranscriptParsing.body(run.text).text
-        if !text.isEmpty, result.last(where: { $0.kind == .theirs })?.text != text {
+        // A saved reply has its design links taken out (they are drawn as cards). So once the turn has ended, the
+        // live copy is compared in that same form, or a reply that links a design would show twice. While the
+        // reply is still being written nothing extra is parsed.
+        let savedForm = run.isRunning ? text : TranscriptParsing.body(run.text, takeDesigns: true).text
+        if !text.isEmpty, result.last(where: { $0.kind == .theirs })?.text != savedForm {
             result.append(BotEntry(id: "live-\(run.turnID)", kind: .theirs, text: text, time: run.startedAt))
         }
         return result
+    }
+
+    /// The design cards that sit under one reply. Empty while not paired.
+    func designCards(for entry: BotEntry) -> [ChatThumbDesign] {
+        guard !isSample, let key = threadID else { return [] }
+        let designs = ChatThumbDesigns.shared
+        if entry.designs.isEmpty, !designs.hasDesigns(in: key) { return [] }
+        let stamp = ChatCardsStamp(designs: designs.stamp, count: entries.count, first: entries.first?.id, last: entries.last?.id,
+                                   turn: run?.turnID, running: run?.isRunning == true, started: run?.text.isEmpty == false)
+        if stamp != cardsStamp {
+            cardsStamp = stamp
+            cardsPlaced = ChatThumbPlacement.place(
+                slots: transcript.map {
+                    ChatThumbSlot(id: $0.id, assistant: $0.kind == .theirs, saved: !$0.id.hasPrefix("live-"), time: $0.time, refs: $0.designs)
+                },
+                listed: designs.designs(in: key))
+        }
+        return cardsPlaced[entry.id] ?? []
     }
 
     /// "Kip is reading your notes": what the bot is doing right now, or nil.
@@ -986,6 +1060,7 @@ final class BotChatState {
             phase = .loaded
             loadedOnce = true
             markRead()
+            if !isSample { ChatThumbDesigns.shared.refresh(chat: snapshot.threadID) }
         } catch {
             if !loadedOnce { phase = .failed(error.plainWords) } else { notice = error.plainWords }
         }
@@ -1011,6 +1086,8 @@ final class BotChatState {
         Task {
             guard let page = try? await store.source.newestBotMessages(threadID: threadID) else { return }
             merge(page)
+            // Only the conversation on screen reads its designs; the others wait until they are opened.
+            if !isSample, store.isOpen(bot: botID) { ChatThumbDesigns.shared.refresh(chat: threadID) }
         }
     }
 
@@ -1095,6 +1172,7 @@ final class BotChatState {
                 merge(page)
                 store.forgetRun(threadID, turnID: run.turnID)
                 markRead()
+                if !isSample { ChatThumbDesigns.shared.refresh(chat: threadID) }
             }
             if run.status == .failed, let error = run.error { notice = error }
         }
