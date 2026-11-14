@@ -864,7 +864,7 @@ nonisolated enum MakeStudioSamples {
             let handsNull = MakeStudioHandsOffDTO(try KJSON.decode(JSONValue.self, from: #"{"on": null, "paused": false}"#))
             let handsMissing = MakeStudioHandsOffDTO(try KJSON.decode(JSONValue.self, from: #"{"paused": false}"#))
             let setup = MakeStudioSetupDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.setup))
-            let report =MakeStudioReportDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.report))
+            let report = MakeStudioReportDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.report))
             guard settings.batchApproval, settings.teamPaused, !settings.handsOff, settings.weights == [0.4, 0.4, 0.2],
                   hands.on, hands.readable, !hands.paused, hands.taps == 1,
                   !handsNull.readable, !handsMissing.readable,
