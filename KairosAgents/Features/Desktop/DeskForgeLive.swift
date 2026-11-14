@@ -290,10 +290,10 @@ final class DeskForgeLive {
     // when the pass that makes it live is merged.
     /// Explorer, files, the Git sheet, Changes and Diff.
     static let changesAndFilesLive = true
-    static let computerLive = false
-    static let browseLive = false
+    static let computerLive = true
+    static let browseLive = true
     static let localModelsLive = true
-    static let pcFilesLive = false
+    static let pcFilesLive = true
     /// True while at least one Desktop home tile is still closed: the one line about them shows.
     static var desktopTilesWaiting: Bool { !(computerLive && browseLive && localModelsLive && pcFilesLive) }
     private static let desktopChanged = "Your paired desktop changed. Try again."

@@ -594,6 +594,12 @@ final class YouAccessLive {
     /// Stop a running computer. A second stop of a closed computer is answered 404, which counts as stopped.
     func stopComputer(_ owner: String) async {
         guard let computer = computers.first(where: { $0.owner == owner }) else { return }
+        // The Desktop area's Computer screen can stop the same computer. While a stop sent from there is still
+        // unsettled, no second one is sent from here.
+        guard DeskComputerLive.shared.stopPhase(owner) == nil else {
+            notice[.computers] = "A stop for this computer is still being checked. Look in Desktop, under Computer."
+            return
+        }
         let name = computer.title.isEmpty ? "The computer" : computer.title
         await narrow(.computers, key: "computer:" + owner,
                      words: YouAccessWords(done: "\(name) stopped.", failed: "\(name) was not stopped.", missingIsDone: true),
