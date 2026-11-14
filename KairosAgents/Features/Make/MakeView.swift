@@ -509,8 +509,11 @@ struct MakeView: View {
         let always = kind == .design || kind == .video
         if !items.isEmpty || always {
             let shown = kind == .design ? Array(items.prefix(MakeHomeLive.designShelfLimit)) : items
+            // The number only once the shelf was really read or has items, never "0" while loading or after a failed read.
+            let read = kind == .design ? live.designsRead : live.videosRead
+            let title = items.isEmpty && !read ? MakeHomeLive.shelfTitle(kind) : "\(MakeHomeLive.shelfTitle(kind))  \(items.count)"
             VStack(spacing: 10) {
-                sectionHead("\(MakeHomeLive.shelfTitle(kind))  \(items.count)", trailing: "All") {
+                sectionHead(title, trailing: "All") {
                     cover = kind == .design ? .designs : .made(kind)
                 }
                 if items.isEmpty {

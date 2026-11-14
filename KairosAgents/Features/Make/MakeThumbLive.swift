@@ -42,10 +42,31 @@ final class MakeThumbLive {
     private static let missSeconds: TimeInterval = 60
     private static let failSeconds: TimeInterval = 15
     private static let sizeLimit = 6_000_000
+    /// The long side a picture is shrunk to, and the most decoded memory all kept pictures may hold together.
+    private static let longSide: CGFloat = 480
+    private static let costLimit = 24_000_000
 
     private var account = "sample"
     private var images: [String: UIImage] = [:]
     private var imageOrder: [String] = []
+    private var imageCosts: [String: Int] = [:]
+    private var imageCost = 0
+
+    init() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.dropImages() }
+        }
+    }
+
+    /// Let go of the kept pictures only (a memory warning). They are read again when a card asks.
+    private func dropImages() {
+        images = [:]
+        imageOrder = []
+        imageCosts = [:]
+        imageCost = 0
+    }
     private var misses: [String: (result: MakeThumbResult, until: Date)] = [:]
     private var flights: [String: MakeThumbFlight] = [:]
     private var flightSerial = 0
@@ -73,8 +94,7 @@ final class MakeThumbLive {
     func clear() {
         for flight in flights.values { flight.task?.cancel() }
         flights = [:]
-        images = [:]
-        imageOrder = []
+        dropImages()
         misses = [:]
         account = "sample"
     }
@@ -99,11 +119,17 @@ final class MakeThumbLive {
     private func remember(_ key: String, _ answer: MakeThumbResult) {
         switch answer {
         case .image(let image):
+            let cost = max(1, (image.cgImage.map { $0.width * $0.height } ?? Int(image.size.width * image.size.height)) * 4)
+            imageCost -= imageCosts[key] ?? 0
             images[key] = image
+            imageCosts[key] = cost
+            imageCost += cost
             imageOrder.removeAll { $0 == key }
             imageOrder.append(key)
-            while imageOrder.count > Self.imageLimit {
-                images[imageOrder.removeFirst()] = nil
+            while imageOrder.count > 1, imageOrder.count > Self.imageLimit || imageCost > Self.costLimit {
+                let oldest = imageOrder.removeFirst()
+                images[oldest] = nil
+                imageCost -= imageCosts.removeValue(forKey: oldest) ?? 0
             }
         case .missing, .notRendered:
             misses[key] = (answer, Date().addingTimeInterval(Self.missSeconds))
@@ -210,7 +236,13 @@ final class MakeThumbLive {
             do {
                 let data = try await client.makeThumbBytes(path)
                 guard !Task.isCancelled, stillLive(key) else { return .cancelled }
-                if data.count <= Self.sizeLimit, let image = UIImage(data: data) { return .image(image) }
+                if data.count <= Self.sizeLimit {
+                    // Decoded and shrunk off the main thread, never held at full size.
+                    let size = Self.longSide
+                    let picture = await Task.detached { DocsLiveDecode.picture(data, maxPixels: size) }.value
+                    guard !Task.isCancelled, stillLive(key) else { return .cancelled }
+                    if let picture { return .image(UIImage(cgImage: picture.image)) }
+                }
                 failed = true
             } catch is CancellationError {
                 return .cancelled
@@ -274,11 +306,15 @@ struct MakeThumbPicture: View {
         }
         .task(id: MakeHomeLive.accountKey + "|" + source.key) {
             let kept = MakeThumbLive.shared.known(source)
-            result = kept
+            // Keep the previous picture on screen while a changed item's new one is on its way.
+            if kept != nil { result = kept }
             guard kept == nil else { return }
             let answer = await MakeThumbLive.shared.result(source)
             guard !Task.isCancelled else { return }
-            if case .cancelled = answer { return }
+            if case .cancelled = answer {
+                if result == nil { result = .failed }
+                return
+            }
             result = answer
         }
         .accessibilityHidden(true)

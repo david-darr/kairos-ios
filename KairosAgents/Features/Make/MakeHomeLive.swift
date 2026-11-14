@@ -105,6 +105,7 @@ final class MakeHomeLive {
     @ObservationIgnored private var itemTimes: [String: Date] = [:]
     /// Every design of GET /api/designs, as last read.
     @ObservationIgnored private var designRows: [MakeThumbDesignRow] = []
+    @ObservationIgnored private var designSkipped = 0
     /// The most designs the shelf on Make home draws. The full list is one tap away.
     static let designShelfLimit = 12
     /// The desktop's own page keeps a refused tap's send id for the same text, so a second tap of it can never
@@ -168,6 +169,7 @@ final class MakeHomeLive {
         videosRead = false
         thumbSources = [:]
         designRows = []
+        designSkipped = 0
         MakeThumbLive.shared.clear()
         making = []
         tracked = []
@@ -327,6 +329,8 @@ final class MakeHomeLive {
                 guard writes == writeSerial else { continue }
                 if let designs {
                     designRows = designs.compactMap(\.value).compactMap { MakeThumbDesignRow($0) }
+                    // A row that did not decode, or whose id is not 12 hex, is counted as one that could not be read.
+                    designSkipped = designs.count - designRows.count
                     designsRead = true
                 }
                 show(list, videos: videos)
@@ -397,7 +401,7 @@ final class MakeHomeLive {
             let b = times[second.element.id] ?? .distantPast
             return a == b ? first.offset < second.offset : a > b
         }.map(\.element)
-        var skippedNow = list.skipped
+        var skippedNow = list.skipped + designSkipped
         if let videos {
             skippedNow += videos.skipped
             for dto in videos.videos {
