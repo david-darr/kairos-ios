@@ -535,7 +535,7 @@ extension ForgeHomeScreen {
         guard paired else { return nil }
         guard let chosen = liveProject else { return "Add projects in Kairos on your desktop." }
         if let wrong = chosen.gitProblem { return wrong }
-        if live.models.isEmpty { return "Add a model in Kairos on your desktop first." }
+        if live.models.isEmpty { return "No model was read from your desktop. Add one there first." }
         if location == .branch && liveBranch(chosen.id) == nil { return "Choose a branch that is not checked out." }
         return nil
     }
@@ -567,8 +567,9 @@ extension ForgeHomeScreen {
             if let id = result.id {
                 task = ""
                 openSession = id
-            } else {
-                problem = result.outcome.line
+            } else if let line = result.outcome.line {
+                // The first commit is made on the desktop: the phone does not offer it while paired.
+                problem = line.contains("has no commits yet") ? line + " Make it in Kairos on your desktop." : line
             }
         }
     }

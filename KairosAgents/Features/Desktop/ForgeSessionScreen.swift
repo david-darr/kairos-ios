@@ -1443,7 +1443,8 @@ struct DeskForgeSessionView: View {
                 DeskSheetTitle(text: (detail?.title ?? "").isEmpty ? "Session" : (detail?.title ?? ""),
                                detail: "\(project?.name ?? "Forge") · \(live.modelName(detail?.endpointID))")
                 HStack(spacing: 10) {
-                    if app == nil && !command.isEmpty {
+                    // One start at a time: not while an app runs, and not while a start waits on the desktop.
+                    if app == nil && !command.isEmpty && live.approval(sessionID) == nil {
                         actionTile("play.fill", "Run app") { then(.runApp) }
                     }
                     actionTile("folder", "Explorer") { open(.explorer(sessionID)) }
