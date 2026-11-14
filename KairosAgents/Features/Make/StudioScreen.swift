@@ -28,7 +28,9 @@ struct StudioScreen: View {
                     scopeButton.arrives(0)
                     StudioHead().arrives(1)
                     StudioAlerts()
-                    if studio.hasTeam, studio.tabs.isEmpty == false { HandsOffStrip().arrives(2) }
+                    // Paired, the strip is also drawn while hands-off posting is on or could not be read, even when
+                    // the team's setup did not load: it holds the only way to turn hands-off posting off from here.
+                    if studio.hasTeam || (paired && live.postingHeld(studio)), studio.tabs.isEmpty == false { HandsOffStrip().arrives(2) }
                     if !studio.setupHidden, studio.setupLeft > 0, studio.tabs.isEmpty == false { SetupCard().arrives(3) }
                     if !studio.tabs.isEmpty {
                         GlassSwitch(items: studio.tabs, selection: $studio.tab) { tab in
@@ -172,7 +174,7 @@ struct StudioHead: View {
         case .all:
             VStack(alignment: .leading, spacing: 3) {
                 Text("All channels").font(KFont.display(32)).foregroundStyle(Palette.ink)
-                Text("\(studio.liveChannels.filter { $0.state == .live }.count) live channels in \(studio.niches.filter { !$0.retired }.count) live niches. \(studio.approvalLine)")
+                Text("\(studio.liveChannels.filter { $0.state == .live }.count) live channels in \(studio.niches.filter { !$0.retired }.count) live niches. \(studio.isLive && !studio.handsOff && !MakeStudioLive.shared.handsOffKnown ? MakeStudioWords.handsOffUnreadLine : studio.approvalLine)")
                     .font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.inkDim)
                     .fixedSize(horizontal: false, vertical: true)
             }

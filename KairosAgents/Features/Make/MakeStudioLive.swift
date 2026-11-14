@@ -1014,7 +1014,12 @@ final class MakeStudioLive {
     func turnHandsOffOff() async -> MakeStudioOutcome {
         await perform("handsoff", done: "Hands-off posting is off. Every post waits for your OK.",
                       notApplied: "Your desktop still has hands-off posting on.", lostLine: lostWords("the switch"),
-                      verify: { [weak self] in self?.studio.map { $0.handsOff ? .notApplied : .applied } ?? .unknown },
+                      verify: { [weak self] in
+                          // Applied only when the desktop was read again and its answer was readable and off.
+                          guard let self, let studio = self.studio else { return .unknown }
+                          if studio.handsOff { return .notApplied }
+                          return self.handsOffKnown ? .applied : .unknown
+                      },
                       send: { client in
                           try await client.makeStudioHandsOffTurnOff()
                           return nil
@@ -1294,14 +1299,15 @@ struct MakeStudioHandsOffStrip: View {
             let held = live.postingHeld(studio)
             let resumeOff = studio.teamPaused && held
             HStack(spacing: 8) {
-                if studio.handsOff {
-                    MakePillButton(title: "Turn hands-off posting off", expand: true) {
+                // Turning it off stays possible while its state is on OR could not be read: it only ever sends "off".
+                if held {
+                    MakePillButton(title: studio.handsOff ? "Turn hands-off posting off" : "Make sure hands-off posting is off", expand: true) {
                         Task { toast.say(await live.turnHandsOffOff().line) }
                     }
                     .disabled(live.isBusy("handsoff"))
                     .opacity(live.isBusy("handsoff") ? 0.5 : 1)
                 }
-                MakePillButton(title: studio.teamPaused ? "Resume team" : "Pause team", symbol: studio.teamPaused ? "play.fill" : "pause.fill", expand: studio.handsOff == false) {
+                MakePillButton(title: studio.teamPaused ? "Resume team" : "Pause team", symbol: studio.teamPaused ? "play.fill" : "pause.fill", expand: !held) {
                     // Pausing is sent at once. Resuming asks first, because it can restart automatic posting.
                     if studio.teamPaused {
                         studio.sheet = .resumeTeam
@@ -1777,7 +1783,7 @@ struct MakeStudioReport: View {
                 }
                 MakeStudioPendingLine(key: "report")
                 if !sent, !busy, live.reportSentThisWeek(MakeStudioLive.accountKey) {
-                    HintLine(text: "This phone already sent the report this week. Sending again puts a second note in your Inbox.")
+                    HintLine(text: "This phone sent, or tried to send, the report this week. Sending again may put a second note in your Inbox and, with hands-off posting on, a second Reach me message.")
                 }
                 MakePillButton(title: sent ? "Sent to your Inbox" : (busy ? "Not confirmed" : "Send to my Inbox"),
                                symbol: sent ? "checkmark" : "tray.and.arrow.down", filled: !sent && !busy) {

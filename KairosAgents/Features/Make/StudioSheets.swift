@@ -233,7 +233,7 @@ struct StudioSheetView: View {
             })
         case .decision(let id):
             let decision = studio.decisions.first { $0.id == id }
-            return AnyView(MakeConfirmSheet(title: "\(decision?.title ?? "Confirm this decision")?", detail: "Your desktop goes ahead with this. A retirement archives its channels, which keep their history.", button: "Confirm") {
+            return AnyView(MakeConfirmSheet(title: "\(decision?.title ?? "Confirm this decision")?", detail: "Your desktop goes ahead with this. A retirement archives its channels, which keep their history." + (live.postingHeld(studio) ? " If it retires a niche, its posting slots go to the winning niche, which then posts more often on its own while hands-off posting is on." : ""), button: "Confirm") {
                 say { await live.decide(id, confirm: true) }
             })
         case .decisionReject(let id):
