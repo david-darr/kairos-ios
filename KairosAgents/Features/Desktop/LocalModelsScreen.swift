@@ -457,7 +457,9 @@ struct DeskModelsScreen: View {
     }
 
     private func deleteDetail(_ model: DeskModelsInstalled) -> String {
-        var text = "\(model.name) (\(DeskModelsWire.bytes(model.bytes))) is removed from your PC, which frees \(DeskModelsWire.bytes(model.bytes)) of disk space. It cannot be undone from your phone, except by downloading it again."
+        // Ollama models share files between tags, so removing one can free less than its size.
+        let frees = selected == .ollama ? "frees up to \(DeskModelsWire.bytes(model.bytes))" : "frees \(DeskModelsWire.bytes(model.bytes))"
+        var text = "\(model.name) (\(DeskModelsWire.bytes(model.bytes))) is removed from your PC, which \(frees) of disk space. It cannot be undone from your phone, except by downloading it again."
         if selected == .builtIn && model.running { text += " It also stops running." }
         return text
     }
@@ -839,9 +841,19 @@ struct DeskModelsScreen: View {
                         Spacer(minLength: 4)
                         DeskPillButton(title: "Try again", symbol: "arrow.clockwise") { pulling = entry }
                     case .done?:
-                        Text("Finished. Reading your installed list...")
-                            .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-                        Spacer()
+                        if live.finishedMissing(engine, entry.name) {
+                            // Nothing was installed (an error inside the pull, or the model was removed outside
+                            // Kairos). The button still goes through the confirm, and the phone re-reads first.
+                            Text("Your desktop says it finished, but the model is not installed.")
+                                .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                            Spacer(minLength: 4)
+                            DeskPillButton(title: verb, symbol: "arrow.down", filled: true) { pulling = entry }
+                                .disabled(!DeskModelsWire.pathOK(entry.name))
+                        } else {
+                            Text("Finished. Reading your installed list...")
+                                .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                            Spacer()
+                        }
                     case .cancelled?, .notStarted?:
                         DeskPillButton(title: verb, symbol: "arrow.down", filled: true) { pulling = entry }
                             .disabled(!DeskModelsWire.pathOK(entry.name))

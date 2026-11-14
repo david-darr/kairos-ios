@@ -308,11 +308,21 @@ extension APIClient {
         try await get("/api/cookbook/engine/status")
     }
 
-    /// POST /api/cookbook/engine/start/{name}: waits for the server to come up (up to 60 seconds), so the phone's
-    /// own wait can end first. A model that is not downloaded is 404.
+    /// POST /api/cookbook/engine/start/{name}: waits for the server to come up (up to 60 seconds), so it is sent with
+    /// its own 75-second wait; the usual 30 seconds would end first and mark the whole desktop offline. A model that
+    /// is not downloaded is 404.
     func deskModelsEngineStart(_ name: String) async throws -> DeskModelsEngineStatusDTO {
         let part = try DeskModelsWire.pathName(name)
-        return try await post("/api/cookbook/engine/start/" + part)
+        var request = try urlRequest("POST", "/api/cookbook/engine/start/" + part)
+        request.timeoutInterval = 75
+        request.httpBody = Data("{}".utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let data = try await send(request)
+        do {
+            return try KJSON.decode(DeskModelsEngineStatusDTO.self, from: data)
+        } catch {
+            throw APIError.unreadable(String(describing: error))
+        }
     }
 
     func deskModelsEngineStop() async throws -> DeskForgeOkDTO {
@@ -503,6 +513,10 @@ nonisolated enum DeskModelsSamples {
                   DeskModelsProgress(failed).phase == .failed, DeskModelsProgress(cancelled).phase == .cancelled,
                   DeskModelsProgress(words).phase == .running else {
                 throw SampleMismatch("progress phases")
+            }
+            guard DeskModelsStage(words) == .working, DeskModelsStage(waiting) == .idle, DeskModelsStage(done) == .idle,
+                  DeskModelsStage(connected) == .connected, DeskModelsStage(broken) == .failed else {
+                throw SampleMismatch("setup stages")
             }
             return "running, not started, done, failed, cancelled, setup connected and failed"
         },

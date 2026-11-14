@@ -496,6 +496,8 @@ struct DeskModelsSetupSheet: View {
                 .kCard(radius: 18)
             case .starting:
                 progressCard("Starting your local model on your desktop.")
+            case .working:
+                progressCard("Working on your desktop.")
             case .connected:
                 VStack(alignment: .leading, spacing: 10) {
                     Label("Your local model is connected. Chats can use it now.", systemImage: "checkmark.circle.fill")

@@ -159,16 +159,19 @@ nonisolated enum DeskModelsStage: Hashable, Sendable {
     case idle, preparing
     case downloading(Double?)
     case starting, connected, failed
+    /// A stage this phone has no word for, while the desktop says it is not over.
+    case working
 
     var active: Bool {
         switch self {
-        case .preparing, .downloading, .starting: return true
+        case .preparing, .downloading, .starting, .working: return true
         case .idle, .connected, .failed: return false
         }
     }
 
     init(_ dto: DeskModelsProgressDTO) {
-        switch dto.status ?? "" {
+        let status = dto.status ?? ""
+        switch status {
         case "preparing": self = .preparing
         case "downloading":
             let total = max(0, dto.total ?? 0)
@@ -176,7 +179,7 @@ nonisolated enum DeskModelsStage: Hashable, Sendable {
         case "starting": self = .starting
         case "connected": self = .connected
         case "error": self = .failed
-        default: self = .idle
+        default: self = (status.isEmpty || status == "not_started" || dto.done == true) ? .idle : .working
         }
     }
 }
@@ -208,6 +211,9 @@ final class DeskModelsLive {
     private var busyKeys: Set<String> = []
     /// Models a register answered for, so "In your models" shows even when the list cannot be read again.
     private var registeredNow: Set<String> = []
+    /// Models whose pull or download the desktop says finished, while an installed list read after that status
+    /// does not hold them.
+    private var missingAfterDone: Set<String> = []
     private var setupState = DeskModelsSetupState()
     /// Pulls, downloads, setups and registers whose outcome is not known, keyed by desktop, account, kind, engine
     /// and model. Never cleared by a change of screen or of desktop: only the desktop (or the person) clears one.
@@ -228,7 +234,8 @@ final class DeskModelsLive {
     var isAdmin: Bool { DeskForgeLive.shared.isAdmin }
 
     static let adminLine = "Local models need an admin account on your desktop."
-    private static let desktopChanged = "Your paired desktop changed. Try again."
+    /// For a change that was already sent when the paired desktop changed: it may have happened.
+    private static let movedAfterSend = "Your paired desktop changed before it answered, so this phone cannot tell whether it happened. Check that desktop."
 
     private var current: Bool { on && account == DeskForgeLive.accountKey }
 
@@ -255,6 +262,7 @@ final class DeskModelsLive {
         noteMap = [:]
         busyKeys = []
         registeredNow = []
+        missingAfterDone = []
         setupState = DeskModelsSetupState()
         reads = [:]
     }
@@ -320,8 +328,14 @@ final class DeskModelsLive {
 
     func isInstalled(_ engine: ModelEngine, _ name: String) -> Bool {
         let list = state(engine).installed
-        if engine == .ollama { return list.contains { $0.name == name || $0.name.hasPrefix(name + ":") } }
+        // Another tag of the same model ("llama3.1:70b" for "llama3.1") is a different download.
+        if engine == .ollama { return list.contains { $0.name == name || $0.name == name + ":latest" } }
         return list.contains { $0.name == name }
+    }
+
+    /// The desktop says the pull or download finished, but its installed list, read after that, lacks the model.
+    func finishedMissing(_ engine: ModelEngine, _ name: String) -> Bool {
+        current && missingAfterDone.contains(Self.progressKey(engine, name)) && !isInstalled(engine, name)
     }
 
     /// The sentence for a hold, or nil.
@@ -379,7 +393,13 @@ final class DeskModelsLive {
                 guard let client = Connection.shared.client else { throw APIError.notPaired }
                 let value = try await fetch(client)
                 guard stillLive(account), reads[key] == serial else { return .stale }
-                guard writes == writeSerial, inFlight == 0 else { continue }
+                guard writes == writeSerial, inFlight == 0 else {
+                    // A change is on its way (an engine start can take a minute): wait a moment instead of
+                    // using up the rounds at once.
+                    try? await Task.sleep(for: .milliseconds(700))
+                    if Task.isCancelled { return .stale }
+                    continue
+                }
                 return .fresh(value)
             } catch {
                 if error is CancellationError || Task.isCancelled { return .stale }
@@ -398,7 +418,7 @@ final class DeskModelsLive {
     @discardableResult
     func load(_ engine: ModelEngine) async -> Bool {
         guard let account = await readyAccount() else { return false }
-        return engine == .ollama ? await loadOllama(account) : await loadBuiltIn(account)
+        return engine == .ollama ? await loadOllama(account, again: 2) : await loadBuiltIn(account, again: 2)
     }
 
     private func edit(_ engine: ModelEngine, _ change: (inout DeskModelsEngineState) -> Void) {
@@ -416,7 +436,10 @@ final class DeskModelsLive {
         }
     }
 
-    private func loadOllama(_ account: String) async -> Bool {
+    /// `again` is how many times the whole read starts over when a change finished while its parts were read, so
+    /// the lists of different moments are never put together.
+    private func loadOllama(_ account: String, again: Int) async -> Bool {
+        let writes = writeSerial
         if ollamaState.load != .loaded { ollamaState.load = .loading }
         let reach: DeskModelsReachDTO
         switch await read("ollama.status", account, { try await $0.deskModelsOllamaStatus() }) {
@@ -453,6 +476,7 @@ final class DeskModelsLive {
             case .fresh(let value): memory = value
             }
         }
+        guard writes == writeSerial else { return again > 0 ? await loadOllama(account, again: again - 1) : false }
         let loaded = memory.map(Self.loadedRows) ?? []
         ollamaState.catalog = Self.entries(catalog)
         ollamaState.reachable = !down
@@ -471,7 +495,8 @@ final class DeskModelsLive {
         return true
     }
 
-    private func loadBuiltIn(_ account: String) async -> Bool {
+    private func loadBuiltIn(_ account: String, again: Int) async -> Bool {
+        let writes = writeSerial
         if builtInState.load != .loaded { builtInState.load = .loading }
         let catalog: DeskForgeList<DeskModelsCatalogDTO>
         switch await read("engine.catalog", account, { try await $0.deskModelsEngineCatalog() }) {
@@ -491,6 +516,7 @@ final class DeskModelsLive {
         case .failed(let why, _): failed(.builtIn, why); return false
         case .fresh(let value): status = value
         }
+        guard writes == writeSerial else { return again > 0 ? await loadBuiltIn(account, again: again - 1) : false }
         let running = status.running == true ? status.model : nil
         builtInState.catalog = Self.entries(catalog)
         builtInState.runningModel = running
@@ -507,6 +533,28 @@ final class DeskModelsLive {
         for entry in state(engine).catalog where !isInstalled(engine, entry.name) && DeskModelsWire.pathOK(entry.name) {
             guard stillLive(account) else { return }
             await refreshProgress(engine, entry.name, account)
+        }
+        guard stillLive(account) else { return }
+        // A status that says finished is checked against an installed list read after it.
+        if finishedNames(engine).contains(where: { !isInstalled(engine, $0) }) {
+            guard await refreshInstalled(engine, account) else { return }
+        }
+        markFinished(engine)
+    }
+
+    private func finishedNames(_ engine: ModelEngine) -> [String] {
+        let prefix = engine.key + "|"
+        return progressMap.compactMap { entry -> String? in
+            entry.value.phase == .done && entry.key.hasPrefix(prefix) ? String(entry.key.dropFirst(prefix.count)) : nil
+        }
+    }
+
+    /// Call right after an installed list was read: which finished pulls the list does not hold.
+    private func markFinished(_ engine: ModelEngine) {
+        let prefix = engine.key + "|"
+        missingAfterDone = missingAfterDone.filter { !$0.hasPrefix(prefix) }
+        for name in finishedNames(engine) where !isInstalled(engine, name) {
+            missingAfterDone.insert(Self.progressKey(engine, name))
         }
     }
 
@@ -605,7 +653,7 @@ final class DeskModelsLive {
                 ended = true
             }
         }
-        if ended { await refreshInstalled(engine, account) }
+        if ended, await refreshInstalled(engine, account) { markFinished(engine) }
     }
 
     /// True while a status is worth reading again soon: something runs, or is being checked.
@@ -676,11 +724,41 @@ final class DeskModelsLive {
               let before = progressMap[key], before.phase != .running, before.phase != .unread else { return }
         holds[hold] = DeskModelsHold(phase: .sending, before: before)
         noteMap[Self.noteKey(engine, entry.name)] = nil
-        Task { await self.sendPull(engine, entry.name, account, hold, before) }
+        Task { await self.sendPull(engine, entry.name, account, hold) }
     }
 
-    private func sendPull(_ engine: ModelEngine, _ name: String, _ account: String, _ hold: String, _ before: DeskModelsProgress) async {
+    private func sendPull(_ engine: ModelEngine, _ name: String, _ account: String, _ hold: String) async {
         let note = Self.noteKey(engine, name)
+        // The screen can be 15 seconds old, and the built-in engine starts a whole new download after a finished
+        // one. So the hold is already set, and the desktop is read first: only a fresh status that says it is not
+        // running and a fresh installed list without the model let the request leave. A read that fails sends nothing.
+        guard await refreshProgress(engine, name, account), let now = progressMap[Self.progressKey(engine, name)] else {
+            holds[hold] = nil
+            noteMap[note] = "Your desktop could not be read, so nothing was downloaded. Try again."
+            return
+        }
+        guard now.phase != .running else {
+            // The desktop shows it: the card shows the progress.
+            holds[hold] = nil
+            return
+        }
+        guard await refreshInstalled(engine, account) else {
+            holds[hold] = nil
+            noteMap[note] = "Your desktop could not be read, so nothing was downloaded. Try again."
+            return
+        }
+        guard !isInstalled(engine, name) else {
+            // Installed since the screen was read.
+            holds[hold] = nil
+            return
+        }
+        guard stillLive(account) else {
+            holds[hold] = nil
+            return
+        }
+        // What the desktop said just before the request, so an old finished status is not read as the outcome.
+        let before = now
+        holds[hold]?.before = before
         switch await attempt(account, { try await $0.deskModelsPull(engine, name) }) {
         case .moved:
             holds[hold]?.phase = .quiet(checked: false)
@@ -750,9 +828,16 @@ final class DeskModelsLive {
         let key = "delete|" + Self.progressKey(engine, name)
         guard let account = begin(key) else { return .busy }
         defer { finish(key, account) }
+        // begin() follows the paired desktop and account and empties the lists when either changed, so a model
+        // that is not in the list now is one this phone has not read for this desktop.
+        guard state(engine).installed.contains(where: { $0.name == name }) else {
+            return .refused("Nothing was deleted. This model is not in the list your phone read from this desktop. Try again.")
+        }
+        // Ollama answers 503 for any failure and its text can carry the desktop's own address: a fixed sentence.
+        func detail(_ why: String) -> String { engine == .ollama ? "Check that Ollama is running on your desktop." : why }
         switch await attempt(account, { try await $0.deskModelsDelete(engine, name) }) {
         case .moved:
-            return .refused(Self.desktopChanged)
+            return .unconfirmed(Self.movedAfterSend)
         case .ok:
             // The desktop forgets the pull of a deleted model.
             progressMap[Self.progressKey(engine, name)] = DeskModelsProgress()
@@ -760,8 +845,9 @@ final class DeskModelsLive {
             if engine == .builtIn { await refreshEngineStatus(account) }
             return .done
         case .refused(let why):
-            return .refused("Nothing was deleted. " + why)
-        case .lost(let why):
+            return .refused("Nothing was deleted. " + detail(why))
+        case .lost(let raw):
+            let why = detail(raw)
             guard await refreshInstalled(engine, account) else { return .unconfirmed(Self.unchecked("the delete", why)) }
             if engine == .builtIn { await refreshEngineStatus(account) }
             if !state(engine).installed.contains(where: { $0.name == name }) { return .done }
@@ -777,11 +863,17 @@ final class DeskModelsLive {
         guard on, isAdmin, DeskModelsWire.pathOK(name) else { return .refused("This model cannot be started from your phone.") }
         guard let account = begin(Self.engineKey) else { return .busy }
         defer { finish(Self.engineKey, account) }
+        // begin() empties the lists when the paired desktop or account changed: then this model is not one this
+        // phone has read for this desktop.
+        guard state(.builtIn).installed.contains(where: { $0.name == name }) else {
+            return .refused("It was not started. This model is not in the list your phone read from this desktop. Try again.")
+        }
         noteMap[Self.engineKey] = "Starting \(name). Your desktop can take a minute."
         defer { if self.account == account { noteMap[Self.engineKey] = nil } }
+        let sent = Date()
         switch await attempt(account, { try await $0.deskModelsEngineStart(name) }) {
         case .moved:
-            return .refused(Self.desktopChanged)
+            return .unconfirmed(Self.movedAfterSend)
         case .ok(let status):
             setRunning(status.running == true ? status.model : nil)
             return status.running == true && status.model == name ? .done : .refused("Your desktop did not start it.")
@@ -792,10 +884,12 @@ final class DeskModelsLive {
             for _ in 0..<20 {
                 try? await Task.sleep(for: .seconds(4))
                 if Task.isCancelled { break }
-                guard stillLive(account) else { return .unconfirmed(Self.desktopChanged) }
+                guard stillLive(account) else { return .unconfirmed(Self.movedAfterSend) }
                 if await refreshEngineStatus(account) {
                     checked = true
-                    if builtInState.runningModel == name { return .done }
+                    // The desktop says "running" as soon as the process exists, and stops it again if it is not
+                    // healthy after 60 seconds. So "running" counts only once that time has passed.
+                    if builtInState.runningModel == name, Date().timeIntervalSince(sent) > 65 { return .done }
                 }
             }
             return .unconfirmed(checked
@@ -811,7 +905,7 @@ final class DeskModelsLive {
         defer { finish(Self.engineKey, account) }
         switch await attempt(account, { try await $0.deskModelsEngineStop() }) {
         case .moved:
-            return .refused(Self.desktopChanged)
+            return .unconfirmed(Self.movedAfterSend)
         case .ok:
             setRunning(nil)
             await refreshEngineStatus(account)
@@ -840,6 +934,21 @@ final class DeskModelsLive {
 
     private func sendRegister(_ engine: ModelEngine, _ name: String, _ account: String, _ hold: String) async {
         let note = Self.noteKey(engine, name)
+        // The list on the screen can be old, and register makes a new connection every time: read it again first.
+        guard await readConnections(account) else {
+            holds[hold] = nil
+            noteMap[note] = "Your models could not be read. Try again."
+            return
+        }
+        guard !connected(engine, name) else {
+            // Added since the screen was read: the row now says "In your models".
+            holds[hold] = nil
+            return
+        }
+        guard stillLive(account) else {
+            holds[hold] = nil
+            return
+        }
         switch await attempt(account, { try await $0.deskModelsRegister(engine, name) }) {
         case .moved:
             holds[hold]?.phase = .quiet(checked: false)
@@ -881,13 +990,9 @@ final class DeskModelsLive {
                 }
             }
             if Task.isCancelled { return }
-            if checked {
-                // The desktop was read and has no connection for this model: it is safe to offer the button again.
-                self.holds[hold] = nil
-                self.noteMap[Self.noteKey(engine, name)] = "Your desktop did not add it. You can try again."
-            } else {
-                self.holds[hold]?.phase = .quiet(checked: false)
-            }
+            // The request may still be on its way through to the desktop, so the button stays off: only the person,
+            // after looking at the desktop, lets it go (the same as a pull).
+            self.holds[hold]?.phase = .quiet(checked: checked)
             self.watches[hold] = nil
         }
     }
