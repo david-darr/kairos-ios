@@ -115,6 +115,14 @@ struct AccountScreen: View {
     }
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            YouAccessAccountScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    @ViewBuilder private var sampleBody: some View {
         let account = store.current
         SettingsPage("Account", subtitle: "Who you are on this Kairos, and how you sign in.") {
             SettingsGroup {
@@ -481,6 +489,14 @@ struct DeviceAccountsScreen: View {
     }
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            YouAccessDeviceAccountsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Accounts on this device", subtitle: "Every account signed in on this phone. Switch between them with one tap.") {
             SettingsGroup("Signed in", footer: "An account with a PIN asks it before it opens. A sign-in that ran out asks for the password again.") {
                 ForEach(store.accounts) { account in
@@ -739,6 +755,16 @@ struct SignInScreen: View {
     }
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            SettingsPage("Add another account", subtitle: "This phone is paired as one account on your desktop.") {
+                YouAccessLine(text: "Passwords, PINs and accounts are managed in Kairos on your desktop. To use another account here, unpair this phone, then pair it again while that account is signed in on the desktop.")
+            }
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage(title, subtitle: subtitle) {
             switch step {
             case .signIn: signInForm
@@ -876,6 +902,107 @@ struct SignInScreen: View {
                 error = nil
                 info = "Password reset. Log in with the new one."
             }
+        }
+    }
+}
+
+// MARK: - Paired
+
+/// Account while paired: who this phone is paired as, read from the desktop. Nothing here changes the account:
+/// the colour, PIN, password and two-step sign-in are changed on the desktop (its /api/auth routes are not open
+/// to a phone), and no PIN, password or setup key is ever shown, typed or kept on the phone.
+struct YouAccessAccountScreen: View {
+    private let live = YouAccessLive.shared
+
+    var body: some View {
+        SettingsPage("Account", subtitle: "Who this phone is paired as on your desktop.") {
+            YouAccessLoadLine(part: .account, loading: "Reading your account from your desktop.")
+
+            if let account = YouAccessLive.pairedAccount {
+                SettingsGroup {
+                    HStack(spacing: 14) {
+                        AccountAvatar(account: account, size: 58)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.name)
+                                .font(KFont.display(28))
+                                .foregroundStyle(Palette.ink)
+                                .lineLimit(1)
+                            Text(account.isAdmin ? "Admin on this Kairos" : "Member on this Kairos")
+                                .font(KFont.ui(14, relativeTo: .footnote))
+                                .foregroundStyle(Palette.inkFaint)
+                        }
+                        Spacer(minLength: 8)
+                        StatusPill(text: account.role, tone: account.isAdmin ? .warn : .muted)
+                    }
+                    .padding(16)
+                    .accessibilityElement(children: .combine)
+                    if let machine = live.flags?.machineAccess {
+                        StatusRow(
+                            title: "This computer",
+                            detail: machine
+                                ? "This account can run commands and open files on the desktop."
+                                : "Your chats and bots can't run commands or open files on the desktop. Ask an admin if you need that.",
+                            symbol: "desktopcomputer",
+                            status: machine ? "Allowed" : "Not allowed",
+                            tone: machine ? .ok : .muted
+                        )
+                    }
+                }
+                .arrives(0)
+            }
+
+            if let flags = live.flags {
+                SettingsGroup("Sign-in") {
+                    if let colour = flags.color, !colour.isEmpty {
+                        ValueRow(title: "Account colour", symbol: "paintpalette", value: String(colour.prefix(1)).uppercased() + String(colour.dropFirst()))
+                    }
+                    if let pin = flags.switchPin {
+                        StatusRow(title: "Switching PIN", detail: "Asked when someone switches into this account.", symbol: "lock",
+                                  status: pin ? "On" : "Off", tone: pin ? .ok : .muted)
+                    }
+                    if let twoStep = flags.twoStep {
+                        StatusRow(title: "Two-step sign-in", detail: "A code from an authenticator app on every sign-in.", symbol: "checkmark.shield",
+                                  status: twoStep ? "On" : "Off", tone: twoStep ? .ok : .muted)
+                    }
+                }
+                .arrives(1)
+            }
+
+            YouAccessLine(text: "Passwords, PINs, two-step sign-in and the account colour are managed in Kairos on your desktop.")
+                .arrives(2)
+        }
+        .task(id: YouAccessLive.connectionKey) { await live.read(.account) }
+    }
+}
+
+/// Accounts on this device while paired: the phone is paired as one account.
+struct YouAccessDeviceAccountsScreen: View {
+    var body: some View {
+        SettingsPage("Accounts on this device", subtitle: "This phone is paired as one account on your desktop.") {
+            if let account = YouAccessLive.pairedAccount {
+                SettingsGroup("Paired as") {
+                    HStack(spacing: 12) {
+                        AccountAvatar(account: account, size: 44)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.name)
+                                .font(KFont.ui(16.5, .medium))
+                                .foregroundStyle(Palette.ink)
+                                .lineLimit(1)
+                            Text(account.role)
+                                .font(KFont.ui(13.5, relativeTo: .footnote))
+                                .foregroundStyle(Palette.inkFaint)
+                        }
+                        Spacer(minLength: 8)
+                        StatusPill(text: "This phone", tone: .ok)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .accessibilityElement(children: .combine)
+                }
+                .arrives(0)
+            }
+            YouAccessLine(text: "Passwords, PINs and accounts are managed in Kairos on your desktop. To use another account here, unpair this phone from You, then pair it again while that account is signed in on the desktop.")
+                .arrives(1)
         }
     }
 }

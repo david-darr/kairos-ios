@@ -231,6 +231,14 @@ struct PermissionsScreen: View {
     }
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            YouAccessPermissionsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Permissions", subtitle: "What chats and bots may do without asking, and who decided.") {
             if let problem {
                 NoteText(text: problem, symbol: "exclamationmark.triangle")
@@ -319,6 +327,14 @@ struct AgentToolsScreen: View {
     @State private var extra = "mcp__design__create_page\nmcp__tracker__list_issues"
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            YouAccessAgentToolsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Agent tools", subtitle: "The tools every chat and bot may use.") {
             SettingsGroup("Built-in tools", footer: "Switch a tool off to keep it out of every chat.") {
                 ForEach($tools) { $tool in
@@ -382,6 +398,14 @@ struct ComputerUseScreen: View {
     }
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            YouAccessComputerUseScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Computer use", subtitle: "Contained browsers and desktops that chats and bots can open.") {
             SettingsGroup("Access") {
                 YouToggleRow(title: "Computer use", detail: "Allow chats and agents to open contained browsers.", isOn: $enabled)
@@ -541,6 +565,14 @@ struct RemoteAccessScreen: View {
     private var liveAddress: String { "https://\(AccessSample.host):\(savedPort)" }
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            YouAccessRemoteScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Remote access", subtitle: "Reach Kairos from your own devices, wherever you are.") {
             NoteText(text: "Remote access uses Tailscale, a private network between your own devices. Kairos is never open to the public internet.", symbol: "lock")
                 .arrives(0)
@@ -854,6 +886,14 @@ struct ForgeSettingsScreen: View {
     @State private var terminalRemote = false
 
     var body: some View {
+        if YouAccessLive.isPaired {
+            YouAccessForgeScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Forge", subtitle: "Where coding projects live, and who may use their terminals.") {
             SettingsGroup("Forge root folder", footer: "New and cloned projects get their own folder here. Change it on the desktop, in Settings, Forge.") {
                 HStack(spacing: 12) {
@@ -882,6 +922,447 @@ struct ForgeSettingsScreen: View {
         }
         .onChange(of: terminalRemote) {
             YouStore.shared.say(terminalRemote ? "Terminals work over Remote Access now." : "Terminals stay on the desktop now.")
+        }
+    }
+}
+
+// MARK: - Paired
+
+/// A name that can drive `.sheet(item:)`.
+nonisolated private struct YouAccessNamed: Identifiable, Hashable, Sendable {
+    let id: String
+}
+
+/// The pill on the right of a row with a narrowing change: on its way, not confirmed, or the button.
+private struct YouAccessChangeButton: View {
+    let part: YouAccessPart
+    let key: String
+    let title: String
+    let working: String
+    let action: () -> Void
+    private let live = YouAccessLive.shared
+
+    var body: some View {
+        if live.busy.contains(key) {
+            StatusPill(text: working, tone: .muted)
+        } else if live.unconfirmed[part]?.contains(key) == true {
+            StatusPill(text: "Not confirmed", tone: .warn)
+        } else {
+            YouPillButton(title: title, danger: true, action: action)
+        }
+    }
+}
+
+/// Permissions while paired: the desktop's saved rules (revoke behind a confirm) and recent decisions, shown as the
+/// desktop gives them. Paired terminals are listed only in the desktop window.
+struct YouAccessPermissionsScreen: View {
+    private let live = YouAccessLive.shared
+    @State private var showDecisions = false
+    @State private var revoking: YouAccessRule?
+
+    var body: some View {
+        SettingsPage("Permissions", subtitle: "What chats and bots may do without asking, and who decided.") {
+            YouAccessLoadLine(part: .permissions, loading: "Reading your permissions from your desktop.")
+            YouAccessNoticeLine(part: .permissions)
+
+            if live.load(.permissions) == .loaded || !live.rules.isEmpty {
+                SettingsGroup("Standing grants", footer: "Revoke a grant and Kairos asks again the next time.") {
+                    if live.rules.isEmpty {
+                        EmptyRow(text: "Nothing is granted yet.")
+                    } else {
+                        ForEach(live.rules) { rule in
+                            AccessItemRow(title: rule.tool, pill: rule.allowed ? "Allowed" : "Denied", pillTone: rule.allowed ? .ok : .bad,
+                                          mono: rule.content, detail: detail(rule)) {
+                                YouAccessChangeButton(part: .permissions, key: "rule:" + rule.id, title: "Revoke", working: "Revoking...") {
+                                    revoking = rule
+                                }
+                            }
+                        }
+                    }
+                    if live.skippedRules > 0 {
+                        EmptyRow(text: live.skippedRules == 1
+                                 ? "1 rule could not be read here. See it in Kairos on your desktop."
+                                 : "\(live.skippedRules) rules could not be read here. See them in Kairos on your desktop.")
+                    }
+                }
+                .arrives(0)
+            }
+
+            SettingsGroup("Paired terminals") {
+                AccessInfoRow(title: "On your desktop", detail: "Kairos terminals are paired, listed and revoked in Kairos on your desktop.", symbol: "terminal")
+            }
+            .arrives(1)
+
+            if !live.decisions.isEmpty {
+                SettingsGroup {
+                    ActionRow(title: "Recent decisions", detail: "Newest first", symbol: "clock", trailing: showDecisions ? "Hide" : "Show") {
+                        withAnimation(Motion.snappy) { showDecisions.toggle() }
+                    }
+                    if showDecisions {
+                        ForEach(live.decisions) { line in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(line.title)
+                                    .font(KFont.ui(14, relativeTo: .footnote))
+                                    .foregroundStyle(Palette.inkDim)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !line.detail.isEmpty {
+                                    Text(line.detail)
+                                        .font(KFont.ui(12.5, relativeTo: .caption))
+                                        .foregroundStyle(Palette.inkFaint)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .accessibilityElement(children: .combine)
+                            .transition(.opacity)
+                        }
+                    }
+                }
+                .arrives(2)
+            }
+        }
+        .task(id: YouAccessLive.connectionKey) { await live.read(.permissions) }
+        .sheet(item: $revoking) { rule in
+            ConfirmSheet(title: "Revoke this rule?",
+                         detail: "\(rule.tool)\(rule.content.map { " (\($0))" } ?? ""): Kairos asks again the next time it is needed.",
+                         confirm: "Revoke") {
+                Task { await live.revokeRule(rule.id) }
+            }
+        }
+    }
+
+    private func detail(_ rule: YouAccessRule) -> String {
+        var parts = [rule.scope, rule.who]
+        if let date = rule.date { parts.append(YouAccessLive.day(date)) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Agent tools while paired (admin): the built-in tools, each can be switched off behind a confirm; turning one on
+/// and the extra allowed tools are changed on the desktop.
+struct YouAccessAgentToolsScreen: View {
+    private let live = YouAccessLive.shared
+    @State private var turningOff: YouAccessNamed?
+
+    /// What each built-in tool does, in plain words (the desktop's tool_registry list).
+    private static let about: [String: String] = [
+        "Bash": "Run commands", "Read": "Read files", "Write": "Create files", "Edit": "Change files",
+        "Glob": "Find files by name", "Grep": "Search inside files", "WebFetch": "Open a web page",
+        "WebSearch": "Search the web", "Task": "Hand a task to a helper", "TodoWrite": "Keep a task list",
+        "NotebookEdit": "Change a notebook",
+    ]
+
+    var body: some View {
+        SettingsPage("Agent tools", subtitle: "The tools every chat and bot may use.") {
+            if !YouAccessLive.isAdmin {
+                YouAccessLine(text: "Agent tools are changed by an admin. This phone is paired as a member account.")
+            } else {
+                YouAccessLoadLine(part: .tools, loading: "Reading the agent tools from your desktop.")
+                YouAccessNoticeLine(part: .tools)
+                if let tools = live.tools {
+                    SettingsGroup("Built-in tools", footer: "Switch a tool off to keep it out of every chat. Turning a tool on is done in Kairos on your desktop.") {
+                        if tools.available.isEmpty {
+                            EmptyRow(text: "Your desktop listed no tools.")
+                        }
+                        ForEach(tools.available, id: \.self) { name in
+                            AccessItemRow(title: name, detail: Self.about[name]) {
+                                if tools.disabled.contains(name) && !live.busy.contains("tool:" + name) {
+                                    StatusPill(text: "Off", tone: .muted)
+                                } else {
+                                    YouAccessChangeButton(part: .tools, key: "tool:" + name, title: "Turn off", working: "Turning off...") {
+                                        turningOff = YouAccessNamed(id: name)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .arrives(0)
+
+                    SettingsGroup("Extra allowed tools", footer: "Extra tools are added and removed in Kairos on your desktop.") {
+                        if tools.extra.isEmpty {
+                            EmptyRow(text: "No extra tools.")
+                        }
+                        ForEach(tools.extra, id: \.self) { name in
+                            Text(name)
+                                .font(.system(size: 14, design: .monospaced))
+                                .foregroundStyle(Palette.ink)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                        }
+                    }
+                    .arrives(1)
+
+                    NoteText(text: "Open chats pick up changes on their next message.", symbol: "info.circle")
+                        .arrives(2)
+                }
+            }
+        }
+        .task(id: YouAccessLive.connectionKey) {
+            if YouAccessLive.isAdmin { await live.read(.tools) }
+        }
+        .sheet(item: $turningOff) { tool in
+            ConfirmSheet(title: "Switch \(tool.id) off?",
+                         detail: "No chat or bot can use \(tool.id) until it is turned on again in Kairos on your desktop.",
+                         confirm: "Turn off") {
+                Task { await live.toolOff(tool.id) }
+            }
+        }
+    }
+}
+
+/// Computer use while paired: the settings read from the desktop (turn off behind a confirm, for admins),
+/// Docker and kept profiles (admin, read only), and the running computers (stop behind a confirm).
+struct YouAccessComputerUseScreen: View {
+    private let live = YouAccessLive.shared
+    @State private var confirmOff = false
+    @State private var stopping: YouAccessComputer?
+
+    var body: some View {
+        SettingsPage("Computer use", subtitle: "Contained browsers and desktops that chats and bots can open.") {
+            YouAccessLoadLine(part: .computerUse, loading: "Reading computer use from your desktop.")
+            YouAccessNoticeLine(part: .computerUse)
+            if let values = live.computerUse {
+                SettingsGroup("Access") {
+                    StatusRow(title: "Computer use", detail: "Chats and agents may open contained browsers.",
+                              status: values.enabled ? "On" : "Off", tone: values.enabled ? .ok : .muted)
+                    if values.enabled && YouAccessLive.isAdmin {
+                        RowButtons {
+                            YouAccessChangeButton(part: .computerUse, key: "computerUse", title: "Turn off computer use", working: "Turning off...") {
+                                confirmOff = true
+                            }
+                        }
+                    }
+                    StatusRow(title: "Allow non-admins", detail: "Other signed-in people may use computers in their own chats.",
+                              status: values.allowNonAdmins ? "On" : "Off", tone: values.allowNonAdmins ? .ok : .muted)
+                    StatusRow(title: "Agent desktop", detail: "A file manager, editor, PDF viewer and office apps beside the browser, for admins.",
+                              status: values.desktop ? "On" : "Off", tone: values.desktop ? .ok : .muted)
+                    StatusRow(title: "Like, follow and react for you", detail: "Off: it stops before Like, Follow and similar buttons and asks you.",
+                              status: values.allowReactions ? "On" : "Off", tone: values.allowReactions ? .ok : .muted)
+                    if let days = live.stepsDays {
+                        ValueRow(title: "Keep computer steps", value: Self.daysText(days))
+                    }
+                }
+                .arrives(0)
+            } else if live.load(.computerUse) == .loaded && live.computerUseUnreadable {
+                YouAccessLine(text: "Your desktop's computer use settings could not be read in full. See them in Kairos on your desktop.")
+            }
+            if live.load(.computerUse) == .loaded {
+                YouAccessLine(text: "Turning these on, and how long steps are kept, are changed in Kairos on your desktop.")
+                    .arrives(1)
+            }
+
+            if YouAccessLive.isAdmin {
+                YouAccessLoadLine(part: .computerStatus, loading: "Reading Docker and the kept profiles.")
+                if let docker = live.docker {
+                    SettingsGroup("Docker") {
+                        if docker.available == true {
+                            StatusRow(title: "Docker", detail: docker.imageReady == true ? "The computer image is ready." : "The computer image is prepared on first use.",
+                                      symbol: "cube", status: "Ready")
+                        } else {
+                            StatusRow(title: "Docker", detail: docker.reason ?? "Docker is not running on the desktop. Start it there to use contained browsers.",
+                                      symbol: "cube", status: "Unavailable", tone: .bad)
+                        }
+                    }
+                    .arrives(2)
+                    SettingsGroup("Kept browser profiles", footer: "Saved logins for a bot's browser. Profiles are deleted in Kairos on your desktop.") {
+                        if live.profiles.isEmpty {
+                            EmptyRow(text: "No kept profiles.")
+                        }
+                        ForEach(live.profiles) { profile in
+                            AccessItemRow(title: profile.name, detail: "Saved browser logins", symbol: "person.crop.circle") {
+                                if profile.running { StatusPill(text: "In use", tone: .working) }
+                            }
+                        }
+                    }
+                    .arrives(3)
+                }
+            }
+
+            YouAccessLoadLine(part: .computers, loading: "Reading the running computers.")
+            YouAccessNoticeLine(part: .computers)
+            if live.load(.computers) == .loaded || !live.computers.isEmpty {
+                SettingsGroup("Running computers") {
+                    if live.computers.isEmpty {
+                        EmptyRow(text: "No computers running.")
+                    }
+                    ForEach(live.computers) { computer in
+                        AccessItemRow(title: computer.title.isEmpty ? "A page with no title" : computer.title,
+                                      detail: ([computer.ownerName, computer.desktop ? "Desktop" : "Browser"]
+                                               + (computer.takenOver ? ["Taken over"] : [])).joined(separator: " · "),
+                                      symbol: computer.desktop ? "desktopcomputer" : "globe") {
+                            YouAccessChangeButton(part: .computers, key: "computer:" + computer.owner, title: "Stop", working: "Stopping...") {
+                                stopping = computer
+                            }
+                        }
+                    }
+                }
+                .arrives(4)
+            }
+        }
+        .task(id: YouAccessLive.connectionKey) {
+            await live.read(.computerUse)
+            if YouAccessLive.isAdmin { await live.read(.computerStatus) }
+            await live.read(.computers)
+        }
+        .sheet(isPresented: $confirmOff) {
+            ConfirmSheet(title: "Turn off computer use?",
+                         detail: "No chat or bot can open a contained browser until it is turned on again in Kairos on your desktop. The other settings stay as they are.",
+                         confirm: "Turn off") {
+                Task { await live.computerUseOff() }
+            }
+        }
+        .sheet(item: $stopping) { computer in
+            ConfirmSheet(title: "Stop this computer?",
+                         detail: "\(computer.title.isEmpty ? "It" : computer.title) closes at once, and whatever it was doing stops.",
+                         confirm: "Stop") {
+                Task { await live.stopComputer(computer.owner) }
+            }
+        }
+    }
+
+    private static func daysText(_ days: Int) -> String {
+        switch days {
+        case 0: "Do not keep"
+        case 1: "1 day"
+        default: "\(days) days"
+        }
+    }
+}
+
+/// Remote access while paired: setup and on or off stay on the desktop; the account's paired phones are live,
+/// each can be unpaired behind a confirm. Unpairing this phone ends its token and opens the pair screen.
+struct YouAccessRemoteScreen: View {
+    private let live = YouAccessLive.shared
+    @State private var unpairing: YouAccessDevice?
+    @State private var goPair = false
+
+    var body: some View {
+        SettingsPage("Remote access", subtitle: "Reach Kairos from your own devices, wherever you are.") {
+            NoteText(text: "Remote access uses Tailscale, a private network between your own devices. Kairos is never open to the public internet.", symbol: "lock")
+                .arrives(0)
+            YouAccessLine(text: "Remote access is set up, turned on and turned off in Kairos on your desktop, in Settings, Remote access.")
+                .arrives(1)
+
+            YouAccessLoadLine(part: .devices, loading: "Reading your paired phones.")
+            YouAccessNoticeLine(part: .devices)
+            if let note = live.thisPhoneNotice {
+                NoteText(text: note, symbol: "exclamationmark.triangle")
+            }
+            SettingsGroup("Paired phones", footer: "Unpairing stops that phone's connection at once.") {
+                if live.load(.devices) == .loaded && live.devices.isEmpty {
+                    EmptyRow(text: "No phones are paired.")
+                }
+                ForEach(live.devices) { device in
+                    AccessItemRow(title: device.name, pill: device.current ? "This phone" : nil, pillTone: .working,
+                                  detail: "Paired \(YouAccessLive.day(device.paired)) · last seen \(YouAccessLive.ago(device.lastSeen))",
+                                  symbol: device.model.hasPrefix("iPad") ? "ipad" : "iphone") {
+                        if device.current {
+                            if live.unpairingThisPhone {
+                                StatusPill(text: "Unpairing...", tone: .muted)
+                            } else {
+                                YouPillButton(title: "Unpair", danger: true) { unpairing = device }
+                            }
+                        } else {
+                            YouAccessChangeButton(part: .devices, key: "device:" + device.id, title: "Unpair", working: "Unpairing...") {
+                                unpairing = device
+                            }
+                        }
+                    }
+                }
+                AccessInfoRow(title: "Pair another phone",
+                              detail: "On the desktop, open Settings, Remote access, Pair the iPhone app. Enter the six-digit code it shows on the new phone. A code works once, for 10 minutes.",
+                              symbol: "plus")
+            }
+            .arrives(2)
+        }
+        .task(id: YouAccessLive.connectionKey) { await live.read(.devices) }
+        .sheet(item: $unpairing) { device in
+            if device.current {
+                ConfirmSheet(title: "Unpair this phone?",
+                             detail: "This phone's access to your desktop ends at once, and it goes back to sample data. To use it again, pair it with a new code from your desktop.",
+                             confirm: "Unpair this phone") {
+                    Task {
+                        if await live.unpairThisPhone() {
+                            Haptics.success()
+                            goPair = true
+                        }
+                    }
+                }
+            } else {
+                ConfirmSheet(title: "Unpair \(device.name)?",
+                             detail: "Its access to your desktop ends at once. It can be paired again with a new code from the desktop.",
+                             confirm: "Unpair") {
+                    Task { await live.unpairOther(device.id) }
+                }
+            }
+        }
+        .navigationDestination(isPresented: $goPair) {
+            ConnectionScreen()
+        }
+    }
+}
+
+/// Forge settings while paired (admin): the root folder by its name only, and the terminal-over-remote setting,
+/// which the phone can only turn off.
+struct YouAccessForgeScreen: View {
+    private let live = YouAccessLive.shared
+    @State private var confirmOff = false
+
+    var body: some View {
+        SettingsPage("Forge", subtitle: "Where coding projects live, and who may use their terminals.") {
+            if !YouAccessLive.isAdmin {
+                YouAccessLine(text: "Forge settings need an admin account on your desktop. This phone is paired as a member account.")
+            } else {
+                YouAccessLoadLine(part: .forge, loading: "Reading the Forge settings from your desktop.")
+                YouAccessNoticeLine(part: .forge)
+                if live.load(.forge) == .loaded || live.forgeTerminalRemote != nil {
+                    SettingsGroup("Forge root folder", footer: "New and cloned projects get their own folder here. See the full path or change it in Kairos on your desktop, in Settings, Forge.") {
+                        HStack(spacing: 12) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(Palette.goldText)
+                                .frame(width: 26)
+                            Text(live.forgeFolder.map { "A folder named \($0)" } ?? "Not set")
+                                .font(KFont.ui(16))
+                                .foregroundStyle(Palette.ink)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 52)
+                        .accessibilityElement(children: .combine)
+                    }
+                    .arrives(0)
+
+                    if let on = live.forgeTerminalRemote {
+                        SettingsGroup("Terminal", footer: on ? nil : "Turning it on is done in Kairos on your desktop.") {
+                            StatusRow(title: "Allow the terminal over Remote Access",
+                                      detail: "Signed-in admins may use session terminals from other devices.",
+                                      symbol: "terminal", status: on ? "On" : "Off", tone: on ? .warn : .muted)
+                            if on {
+                                RowButtons {
+                                    YouAccessChangeButton(part: .forge, key: "forgeTerminal", title: "Turn off", working: "Turning off...") {
+                                        confirmOff = true
+                                    }
+                                }
+                            }
+                        }
+                        .arrives(1)
+                    }
+                }
+            }
+        }
+        .task(id: YouAccessLive.connectionKey) {
+            if YouAccessLive.isAdmin { await live.read(.forge) }
+        }
+        .sheet(isPresented: $confirmOff) {
+            ConfirmSheet(title: "Turn off the terminal over Remote Access?",
+                         detail: "Terminals opened from your other devices close at once, and none can be opened from them, this phone included.",
+                         confirm: "Turn off") {
+                Task { await live.forgeTerminalOff() }
+            }
         }
     }
 }
