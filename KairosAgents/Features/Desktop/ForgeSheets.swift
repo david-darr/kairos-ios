@@ -601,6 +601,73 @@ struct DeskForgeRenameSheet: View {
     }
 }
 
+/// Start the project's saved app command on the paired desktop. The command is read from the desktop when the
+/// sheet opens and again every few seconds while it is open, and the button is on only while the desktop still
+/// has the very command the person asked about.
+struct DeskForgeRunAppSheet: View {
+    let projectID: String
+    /// The command the person saw when they asked to run the app.
+    let command: String
+    let onStart: () -> Void
+
+    @State private var live = DeskForgeLive.shared
+    /// The saved command as the desktop has it now. nil until read, and again after a read that failed.
+    @State private var latest: String?
+    @State private var reading = true
+    @Environment(\.dismiss) private var dismiss
+
+    private var matches: Bool { latest != nil && latest == command && !command.isEmpty }
+    private var changed: Bool { latest != nil && latest != command }
+
+    var body: some View {
+        FittedSheet(estimate: 460) {
+            VStack(alignment: .leading, spacing: 14) {
+                DeskSheetTitle(text: "Start this app?",
+                               detail: "It runs in this session's folder on your desktop. A command your desktop has not approved before is shown to you once more.")
+                if let latest {
+                    SectionLabel(text: "Saved command on your desktop")
+                    Text(latest)
+                        .font(CodeFont.mono(12.5))
+                        .foregroundStyle(Palette.ink)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Palette.groundDeep.opacity(0.7), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                if changed {
+                    HintLine(text: "The command changed on your desktop. Close this and look again before you start it.",
+                             symbol: "exclamationmark.triangle", color: Palette.goldText)
+                } else if latest == nil {
+                    HintLine(text: reading ? "Reading the saved command from your desktop."
+                             : "The saved command could not be read from your desktop, so the app cannot be started from here right now.",
+                             symbol: reading ? "clock" : "exclamationmark.triangle", color: reading ? Palette.inkFaint : Palette.goldText)
+                }
+                PillButton(title: "Start app", look: .filled, wide: true) {
+                    guard matches else { return }
+                    Haptics.thud()
+                    onStart()
+                    dismiss()
+                }
+                .disabled(!matches)
+                .opacity(matches ? 1 : 0.45)
+                QuietButton(title: "Cancel") { dismiss() }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+        }
+        .task {
+            while !Task.isCancelled {
+                let saved = await live.freshAppCommand(projectID)
+                if Task.isCancelled { break }
+                latest = saved
+                reading = false
+                try? await Task.sleep(for: .seconds(4))
+            }
+        }
+    }
+}
+
 /// End a session on the paired desktop. Every way of ending it takes a swipe, and the session only shows as
 /// ended once the desktop says so.
 struct DeskForgeEndSheet: View {
@@ -714,7 +781,11 @@ struct DeskForgeEndSheet: View {
     /// The merge runs over the desktop's approval stream: the session's screen shows the request and the result.
     private func merge() {
         Haptics.thud()
-        live.endWithMerge(sessionID)
+        // Nothing is asked of the desktop while another approval is still waiting on this session.
+        guard live.endWithMerge(sessionID) else {
+            problem = "Finish the approval that is waiting first."
+            return
+        }
         dismiss()
         onDone("Asked your desktop to merge. Approve it below.", false)
     }

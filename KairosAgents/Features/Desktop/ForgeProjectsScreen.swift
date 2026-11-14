@@ -407,11 +407,10 @@ struct ForgeProjectScreen: View {
             Text("The conversation is deleted. Files on your PC stay as they are.")
         }
         .sheet(item: $deskEnding) { session in
-            ConfirmSheet(title: "End \(session.title)?",
-                         detail: session.branch == nil
-                            ? "It works in your project folder, which stays as it is. Its app stops and the conversation is kept."
-                            : "Its worktree is removed from your desktop. The branch \(session.branch ?? "") and the conversation are kept. Your desktop refuses if the worktree has uncommitted changes.",
-                         confirm: "End session") {
+            DeskForgeSwipeEndSheet(title: "End \(session.title)?",
+                                   detail: session.branch == nil
+                                    ? "It works in your project folder, which stays as it is. Its app stops and the conversation is kept."
+                                    : "Its worktree is removed from your desktop. The branch \(session.branch ?? "") and the conversation are kept. Your desktop refuses if the worktree has uncommitted changes.") {
                 endLive(session)
             }
         }
@@ -546,6 +545,30 @@ struct ForgeProjectScreen: View {
                 }
                 .kCard(radius: 22)
             }
+        }
+    }
+}
+
+/// Ends a session from the project's list. Like the session screen's End, it takes a swipe, not a tap.
+struct DeskForgeSwipeEndSheet: View {
+    let title: String
+    let detail: String
+    let onEnd: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        FittedSheet(estimate: 360) {
+            VStack(spacing: 14) {
+                DeskSheetTitle(text: title, detail: detail)
+                SwipeUpConfirm(title: "Swipe up to end") {
+                    Haptics.thud()
+                    onEnd()
+                    dismiss()
+                }
+                QuietButton(title: "Cancel") { dismiss() }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
         }
     }
 }

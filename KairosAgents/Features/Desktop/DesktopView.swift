@@ -31,11 +31,23 @@ struct DesktopView: View {
                     Text("On this PC").font(KFont.ui(20, .semibold, relativeTo: .title3)).foregroundStyle(Palette.ink)
                     LazyVGrid(columns: columns, spacing: 10) {
                         areaTile("hammer", "Forge", forgeDetail, id: "forge") { open(.forgeHome) }
-                        areaTile("cursorarrow.rays", "Computer", "See and steer", id: "computer") { router.push(.area(.computer), on: .desktop) }
-                        areaTile("globe", "Browse", "Your PC's browser", id: "browse") { router.push(.area(.browse), on: .desktop) }
-                        areaTile("cpu", "Local models", "Run on this PC", id: "models") { open(.localModels) }
-                        areaTile("folder", "Files on this PC", "Projects and folders", id: "files") { open(.pcFiles("")) }
+                        // Paired, a tile whose screen still shows made-up data stays closed (constants in DeskForgeLive).
+                        if !paired || DeskForgeLive.computerLive {
+                            areaTile("cursorarrow.rays", "Computer", "See and steer", id: "computer") { router.push(.area(.computer), on: .desktop) }
+                        }
+                        if !paired || DeskForgeLive.browseLive {
+                            areaTile("globe", "Browse", "Your PC's browser", id: "browse") { router.push(.area(.browse), on: .desktop) }
+                        }
+                        if !paired || DeskForgeLive.localModelsLive {
+                            areaTile("cpu", "Local models", "Run on this PC", id: "models") { open(.localModels) }
+                        }
+                        if !paired || DeskForgeLive.pcFilesLive {
+                            areaTile("folder", "Files on this PC", "Projects and folders", id: "files") { open(.pcFiles("")) }
+                        }
                         areaTile("folder.badge.plus", "Projects", projectsDetail, id: "projects") { open(.forgeProjects) }
+                    }
+                    if paired && DeskForgeLive.desktopTilesWaiting {
+                        HintLine(text: "Computer, Browse, local models and PC files are not on this iPhone yet. Use them in Kairos on your desktop.")
                     }
                 }
                 .arrives(3)

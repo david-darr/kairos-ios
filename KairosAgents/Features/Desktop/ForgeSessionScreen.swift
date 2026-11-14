@@ -830,6 +830,7 @@ struct DeskForgeSessionView: View {
         .onChange(of: streamSignature) {
             Task { await live.pollSession(sessionID) }
         }
+        .onDisappear { live.forgetPendingSend(sessionID) }
     }
 
     // MARK: Layout
@@ -896,16 +897,18 @@ struct DeskForgeSessionView: View {
         VStack(spacing: 8) {
             ScreenHeader(title: detail.title.isEmpty ? "Session" : detail.title,
                          subtitle: "\(project?.name ?? "Forge") · \(detail.branch ?? "In place")") {
-                NavigationLink(value: DesktopRoute.changes(sessionID)) {
-                    Image(systemName: "plusminus")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(Palette.ink)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Circle())
+                if DeskForgeLive.changesAndFilesLive {
+                    NavigationLink(value: DesktopRoute.changes(sessionID)) {
+                        Image(systemName: "plusminus")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(Palette.ink)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(PressStyle(scale: 0.92))
+                    .kGlass(Circle(), interactive: true)
+                    .accessibilityLabel("Changes")
                 }
-                .buttonStyle(PressStyle(scale: 0.92))
-                .kGlass(Circle(), interactive: true)
-                .accessibilityLabel("Changes")
                 GlassIconButton(symbol: "ellipsis", label: "Session actions") { sheet = .actions }
             }
             let app = live.app(for: sessionID)
@@ -1180,7 +1183,9 @@ struct DeskForgeSessionView: View {
                     Text("This turn changed \(point.files.count) \(point.files.count == 1 ? "file" : "files")")
                         .font(KFont.ui(14.5, .medium)).foregroundStyle(Palette.ink)
                     HStack(spacing: 8) {
-                        DeskPillButton(title: "Review", symbol: "eye") { go = .changes(sessionID) }
+                        if DeskForgeLive.changesAndFilesLive {
+                            DeskPillButton(title: "Review", symbol: "eye") { go = .changes(sessionID) }
+                        }
                         DeskPillButton(title: undoing ? "Undoing" : "Undo", symbol: "arrow.uturn.backward", tint: Palette.danger) {
                             sheet = .undo(point.id, point.files.count)
                         }
@@ -1393,9 +1398,7 @@ struct DeskForgeSessionView: View {
         case .git:
             ForgeGitSheet(sessionID: sessionID) { path in open(.diff(session: sessionID, path: path)) }
         case .runApp:
-            ConfirmSheet(title: "Start this app?",
-                         detail: "Command: \(project?.appCommand ?? "")\nIt runs in this session's folder on your desktop. A command your desktop has not approved before is shown to you once more.",
-                         confirm: "Start app", danger: false) {
+            DeskForgeRunAppSheet(projectID: project?.id ?? "", command: project?.appCommand ?? "") {
                 live.startApp(sessionID)
             }
         case .undo(let checkpoint, let files):
@@ -1447,11 +1450,16 @@ struct DeskForgeSessionView: View {
                     if app == nil && !command.isEmpty && live.approval(sessionID) == nil {
                         actionTile("play.fill", "Run app") { then(.runApp) }
                     }
-                    actionTile("folder", "Explorer") { open(.explorer(sessionID)) }
-                    actionTile("plusminus", "Changes") { open(.changes(sessionID)) }
+                    if DeskForgeLive.changesAndFilesLive {
+                        actionTile("folder", "Explorer") { open(.explorer(sessionID)) }
+                        actionTile("plusminus", "Changes") { open(.changes(sessionID)) }
+                    }
                 }
                 .disabled(ended)
                 .opacity(ended ? 0.45 : 1)
+                if !DeskForgeLive.changesAndFilesLive {
+                    HintLine(text: "Changes, files and Git for this session are in Kairos on your desktop for now.")
+                }
                 if let app {
                     HintLine(text: "This session's app runs on port \(String(app.port)). Open it in Kairos on your desktop.", symbol: "play.circle")
                 } else if command.isEmpty {
@@ -1468,7 +1476,9 @@ struct DeskForgeSessionView: View {
                     }
                 }
                 VStack(spacing: 0) {
-                    actionRow("arrow.triangle.branch", "Git", "Commit, push, pull and merge back") { then(.git) }
+                    if DeskForgeLive.changesAndFilesLive {
+                        actionRow("arrow.triangle.branch", "Git", "Commit, push, pull and merge back") { then(.git) }
+                    }
                     actionRow("pencil", "Rename") { then(.rename) }
                     actionRow("plus.bubble", "New session", "In \(project?.name ?? "this project")") {
                         live.composeProjectID = project?.id

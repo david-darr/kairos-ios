@@ -213,6 +213,27 @@ nonisolated struct DeskForgeStart: Identifiable, Hashable, Sendable {
     var endpointID: String?
 }
 
+/// Where a start whose answer was lost stands. The desktop may still be making the session.
+nonisolated enum DeskForgeStartPhase: Equatable, Sendable {
+    case checking
+    /// The session appeared on the desktop.
+    case found(String)
+    /// The window ended without it. `checked` is false when the last reads failed, so nothing is claimed.
+    case over(checked: Bool)
+}
+
+nonisolated struct DeskForgeStartCheck: Sendable {
+    var start: DeskForgeStart
+    var phase: DeskForgeStartPhase
+}
+
+/// The one line the start screen shows about a start whose answer was lost.
+nonisolated struct DeskForgeStartNotice: Sendable {
+    var text: String
+    var sessionID: String?
+    var checking: Bool
+}
+
 // MARK: - The store
 
 @Observable
@@ -238,12 +259,16 @@ final class DeskForgeLive {
     private var repoChoice: String?
     private var noteMap: [String: String] = [:]
     private var draftMap: [String: String] = [:]
+    /// Starts whose answer was lost, by project, branch and task. Kept here so leaving the screen changes nothing.
+    private var startChecks: [String: DeskForgeStartCheck] = [:]
     /// The project a "New session" control asked for.
     var composeProjectID: String?
 
     @ObservationIgnored private var reads: [String: Int] = [:]
     @ObservationIgnored private var writeSerial = 0
-    @ObservationIgnored private var pendingSends: [String: (text: String, id: String)] = [:]
+    /// One request id per send: the text, the id, and what the desktop showed before it (turn count, run turn).
+    @ObservationIgnored private var pendingSends: [String: (text: String, id: String, turns: Int, turnID: String?)] = [:]
+    @ObservationIgnored private var startTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var streams: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var polls = 0
 
@@ -258,6 +283,17 @@ final class DeskForgeLive {
     var isAdmin: Bool { Connection.shared.desktop?.isAdmin ?? false }
 
     static let adminLine = "Forge needs an admin account on your desktop."
+
+    // Screens that still show made-up data. While paired their links stay closed. The lead turns each one on
+    // when the pass that makes it live is merged.
+    /// Explorer, files, the Git sheet, Changes and Diff.
+    static let changesAndFilesLive = false
+    static let computerLive = false
+    static let browseLive = false
+    static let localModelsLive = false
+    static let pcFilesLive = false
+    /// True while at least one Desktop home tile is still closed: the one line about them shows.
+    static var desktopTilesWaiting: Bool { !(computerLive && browseLive && localModelsLive && pcFilesLive) }
     private static let desktopChanged = "Your paired desktop changed. Try again."
 
     static var accountKey: String {
@@ -284,6 +320,9 @@ final class DeskForgeLive {
         guard account != key else { return }
         for task in streams.values { task.cancel() }
         streams = [:]
+        for task in startTasks.values { task.cancel() }
+        startTasks = [:]
+        startChecks = [:]
         account = key
         homeLoad = .idle
         projectList = []
@@ -735,6 +774,7 @@ final class DeskForgeLive {
         let account = self.account
         guard case .fresh(let packet) = await read("runs", account, { try await $0.chatSnapshot() }) else { return false }
         runMap = packet.runs ?? [:]
+        for id in Array(pendingSends.keys) { settlePending(id) }
         // The desktop was read after every answer sent so far: a request still listed is still waiting.
         unsettledAnswers = []
         return true
@@ -812,6 +852,7 @@ final class DeskForgeLive {
             detail.turns = Self.turns(dto.messages?.items ?? [], modelName: name)
             detail.skippedMessages = dto.messages?.skipped ?? 0
         }
+        settlePending(id)
         guard let row = Self.makeSession(id: id, title: dto.title, updatedAt: dto.updatedAt, endpointID: dto.modelEndpointId, forge: dto.forge) else { return }
         if let index = sessionList.firstIndex(where: { $0.id == id }) {
             sessionList[index] = row
@@ -943,10 +984,12 @@ final class DeskForgeLive {
     }
 
     /// Start a session: make it on the desktop, then send the task as its first message.
-    /// Making it has no request id, so it is sent once. After a lost answer the project's sessions are read
-    /// again and a new one with this task's title is taken as the one that was made; it is never sent twice.
+    /// Making it has no request id, so it is sent once. After a lost answer the desktop may still be making it
+    /// (its worktree can take longer than the phone waits), so the project's sessions are read again for about
+    /// 90 seconds, here in the store, and Start stays off for this exact start. It is never sent twice.
     /// Answers the session's id when one exists, even if the task could not be sent.
     func startSession(_ start: DeskForgeStart) async -> (id: String?, outcome: DeskForgeOutcome) {
+        if isChecking(start) { return (nil, .busy) }
         guard let account = begin("start") else { return (nil, .busy) }
         defer { finish("start", account) }
         let projectID = start.projectID
@@ -968,21 +1011,16 @@ final class DeskForgeLive {
         case .ok(let dto):
             show(dto)
             made = dto.id
-        case .lost(let why):
-            guard case .fresh(let now) = await read("sessions:" + projectID, account, { try await $0.deskForgeProjectSessions(projectID) }) else {
-                return (nil, .unconfirmed(Self.unchecked("the new session", why)))
+        case .lost:
+            if case .fresh(let now) = await read("sessions:" + projectID, account, { try await $0.deskForgeProjectSessions(projectID) }),
+               let found = Self.newSession(in: now.items, before: before, task: task) {
+                adopt(found)
+                made = found.id
+            } else {
+                // Not there yet does not mean it will not be: keep reading, and keep Start off for this task.
+                watchStart(start, before: before, account: account)
+                return (nil, .unconfirmed(Self.startChecking))
             }
-            let found = now.items.first { row in
-                !before.contains(row.id) && !(row.title ?? "").isEmpty && (row.title ?? "").prefix(60) == task.prefix(60)
-            }
-            guard let found else {
-                return (nil, .unconfirmed("Your desktop did not confirm the new session, and it is not in this project's sessions. Your task is still in the box. " + why))
-            }
-            if let row = Self.makeSession(id: found.id, title: found.title, updatedAt: found.updatedAt, endpointID: found.modelEndpointId, forge: found.forge),
-               !sessionList.contains(where: { $0.id == row.id }) {
-                sessionList.insert(row, at: 0)
-            }
-            made = found.id
         }
         guard let id = made else { return (nil, .refused("No session was started.")) }
         // The task goes as the session's first message, under its own request id.
@@ -992,6 +1030,115 @@ final class DeskForgeLive {
         let line = "The session was made, but your task was not sent. It is in the box below. " + (sent.line ?? "")
         noteMap[id] = line
         return (id, .unconfirmed(line))
+    }
+
+    private static let startChecking = "Your desktop did not confirm the new session, and this phone is checking. Start stays off for this task until it knows."
+
+    /// A session that was not there before the start and carries this task's title.
+    private nonisolated static func newSession(in rows: [DeskForgeSessionRowDTO], before: Set<String>, task: String) -> DeskForgeSessionRowDTO? {
+        rows.first { row in
+            !before.contains(row.id) && !(row.title ?? "").isEmpty && (row.title ?? "").prefix(60) == task.prefix(60)
+        }
+    }
+
+    private func adopt(_ found: DeskForgeSessionRowDTO) {
+        if let row = Self.makeSession(id: found.id, title: found.title, updatedAt: found.updatedAt, endpointID: found.modelEndpointId, forge: found.forge),
+           !sessionList.contains(where: { $0.id == row.id }) {
+            sessionList.insert(row, at: 0)
+        }
+    }
+
+    static func startKey(_ start: DeskForgeStart) -> String {
+        [start.projectID, start.branch ?? "", start.task.trimmingCharacters(in: .whitespacesAndNewlines)].joined(separator: "|")
+    }
+
+    /// True while the phone is still checking whether the desktop made the session for this start.
+    func isChecking(_ start: DeskForgeStart?) -> Bool {
+        guard current, let start else { return false }
+        return startChecks[Self.startKey(start)]?.phase == .checking
+    }
+
+    /// What to say about a start whose answer was lost, or nil when there is nothing to say.
+    var startNotice: DeskForgeStartNotice? {
+        guard current else { return nil }
+        if startChecks.values.contains(where: { $0.phase == .checking }) {
+            return DeskForgeStartNotice(text: Self.startChecking, sessionID: nil, checking: true)
+        }
+        for check in startChecks.values {
+            switch check.phase {
+            case .found(let id):
+                return DeskForgeStartNotice(text: "Your desktop made the session after all. Your task is in its box, not sent yet.", sessionID: id, checking: false)
+            case .over(let checked):
+                let text = checked
+                    ? "Your desktop has no new session for this task. You can start it again."
+                    : "This phone could not read your desktop to check. Look at this project's sessions in Kairos on your desktop before you start again."
+                return DeskForgeStartNotice(text: text, sessionID: nil, checking: false)
+            case .checking:
+                break
+            }
+        }
+        return nil
+    }
+
+    func clearStartNotice() {
+        startChecks = startChecks.filter { $0.value.phase == .checking }
+    }
+
+    private func watchStart(_ start: DeskForgeStart, before: Set<String>, account: String) {
+        let key = Self.startKey(start)
+        let projectID = start.projectID
+        let task = start.task.trimmingCharacters(in: .whitespacesAndNewlines)
+        clearStartNotice()
+        startChecks[key] = DeskForgeStartCheck(start: start, phase: .checking)
+        startTasks[key]?.cancel()
+        startTasks[key] = Task { [weak self] in
+            guard let self else { return }
+            let end = Date().addingTimeInterval(90)
+            var phase: DeskForgeStartPhase = .over(checked: false)
+            while Date() < end {
+                try? await Task.sleep(for: .seconds(4))
+                if Task.isCancelled || !self.stillLive(account) { return }
+                switch await self.read("sessions:" + projectID, account, { try await $0.deskForgeProjectSessions(projectID) }) {
+                case .fresh(let now):
+                    if let found = Self.newSession(in: now.items, before: before, task: task) {
+                        self.adopt(found)
+                        self.draftMap[found.id] = task
+                        self.noteMap[found.id] = "The session was made, but your task was not sent. It is in the box below."
+                        phase = .found(found.id)
+                    } else {
+                        phase = .over(checked: true)
+                    }
+                case .failed:
+                    phase = .over(checked: false)
+                case .stale:
+                    if Task.isCancelled || !self.stillLive(account) { return }
+                }
+                if case .found = phase { break }
+            }
+            guard self.stillLive(account) else { return }
+            self.startChecks[key]?.phase = phase
+            self.startTasks[key] = nil
+        }
+    }
+
+    /// The kept request id belongs to ONE send. Once a read of the desktop shows that message's turn it is
+    /// dropped, so a later new message with the same words gets a new id and really runs.
+    private func settlePending(_ id: String) {
+        guard let pending = pendingSends[id], !busyKeys.contains("send:" + id) else { return }
+        if let run = runMap[id], let turnID = run.turnId, turnID != pending.turnID, run.prompt == pending.text {
+            pendingSends[id] = nil
+            return
+        }
+        if let turns = detailMap[id]?.turns, detailMap[id]?.load == .loaded, turns.count > pending.turns,
+           turns.last(where: { !$0.prompt.isEmpty })?.prompt == pending.text {
+            pendingSends[id] = nil
+        }
+    }
+
+    /// The person left the session: whatever send was kept is over, so the same words typed later are a new message.
+    func forgetPendingSend(_ id: String) {
+        guard !busyKeys.contains("send:" + id) else { return }
+        pendingSends[id] = nil
     }
 
     /// Send a message to a session. One request id per message: sending the same words again reuses it, and the
@@ -1005,7 +1152,7 @@ final class DeskForgeLive {
             requestID = pending.id
         } else {
             requestID = UUID().uuidString
-            pendingSends[id] = (text, requestID)
+            pendingSends[id] = (text, requestID, detailMap[id]?.turns.count ?? 0, runMap[id]?.turnId)
         }
         let turnsBefore = detailMap[id]?.turns.count ?? 0
         switch await attempt(account, {
@@ -1265,25 +1412,36 @@ final class DeskForgeLive {
 
     /// Start the project's saved app command in a session's folder. The desktop asks to approve a command it
     /// has not approved before; the request shows here exactly as it sent it.
-    func startApp(_ id: String) { runApproval(id, .app) }
+    @discardableResult
+    func startApp(_ id: String) -> Bool { runApproval(id, .app) }
 
     /// Merge the session's branch back and end it. The desktop asks to approve the merge first.
-    func endWithMerge(_ id: String) { runApproval(id, .merge) }
+    /// Answers false when nothing was started, for example while another approval is still waiting.
+    @discardableResult
+    func endWithMerge(_ id: String) -> Bool { runApproval(id, .merge) }
 
     func dismissApproval(_ id: String) {
         if case .ended? = approvalMap[id]?.phase { approvalMap[id] = nil }
     }
 
-    private func runApproval(_ id: String, _ kind: DeskForgeApproval.Kind) {
-        guard on, isAdmin else { return }
+    private func runApproval(_ id: String, _ kind: DeskForgeApproval.Kind) -> Bool {
+        guard on, isAdmin else { return false }
         follow()
-        guard streams[id] == nil else { return }
+        guard streams[id] == nil else { return false }
         let account = self.account
         approvalMap[id] = DeskForgeApproval(kind: kind, phase: .waiting)
         streams[id] = Task { [weak self] in
             await self?.readApproval(id, kind, account)
             if let self, self.account == account { self.streams[id] = nil }
         }
+        return true
+    }
+
+    /// The project's saved app command as the desktop has it now, or nil when it could not be read.
+    func freshAppCommand(_ projectID: String) async -> String? {
+        guard on, isAdmin else { return nil }
+        guard await readProjects() else { return nil }
+        return project(projectID)?.appCommand
     }
 
     /// Read one approval stream to its end. It is sent once: when it closes without a result, the desktop is
@@ -1521,16 +1679,46 @@ struct DeskForgeApprovalCard: View {
     }
 }
 
-/// A request's own words: its title, the tool and the target exactly as the desktop sent them, then its
-/// description. Text only, selectable, never shortened to hide part of a command.
+/// A request's own words, as the desktop's own approval card draws them: the title, the tool, the target and
+/// the description in full, then everything it asked for (its arguments). Text only, selectable, scrollable
+/// when long, never shortened. Only the sign-in part of a remote address is left out (scheme://user:pass@host
+/// shows as scheme://host).
 struct DeskForgeRequestText: View {
     let request: ChatPermissionDTO
 
+    /// `scheme://user:pass@host` as `scheme://host`. Nothing else is changed.
+    static func hideSignIn(_ text: String) -> String {
+        text.replacingOccurrences(of: "([A-Za-z][A-Za-z0-9+.-]*://)[^/@\\s?#]+@", with: "$1", options: .regularExpression)
+    }
+
+    private static func foundation(_ value: JSONValue) -> Any {
+        switch value {
+        case .null: return NSNull()
+        case .bool(let flag): return flag
+        case .number(let number): return number
+        case .string(let text): return text
+        case .array(let list): return list.map { foundation($0) }
+        case .object(let map): return map.mapValues { foundation($0) }
+        }
+    }
+
+    /// The arguments as the desktop's card shows them: a string as it is, anything else as indented JSON.
+    static func argumentsText(_ value: JSONValue?) -> String? {
+        guard let value, !value.isNull else { return nil }
+        if case .string(let text) = value { return text.isEmpty ? nil : text }
+        let object = foundation(value)
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return text
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(request.title ?? "Allow this?")
+            Text(Self.hideSignIn(request.title ?? request.tool ?? "Allow this?"))
                 .font(KFont.ui(17, .semibold))
                 .foregroundStyle(Palette.ink)
+                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if let tool = request.tool, !tool.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1538,23 +1726,42 @@ struct DeskForgeRequestText: View {
                     Text(tool).font(CodeFont.mono(12.5)).foregroundStyle(Palette.ink).textSelection(.enabled)
                 }
             }
-            if let target = request.target, !target.isEmpty {
-                Text(target)
-                    .font(CodeFont.mono(12.5))
-                    .foregroundStyle(Palette.ink)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Palette.groundDeep.opacity(0.7), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            if let description = request.description, !description.isEmpty, description != request.target {
-                Text(description)
+            if let description = request.description, !description.isEmpty {
+                Text(Self.hideSignIn(description))
                     .font(KFont.ui(13.5, relativeTo: .footnote))
                     .foregroundStyle(Palette.inkDim)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let target = request.target, !target.isEmpty {
+                DeskForgeScrollText(text: Self.hideSignIn(target))
+            }
+            if let arguments = Self.argumentsText(request.arguments) {
+                Text("What it asked for").font(KFont.ui(13, .medium)).foregroundStyle(Palette.inkFaint)
+                DeskForgeScrollText(text: Self.hideSignIn(arguments))
+            }
         }
+    }
+}
+
+/// A block of code-like text, whole and selectable. Short text takes its own height; long text scrolls inside.
+struct DeskForgeScrollText: View {
+    let text: String
+    @State private var height: CGFloat = 60
+
+    var body: some View {
+        ScrollView(.vertical) {
+            Text(text)
+                .font(CodeFont.mono(12.5))
+                .foregroundStyle(Palette.ink)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(height: min(max(height, 1), 240))
+        .background(Palette.groundDeep.opacity(0.7), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

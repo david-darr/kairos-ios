@@ -46,7 +46,8 @@ struct ForgeHomeScreen: View {
     private var canStart: Bool {
         let typed = !task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard paired else { return typed && project != nil && !starting }
-        return typed && !isStarting && liveStart != nil
+        // A start whose answer was lost stays off while the phone checks whether the desktop made it.
+        return typed && !isStarting && liveStart != nil && !live.isChecking(liveStart)
     }
 
     var body: some View {
@@ -58,6 +59,19 @@ struct ForgeHomeScreen: View {
                     composer.arrives(0)
                     if paired, let problem {
                         DeskForgeLine(text: problem, action: "OK") { self.problem = nil }
+                    }
+                    if paired, let notice = live.startNotice {
+                        if notice.checking {
+                            DeskForgeLine(text: notice.text)
+                        } else if let found = notice.sessionID {
+                            DeskForgeLine(text: notice.text, action: "Open") {
+                                live.clearStartNotice()
+                                task = ""
+                                openSession = found
+                            }
+                        } else {
+                            DeskForgeLine(text: notice.text, action: "OK") { live.clearStartNotice() }
+                        }
                     }
                     if needsFirstCommit && !paired { firstCommit.transition(.scale(scale: 0.96).combined(with: .opacity)) }
                     ForEach(Array(ForgeWidget.allCases.filter { store.widgets.contains($0) }.enumerated()), id: \.element) { index, widget in
@@ -558,7 +572,7 @@ extension ForgeHomeScreen {
     }
 
     private func launchLive(_ start: DeskForgeStart) {
-        guard !isStarting else { return }
+        guard !isStarting, !live.isChecking(start) else { return }
         starting = true
         Haptics.tap()
         Task {
@@ -567,7 +581,7 @@ extension ForgeHomeScreen {
             if let id = result.id {
                 task = ""
                 openSession = id
-            } else if let line = result.outcome.line {
+            } else if let line = result.outcome.line, !live.isChecking(start) {
                 // The first commit is made on the desktop: the phone does not offer it while paired.
                 problem = line.contains("has no commits yet") ? line + " Make it in Kairos on your desktop." : line
             }
