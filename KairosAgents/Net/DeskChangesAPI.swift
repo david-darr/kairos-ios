@@ -73,13 +73,17 @@ nonisolated struct DeskChangesFileDTO: Decodable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        path = try container.decode(String.self, forKey: .path)
+        let given = try container.decode(String.self, forKey: .path)
+        path = given
         added = try? container.decodeIfPresent(Int.self, forKey: .added)
         removed = try? container.decodeIfPresent(Int.self, forKey: .removed)
         binary = try? container.decodeIfPresent(Bool.self, forKey: .binary)
         untracked = try? container.decodeIfPresent(Bool.self, forKey: .untracked)
-        patch = try? container.decodeIfPresent(String.self, forKey: .patch)
-        hunks = try? container.decodeIfPresent(DeskForgeList<DeskChangesHunkDTO>.self, forKey: .hunks)
+        // A secret file's text is never decoded, so it is never held in memory.
+        if !DeskChangesWire.isSecret(given) {
+            patch = try? container.decodeIfPresent(String.self, forKey: .patch)
+            hunks = try? container.decodeIfPresent(DeskForgeList<DeskChangesHunkDTO>.self, forKey: .hunks)
+        }
         unavailable = try? container.decodeIfPresent(String.self, forKey: .unavailable)
     }
 }
@@ -320,15 +324,22 @@ nonisolated enum DeskChangesWire {
     /// Changed lines shown for one file. Longer diffs are cut at a whole block and say so.
     static let maxLines = 3000
 
-    /// A file name that can hold secrets, by any part of its path: `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`,
-    /// `id_rsa*`, `id_ed25519*`, `*.keystore`, `credentials*`, `secrets*`, `.npmrc`, `.netrc`.
+    /// A path that can hold secrets, tested on every part of it, lowercased. A name is secret when it starts
+    /// or ends with `.env`, contains `credential`, `secret`, `password` or `passwd`, ends with `.pem`, `.key`,
+    /// `.p12`, `.pfx`, `.keystore`, `.jks` or `.kdbx`, starts with `id_rsa`, `id_ed25519`, `id_ecdsa` or
+    /// `id_dsa`, or is `.npmrc`, `.netrc`, `.pgpass` or `.htpasswd`. A path with a `.ssh`, `.aws`, `.gnupg` or
+    /// `.kube` folder is secret whole.
     static func isSecret(_ path: String) -> Bool {
-        for part in path.split(separator: "/") {
+        let endings = [".env", ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".kdbx"]
+        let starts = [".env", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]
+        let words = ["credential", "secret", "password", "passwd"]
+        let names = [".npmrc", ".netrc", ".pgpass", ".htpasswd"]
+        let folders = [".ssh", ".aws", ".gnupg", ".kube"]
+        for part in path.split(whereSeparator: { $0 == "/" || $0 == "\\" }) {
             let name = part.lowercased()
-            if name.hasPrefix(".env") || name.hasSuffix(".pem") || name.hasSuffix(".key") || name.hasSuffix(".p12")
-                || name.hasSuffix(".pfx") || name.hasPrefix("id_rsa") || name.hasPrefix("id_ed25519")
-                || name.hasSuffix(".keystore") || name.hasPrefix("credentials") || name.hasPrefix("secrets")
-                || name == ".npmrc" || name == ".netrc" {
+            if folders.contains(name) || names.contains(name) { return true }
+            if starts.contains(where: { name.hasPrefix($0) }) || endings.contains(where: { name.hasSuffix($0) })
+                || words.contains(where: { name.contains($0) }) {
                 return true
             }
         }
@@ -735,10 +746,16 @@ nonisolated enum DeskChangesSamples {
             }
             for name in [".env", ".env.local", "config/.env.production", "tls/server.pem", "a/b/deploy.KEY", "x.p12", "x.pfx",
                          "id_rsa", "id_rsa.pub", "id_ed25519", "ci.keystore", "credentials.json", "aws/credentials",
-                         "secrets.yml", "secrets/token.txt", ".npmrc", ".netrc"] {
+                         "secrets.yml", "secrets/token.txt", ".npmrc", ".netrc",
+                         "prod.env", "config/local.env", "aws_credentials", "gcp-credentials.json",
+                         "client_secret.json", "app-secrets.yml", "Config/PROD.ENV", "db/passwords.txt",
+                         "etc/passwd", "ci/vault.jks", "home/store.kdbx", "keys/id_ecdsa", "keys/id_dsa.pub",
+                         ".pgpass", "web/.htpasswd", ".ssh/config", "home/.aws/config", "x/.gnupg/pubring.txt",
+                         ".kube/config", "src/.SSH/notes.txt"] {
                 guard DeskChangesWire.isSecret(name) else { throw SampleMismatch("secret name " + name) }
             }
-            for name in ["README.md", "src/environment.ts", "src/keys.ts", "docs/key-ideas.md", "src/main.tsx", "package.json"] {
+            for name in ["README.md", "src/environment.ts", "src/keys.ts", "docs/key-ideas.md", "src/main.tsx", "package.json",
+                         "src/environment.ts", "docs/ssh-notes.md", "src/aws.ts"] {
                 guard !DeskChangesWire.isSecret(name) else { throw SampleMismatch("plain name " + name) }
             }
             guard DeskChangesWire.pathOK("src/My File.tsx"), !DeskChangesWire.pathOK("a&b.txt"),

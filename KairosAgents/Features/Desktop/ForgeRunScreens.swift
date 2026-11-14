@@ -542,7 +542,7 @@ struct DeskChangesAppView: View {
             switch item {
             case .restart:
                 ConfirmSheet(title: "Restart the app?",
-                             detail: "Stops it on your desktop and starts it again with its saved command. Your desktop may ask you to approve the command first.",
+                             detail: "Your desktop stops the app first, then asks you to approve starting it again. If you cancel at that point, the app stays stopped.",
                              confirm: "Restart", danger: false) {
                     notice = nil
                     live.startApproval(sessionID, .restart)

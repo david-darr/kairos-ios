@@ -600,6 +600,11 @@ struct DeskChangesFileView: View {
                         Task { await live.loadFile(sessionID, path: path) }
                     }
                 }
+                if state.newer != nil, !state.dirty {
+                    DeskForgeLine(text: "This file changed on your desktop. What you see is the older text.", action: "Reload") {
+                        Task { await live.reload(sessionID, path: path) }
+                    }
+                }
                 if state.newer != nil, state.dirty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("This file changed on your desktop")
@@ -634,34 +639,9 @@ struct DeskChangesFileView: View {
                     .padding(.horizontal, 12)
                     .disabled(saving || state.unsettled)
             } else {
-                reader(state.shown)
+                DeskChangesReaderView(text: state.shown)
             }
         }
-    }
-
-    private func reader(_ text: String) -> some View {
-        let all = text.components(separatedBy: "\n")
-        let lines = Array(all.prefix(5000))
-        return ScrollView([.vertical, .horizontal]) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                    HStack(alignment: .top, spacing: 12) {
-                        Text("\(index + 1)").foregroundStyle(Palette.inkFaint).frame(width: 30, alignment: .trailing)
-                        Text(line.isEmpty ? " " : line).foregroundStyle(Palette.ink)
-                    }
-                    .font(CodeFont.mono(13))
-                    .padding(.vertical, 1.5)
-                }
-                if all.count > lines.count {
-                    Text("Showing the first 5,000 lines. Edit shows all of it.")
-                        .font(KFont.ui(13)).foregroundStyle(Palette.inkFaint).padding(.top, 8)
-                }
-            }
-            .padding(16)
-            .textSelection(.enabled)
-        }
-        .defaultScrollAnchor(.topLeading)
-        .scrollIndicators(.hidden)
     }
 
     private func save(overwrite: Bool) {
@@ -673,6 +653,70 @@ struct DeskChangesFileView: View {
                 Haptics.success()
                 toast = "Saved on your desktop"
             }
+        }
+    }
+}
+
+/// What the reader shows of a file: at most `maxLines` lines, each cut at `maxWidth` characters.
+nonisolated enum DeskChangesReaderText {
+    static let maxLines = 5000
+    static let maxWidth = 2000
+
+    static func cut(_ text: String) -> (lines: [String], short: Bool) {
+        let pieces = text.split(separator: "\n", maxSplits: maxLines, omittingEmptySubsequences: false)
+        var short = pieces.count > maxLines
+        var lines: [String] = []
+        lines.reserveCapacity(min(pieces.count, maxLines))
+        for piece in pieces.prefix(maxLines) {
+            if piece.count > maxWidth {
+                short = true
+                lines.append(String(piece.prefix(maxWidth)))
+            } else {
+                lines.append(String(piece))
+            }
+        }
+        return (lines, short)
+    }
+}
+
+/// A file with line numbers. The lines are cut once per text, off the main actor, and drawn lazily.
+struct DeskChangesReaderView: View {
+    let text: String
+    @State private var lines: [String] = []
+    @State private var short = false
+    @State private var ready = false
+
+    var body: some View {
+        ScrollView([.vertical, .horizontal]) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if !ready {
+                    ProgressView().padding(.top, 8)
+                }
+                ForEach(lines.indices, id: \.self) { index in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text("\(index + 1)").foregroundStyle(Palette.inkFaint).frame(width: 30, alignment: .trailing)
+                        Text(lines[index].isEmpty ? " " : lines[index]).foregroundStyle(Palette.ink)
+                    }
+                    .font(CodeFont.mono(13))
+                    .padding(.vertical, 1.5)
+                }
+                if short {
+                    Text("This file is longer than the phone shows: the first 5,000 lines, with long lines cut. Edit shows all of it.")
+                        .font(KFont.ui(13)).foregroundStyle(Palette.inkFaint).padding(.top, 8)
+                }
+            }
+            .padding(16)
+            .textSelection(.enabled)
+        }
+        .defaultScrollAnchor(.topLeading)
+        .scrollIndicators(.hidden)
+        .task(id: text) {
+            let source = text
+            let result = await Task.detached(priority: .userInitiated) { DeskChangesReaderText.cut(source) }.value
+            if Task.isCancelled { return }
+            lines = result.lines
+            short = result.short
+            ready = true
         }
     }
 }

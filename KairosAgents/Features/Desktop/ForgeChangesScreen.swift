@@ -788,7 +788,7 @@ struct DeskChangesDiffView: View {
 
 /// What the Git sheet is asking the person to confirm.
 enum DeskChangesGitAsk: Identifiable {
-    case commit(message: String)
+    case commit(message: String, staged: [String])
     case pull
     case push
 
@@ -853,8 +853,6 @@ struct DeskChangesGitView: View {
         let total = git.staged.count + git.unstaged.count
         let hiddenSecrets = git.unstaged.filter { DeskChangesWire.isSecret($0.path) }
         let stagedSecrets = git.staged.contains { DeskChangesWire.isSecret($0.path) }
-        // Commit with nothing staged adds every file, so it waits while a file that can hold secrets is among them.
-        let commitAddsSecrets = git.staged.isEmpty && !hiddenSecrets.isEmpty
         let secretWords = hiddenSecrets.count == 1 ? "A file that can hold secrets is" : "\(hiddenSecrets.count) files that can hold secrets are"
         return VStack(alignment: .leading, spacing: 16) {
             if let stale = live.stale(sessionID) {
@@ -908,15 +906,17 @@ struct DeskChangesGitView: View {
                     .padding(14)
                     .kCard(radius: 16)
                     .disabled(locked)
-                let canCommit = !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && total > 0
-                    && !running && !locked && live.hold(sessionID) == nil && !commitAddsSecrets
-                GoldButton(title: git.staged.isEmpty ? "Commit all \(total)" : "Commit \(git.staged.count)") {
-                    ask = .commit(message: message.trimmingCharacters(in: .whitespacesAndNewlines))
+                // The phone commits only what is staged: with nothing staged, Commit is off.
+                let canCommit = !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !git.staged.isEmpty
+                    && !stagedSecrets && !running && !locked && live.hold(sessionID) == nil
+                GoldButton(title: "Commit \(git.staged.count)") {
+                    ask = .commit(message: message.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  staged: git.staged.map(\.path))
                 }
                 .disabled(!canCommit)
                 .opacity(canCommit ? 1 : 0.45)
-                if commitAddsSecrets {
-                    NoteLine(text: "Stage the files you want first. Committing all would include a file that can hold secrets.")
+                if git.staged.isEmpty {
+                    NoteLine(text: "Stage what you want in this commit first")
                 }
             }
 
@@ -966,7 +966,7 @@ struct DeskChangesGitView: View {
             }
             if running { NoteLine(text: "Git actions wait while the agent is working.") }
             if stagedSecrets {
-                NoteLine(text: "A staged file can hold secrets. Check it in Kairos on your desktop before you commit.", symbol: "lock")
+                NoteLine(text: "A staged file can hold secrets, so Commit is off. Unstage it, or commit in Kairos on your desktop.", symbol: "lock")
             }
         }
         .animation(Motion.snappy, value: status)
@@ -1074,13 +1074,14 @@ struct DeskChangesGitView: View {
     private func confirmSheet(_ item: DeskChangesGitAsk) -> some View {
         let git = state?.git
         switch item {
-        case .commit(let text):
-            let count = git.map { $0.staged.isEmpty ? $0.unstaged.count : $0.staged.count } ?? 0
-            let scope = (git?.staged.isEmpty ?? true) ? "every changed file (\(count))" : "the \(count) staged \(count == 1 ? "file" : "files")"
+        case .commit(let text, let staged):
+            let shown = staged.prefix(8).joined(separator: "\n")
+            let more = staged.count > 8 ? "\nand \(staged.count - 8) more" : ""
+            let scope = "the \(staged.count) staged \(staged.count == 1 ? "file" : "files"):\n" + shown + more
             ConfirmSheet(title: "Commit to \(git?.branch ?? "this branch")?",
-                         detail: "\"\(text)\" commits \(scope). The repository's own hooks run on your desktop, and a commit cannot be undone from here.",
+                         detail: "\"\(text)\" commits \(scope)\nThe repository's own hooks run on your desktop, and a commit cannot be undone from here.",
                          confirm: "Commit", danger: false) {
-                commit(text)
+                commit(text, staged: staged)
             }
         case .pull:
             ConfirmSheet(title: "Pull \(git?.upstream.map { DeskForgeRequestText.hideSignIn($0) } ?? "the upstream")?",
@@ -1098,9 +1099,9 @@ struct DeskChangesGitView: View {
         }
     }
 
-    private func commit(_ text: String) {
+    private func commit(_ text: String, staged: [String]) {
         write(done: "Committed") {
-            let outcome = await live.commit(sessionID, message: text)
+            let outcome = await live.commit(sessionID, message: text, expected: staged)
             if outcome == .done, message.trimmingCharacters(in: .whitespacesAndNewlines) == text { message = "" }
             return outcome
         }

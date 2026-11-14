@@ -271,7 +271,10 @@ final class DeskChangesLive {
                 return .failed(error.plainWords, missing: missing)
             }
         }
-        return .stale
+        // Every try overlapped a change on its way. A newer read of the same kind answers instead, if there is one;
+        // otherwise the screen says so with Try again and never stays on "Reading".
+        guard stillLive(account), reads[key] == serial else { return .stale }
+        return .failed("Your desktop was busy with another change. Try again in a moment.", missing: false)
     }
 
     /// A failed read: remembers a session that is gone, and answers the state the screen should show.
@@ -375,7 +378,7 @@ final class DeskChangesLive {
     /// One file's text. While the person has typed, what the editor was filled from stays: a newer version on
     /// the desktop is kept beside it, never over it.
     @discardableResult
-    func loadFile(_ sid: String, path: String) async -> Bool {
+    func loadFile(_ sid: String, path: String, force: Bool = false) async -> Bool {
         let key = Self.pathKey(sid, path)
         guard !DeskChangesWire.isSecret(path) else {
             edit(key) { $0.load = .failed(DeskChangesWire.secretLine) }
@@ -398,12 +401,14 @@ final class DeskChangesLive {
             return false
         case .fresh(let dto):
             readFresh(sid)
-            apply(dto, key: key)
+            apply(dto, key: key, force: force)
             return true
         }
     }
 
-    private func apply(_ dto: DeskChangesFileTextDTO, key: String) {
+    /// `force`: the person picked Reload (or the editor needs the desktop's hash), so the desktop's text is taken.
+    /// Otherwise a newer text is only kept aside in `newer`: what the editor shows never changes under the person.
+    private func apply(_ dto: DeskChangesFileTextDTO, key: String, force: Bool) {
         edit(key) { state in
             if dto.binary == true {
                 state.binary = true
@@ -422,8 +427,8 @@ final class DeskChangesLive {
                 state.load = .loaded
                 return
             }
-            if state.load != .loaded || (state.draft == nil && !state.unsettled) {
-                // Untouched: the desktop's text is what the editor now holds, with its hash and mtime.
+            if state.load != .loaded || force {
+                // First fill, or the person asked for it: the desktop's text, with its hash and mtime.
                 state.adopt(desk)
                 state.line = nil
             } else if state.unsettled, let sent = state.sent {
@@ -629,6 +634,15 @@ final class DeskChangesLive {
             if let path { return git.staged.contains { $0.path == path } == !unstage }
             return unstage ? git.staged.isEmpty : git.unstaged.isEmpty
         }
+        if path == nil, !unstage {
+            // Stage all adds every unstaged file, so git is read again first: a file that can hold secrets stops it.
+            guard await refreshGit(sid, account), let fresh = gitMap[sid]?.git else {
+                return .refused("Your desktop could not be read, so nothing was staged. Try again.")
+            }
+            if fresh.unstaged.contains(where: { DeskChangesWire.isSecret($0.path) }) {
+                return .refused("A file that can hold secrets is among the changes, so Stage all is off. Stage the other files one by one.")
+            }
+        }
         switch await attempt(account, { try await $0.deskChangesGitAction(sid, action: word, path: path) }) {
         case .moved:
             return .refused(Self.desktopChanged)
@@ -647,18 +661,34 @@ final class DeskChangesLive {
         }
     }
 
-    /// Commit the staged files (or every file when none is staged). The repository's own hooks run on the desktop.
+    /// Commit the staged files, and only those: `expected` is the list the person confirmed. The desktop commits
+    /// every file when nothing is staged, so git is read again just before sending, and the commit goes only if the
+    /// staged set is exactly `expected` and holds no file that can hold secrets.
     /// There is no request id: after a lost answer the branch is read again, here in the store, and Commit stays
     /// off until it knows. It is never sent a second time from here.
-    func commit(_ sid: String, message: String) async -> DeskForgeOutcome {
+    func commit(_ sid: String, message: String, expected: [String]) async -> DeskForgeOutcome {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return .refused("Write a commit message first.") }
+        guard !expected.isEmpty else { return .refused("Stage what you want in this commit first.") }
         guard !gitLocked(sid) else { return .busy }
-        guard let before = gitMap[sid]?.git else { return .refused("Read the branch from your desktop first.") }
+        guard gitMap[sid]?.git != nil else { return .refused("Read the branch from your desktop first.") }
         if let line = await working(sid, "Committing") { return .refused(line) }
         let key = "git:" + sid
         guard let account = begin(key) else { return .busy }
         defer { finish(key, account) }
+        guard await refreshGit(sid, account), let before = gitMap[sid]?.git else {
+            return .refused("Your desktop could not be read, so nothing was committed. Try again.")
+        }
+        let staged = before.staged.map(\.path)
+        if staged.isEmpty {
+            return .refused("Nothing is staged on your desktop now, so nothing was committed. Stage what you want first.")
+        }
+        if Set(staged) != Set(expected) || staged.count != expected.count {
+            return .refused("The staged files changed on your desktop, so nothing was committed. The list now shows what it has.")
+        }
+        if staged.contains(where: { DeskChangesWire.isSecret($0) }) {
+            return .refused("A staged file can hold secrets, so nothing was committed. Unstage it, or commit in Kairos on your desktop.")
+        }
         switch await attempt(account, { try await $0.deskChangesGitAction(sid, action: "commit", message: text) }) {
         case .moved:
             return .refused(Self.desktopChanged)
@@ -833,9 +863,10 @@ final class DeskChangesLive {
             if done || (read && restarted) {
                 sentence = "The app restarted on your desktop."
             } else if let refusal {
-                sentence = "The app was not restarted. " + refusal
+                sentence = "The restart did not go through. " + refusal + " Your desktop stops the app first, so it is "
+                    + (read ? (app?.running == true ? "running" : "stopped") : "possibly stopped") + " now."
             } else if read {
-                sentence = "Your desktop did not confirm the restart. The app is \(app?.running == true ? "running" : "stopped") there now. " + (lost ?? "")
+                sentence = "Your desktop did not confirm the restart. The app is \(app?.running == true ? "running" : "stopped") there now. Your desktop stops the app first and then asks for approval, so cancelling leaves it stopped. " + (lost ?? "")
             } else {
                 sentence = Self.unchecked("the restart", lost ?? "")
             }
@@ -874,9 +905,8 @@ final class DeskChangesLive {
         guard current, !busyKeys.contains("file:" + key), var state = fileMap[key],
               state.load == .loaded, !state.binary, !state.unsettled else { return }
         if text == state.filled {
+            // Back to what it started as. A newer desktop version stays aside until the person picks Reload.
             state.draft = nil
-            // Back to what it started as: nothing is lost by taking the desktop's newer version.
-            if let newer = state.newer { state.adopt(newer) }
         } else {
             state.draft = text
         }
@@ -918,7 +948,7 @@ final class DeskChangesLive {
                     state.draft = nil
                     state.canSave = false
                 }
-                await loadFile(sid, path: path)
+                await loadFile(sid, path: path, force: true)
             }
             return .done
         case .refused(let why, let status):
@@ -964,7 +994,7 @@ final class DeskChangesLive {
             state.unsettled = false
             state.sent = nil
         }
-        await loadFile(sid, path: path)
+        await loadFile(sid, path: path, force: true)
     }
 
     // MARK: App
