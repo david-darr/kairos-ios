@@ -768,6 +768,20 @@ final class MakeLibraryLive {
         }
     }
 
+    /// Packs and characters that were missing from the last good read. The desktop leaves an item out of its list
+    /// when it cannot read that item's file at that moment, so one miss is not proof: an item counts as gone only
+    /// when it is missing from two checks in a row, each made after its own fresh read.
+    private var missedOnce: Set<String> = []
+
+    private func goneTwice(_ item: String) -> MakeLibraryVerdict {
+        if missedOnce.contains(item) {
+            missedOnce.remove(item)
+            return .notApplied
+        }
+        missedOnce.insert(item)
+        return .unknown
+    }
+
     private func clearHold(_ acct: String, _ key: String) {
         pendingMap[Self.slot(acct, key)] = nil
         Self.saveHold(acct, key, nil)
@@ -788,7 +802,8 @@ final class MakeLibraryLive {
         case "sample":
             // A pack that is gone from a fresh read can have nothing more happen to it.
             guard let id = hold.packID, let number = hold.version else { return .unknown }
-            guard let now = pack(id) else { return .notApplied }
+            guard let now = pack(id) else { return goneTwice("pack:" + id) }
+            missedOnce.remove("pack:" + id)
             guard let current = now.versions.first(where: { $0.number == number }) else { return .unknown }
             // The desktop renders each missing character sheet one after another inside the same request. So one
             // sheet moving is not the end of it: the cast counts only when every character that was a draft or
@@ -803,7 +818,8 @@ final class MakeLibraryLive {
             return changed ? .applied : .unknown
         case "editpack":
             guard let id = hold.packID, let base = hold.baseVersion else { return .unknown }
-            guard let now = pack(id) else { return .notApplied }
+            guard let now = pack(id) else { return goneTwice("pack:" + id) }
+            missedOnce.remove("pack:" + id)
             guard let latest = now.latest, let values = MakeLibraryPackForm.values(now) else { return .unknown }
             guard latest.number > base else { return .notApplied }
             let match = (hold.fieldHashes ?? [:]).allSatisfy { name, hashed in
@@ -822,13 +838,15 @@ final class MakeLibraryLive {
             return found ? .applied : .unknown
         case "editchar":
             guard let id = hold.characterID, let base = hold.baseVersion else { return .unknown }
-            guard let now = character(id) else { return .notApplied }
+            guard let now = character(id) else { return goneTwice("character:" + id) }
+            missedOnce.remove("character:" + id)
             guard let latest = now.latest else { return .unknown }
             guard latest.number > base else { return .notApplied }
             return now.versions.contains { $0.number > base && same($0.note, hold.noteHash) } ? .applied : .unknown
         case "sheet":
             guard let id = hold.characterID, let number = hold.version else { return .unknown }
-            guard let now = character(id) else { return .notApplied }
+            guard let now = character(id) else { return goneTwice("character:" + id) }
+            missedOnce.remove("character:" + id)
             guard let status = now.versions.first(where: { $0.number == number })?.status else { return .unknown }
             return status != hold.statusBefore ? .applied : .unknown
         default:
@@ -1409,10 +1427,17 @@ struct MakeLibrarySheetView: View {
 
 // MARK: - Sheets
 
+/// Whether one sheet is still on screen. A send can outlive its sheet, so the answer reads this object (taken before
+/// the wait) and never closes a sheet the person opened afterwards.
+final class MakeLibrarySheetLife {
+    var shown = true
+}
+
 /// New style pack from a written brief: two steps, the second names the model run before anything is sent.
 struct MakeLibraryBriefSheet: View {
     @Environment(MakeToast.self) private var toast
     @Environment(\.dismiss) private var dismiss
+    @State private var life = MakeLibrarySheetLife()
     @State private var brief = ""
     @State private var name = ""
     @State private var confirming = false
@@ -1462,17 +1487,20 @@ struct MakeLibraryBriefSheet: View {
             .padding(.bottom, 30)
         }
         .kSheet()
+        .onDisappear { life.shown = false }
     }
 
     private func send() {
         message = nil
+        let life = self.life
         Task {
             let outcome = await live.createPackFromBrief(brief, name: name, opened: opened)
             toast.say(outcome.line)
             switch outcome {
             case .done:
                 Haptics.success()
-                dismiss()
+                // Only this sheet is closed: one closed while sending and opened again is left alone.
+                if life.shown { dismiss() }
             case .refused(let line):
                 message = line
                 confirming = false
