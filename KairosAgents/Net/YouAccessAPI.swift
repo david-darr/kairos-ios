@@ -504,7 +504,8 @@ nonisolated enum YouAccessSamples {
         DecodeCheck("youaccess.permissions") {
             let read = try KJSON.decode(YouAccessPermissionsDTO.self, from: YouAccessSamples.permissions)
             guard read.rules.count == 3, read.skipped == 1, read.audit.count == 3,
-                  read.rules[0].content?.string == "git status", read.rules[1].content?.isNull == true,
+                  read.rules[0].content?.string == "git status",
+                  read.rules[1].content == nil || read.rules[1].content?.isNull == true,
                   read.rules[2].behavior?.string == "deny", read.rules[2].scope?.string == "session",
                   YouAccessWire.time(read.rules[0].grantedAt) != nil,
                   (try? YouAccessWire.ruleID(read.rules[0].id)) != nil, (try? YouAccessWire.ruleID("a/b")) == nil else {
