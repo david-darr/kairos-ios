@@ -275,6 +275,11 @@ final class MakeDesignLive {
     @ObservationIgnored private var starting: MakeDesignStart?
     @ObservationIgnored private var startBusy = false
     @ObservationIgnored private var watchers: [String: Task<Void, Never>] = [:]
+    /// Turns the person gave up on after a lost answer. The same words to the same chat carry the same
+    /// request id again, so a turn the desktop did run is never run a second time.
+    @ObservationIgnored private var discarded: [String: MakeDesignTurn] = [:]
+    /// Keys whose screen is away: nothing follows their turn until the screen is back.
+    @ObservationIgnored private var paused: Set<String> = []
     @ObservationIgnored private var thumbs: [String: UIImage] = [:]
 
     private static let desktopChanged = "Your paired desktop changed. Try again."
@@ -321,6 +326,8 @@ final class MakeDesignLive {
         busy = []
         creating = false
         turns = [:]
+        discarded = [:]
+        paused = []
         drafts = [:]
         starting = nil
         startBusy = false
@@ -795,8 +802,9 @@ final class MakeDesignLive {
     /// Give up on a message whose answer was lost. The person chooses this; nothing else clears it.
     func discardTurn(_ key: String) {
         guard let turn = turns[key], turn.isLost else { return }
+        // Its request id is kept (and for a start, its chat): the desktop may have run it.
+        discarded[key] = turn
         turns[key] = nil
-        if key == Self.startKey { starting = nil }
     }
 
     func clearTurn(_ key: String) {
@@ -805,7 +813,12 @@ final class MakeDesignLive {
     }
 
     private func open(_ key: String, sessionID: String, message: String, references: [MakeDesignReference]) {
-        let requestID = UUID().uuidString.lowercased()
+        let requestID: String
+        if let old = discarded[key], old.sessionID == sessionID, old.message == message {
+            requestID = old.requestID
+        } else {
+            requestID = UUID().uuidString.lowercased()
+        }
         turns[key] = MakeDesignTurn(sessionID: sessionID, message: message, references: references,
                                     requestID: requestID, state: .sending, turnID: nil)
     }
@@ -819,6 +832,8 @@ final class MakeDesignLive {
             turn.turnID = answer.turnId
             turn.state = .working
             turns[key] = turn
+            if discarded[key]?.requestID == turn.requestID { discarded[key] = nil }
+            if key == Self.startKey { starting = nil }
             watch(key, account)
             return .saved
         } catch {
@@ -849,17 +864,22 @@ final class MakeDesignLive {
 
     private func watch(_ key: String, _ account: String) {
         watchers[key]?.cancel()
+        watchers[key] = nil
+        // Its screen is away: resumeWatch picks it up when the screen is back.
+        guard !paused.contains(key) else { return }
         watchers[key] = Task { await watchTurn(key, account) }
     }
 
     /// The turn's screen went away: stop following it. The turn and what it says stay.
     func pauseWatch(_ key: String) {
+        paused.insert(key)
         watchers[key]?.cancel()
         watchers[key] = nil
     }
 
     /// The turn's screen is back: follow it again when it is still open on the desktop.
     func resumeWatch(_ key: String) {
+        paused.remove(key)
         guard let account = ready(), watchers[key] == nil, let turn = turns[key],
               turn.state == .working || turn.state == .waiting else { return }
         watch(key, account)
@@ -2625,7 +2645,15 @@ struct MakeDesignTextLive: View {
             let now = await MakeDesignLive.shared.elementText(designID, board: target.board, element: element.id)
             guard now == before else {
                 sending = false
-                problem = "This text changed on your desktop or could not be checked, so nothing was saved. Your words are kept here."
+                if let now {
+                    // The next Save is against what the desktop has now, which the person has just been shown.
+                    filled = now
+                    let theirs = now.count > 200 ? String(now.prefix(200)) + "..." : now
+                    problem = "This text changed on your desktop, so nothing was saved. Your words are kept here. "
+                        + "Your desktop now has: \"" + theirs + "\". Save again to replace it."
+                } else {
+                    problem = "This text could not be checked on your desktop, so nothing was saved. Your words are kept here. Try again."
+                }
                 return
             }
             let outcome = await MakeDesignLive.shared.setText(designID, board: target.board, element: element.id, text: sent)
