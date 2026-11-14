@@ -88,7 +88,7 @@ struct DecodeChecksView: View {
             + YouAccessSamples.checks + MakeHomeSamples.checks + MakeDesignSamples.checks + DeskForgeSamples.checks
             + MakeVideoSamples.checks + YouVoiceSamples.checks + DeskChangesSamples.checks
             + DeskModelsSamples.checks + YouBotsSamples.checks + MakeStudioSamples.checks
-            + DeskComputerSamples.checks + DeskFilesSamples.checks {
+            + DeskComputerSamples.checks + DeskFilesSamples.checks + MakeLibrarySamples.checks {
             do {
                 result.append(Outcome(id: check.id, passed: true, detail: try check.run()))
             } catch {

@@ -165,9 +165,9 @@ final class MakeStudioLive {
 
     static let desktopChanged = "Your paired desktop changed. Try again."
 
-    /// The library screens are not on live data yet (the next pass switches them on). While this is false and the
-    /// phone is paired, the picker leaves them out and their sheets say where to do it.
-    static let librariesLive = false
+    /// The library screens read the paired desktop (`MakeLibraryLive`). While this is false and the phone is
+    /// paired, the picker leaves them out and their sheets say where to do it.
+    static let librariesLive = true
 
     // MARK: Hands-off posting
 
