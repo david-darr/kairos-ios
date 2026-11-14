@@ -53,6 +53,7 @@ targets:
           - remote-notification
         NSMicrophoneUsageDescription: Kairos uses the microphone when you talk to a bot on a call or by voice.
         NSCameraUsageDescription: Kairos uses the camera when you take a photo to send to a chat.
+        NSPhotoLibraryAddUsageDescription: Kairos saves a finished video to your photos only when you choose Save Video.
         NSUserActivityTypes:
           - INSendMessageIntent
           - INStartCallIntent
