@@ -6,14 +6,27 @@ import UniformTypeIdentifiers
 
 struct StudioLibraryView: View {
     let library: StudioLibrary
+    @Environment(MakeStore.self) private var make
 
     var body: some View {
-        switch library {
-        case .formats: FormatsLibrary()
-        case .styles: StylesLibrary()
-        case .characters: CharactersLibrary()
-        case .connections: ConnectionsLibrary()
-        case .templates: TemplatesLibrary()
+        if make.studio.isLive {
+            // Paired: the desktop's own libraries (MakeLibraryLive.swift). None of the sample views below is drawn,
+            // and none of them opens a sheet through the Studio store.
+            switch library {
+            case .formats: MakeLibraryFormats()
+            case .styles: MakeLibraryStyles()
+            case .characters: MakeLibraryCharacters()
+            case .connections: MakeLibraryConnectionsView()
+            case .templates: MakeLibraryTemplatesView()
+            }
+        } else {
+            switch library {
+            case .formats: FormatsLibrary()
+            case .styles: StylesLibrary()
+            case .characters: CharactersLibrary()
+            case .connections: ConnectionsLibrary()
+            case .templates: TemplatesLibrary()
+            }
         }
     }
 }
