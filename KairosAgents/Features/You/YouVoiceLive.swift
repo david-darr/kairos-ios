@@ -956,6 +956,18 @@ final class YouVoiceLive {
         await setOrder(kind, order)
     }
 
+    /// Make one way the first of the order in ONE write (`setOrder`: compare-before-send, lost-answer check). A way that
+    /// is not in the order is added only when the desktop says its channel is ready.
+    func makeFirst(_ kind: ReachMeKind, _ id: String) async {
+        guard let view = reach else { return }
+        let current = kind == .message ? view.message : view.call
+        if !current.contains(id) {
+            let channels = kind == .message ? view.messageChannels : view.callChannels
+            guard channels.first(where: { $0.id == id })?.ready == true else { return }
+        }
+        await setOrder(kind, [id] + current.filter { $0 != id })
+    }
+
     private func setOrder(_ kind: ReachMeKind, _ order: [String]) async {
         guard let view = reach else { return }
         let key = kind == .message ? "message" : "call"

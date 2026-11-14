@@ -656,6 +656,14 @@ struct ChannelsScreen: View {
     private let store = ChannelStore.shared
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsChannelsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Channels", subtitle: "Reach Kairos from the apps you already use, and choose where results go.") {
             SettingsGroup("Your channels") {
                 if !loaded {
@@ -885,7 +893,9 @@ struct ChannelDetailScreen: View {
     private let store = ChannelStore.shared
 
     var body: some View {
-        if let connector = store.connector(channelID) {
+        if YouBotsLive.isPaired {
+            YouBotsChannelScreen(channelID: channelID)
+        } else if let connector = store.connector(channelID) {
             page(connector)
         } else {
             SettingsPage("Channel", subtitle: "This channel was removed.") {
@@ -1069,7 +1079,16 @@ struct AddChannelScreen: View {
     private let store = ChannelStore.shared
 
     var body: some View {
-        if kind == "discord" {
+        if YouBotsLive.isPaired {
+            SettingsPage("Add a channel", subtitle: "A channel carries a token or an address, so it is added in Kairos on your desktop.") {
+                HintLine(text: "Add, edit and remove a channel in Kairos on your desktop, in Settings, Channels. A token, a topic or a server address never goes through this phone.",
+                         symbol: "desktopcomputer")
+                    .padding(.horizontal, 8)
+                SettingsGroup {
+                    YouNavRow(title: "All channels", symbol: "list.bullet", to: .channels)
+                }
+            }
+        } else if kind == "discord" {
             discordPage
         } else if let platform = ChannelCatalog.platform(kind) {
             platformPage(platform)
@@ -1237,7 +1256,9 @@ struct DiscordBotScreen: View {
     private static let callWays = ["", "app", "phone", "discord", "telegram"]
 
     var body: some View {
-        if let bot = store.bot(botID) {
+        if YouBotsLive.isPaired {
+            YouBotsDiscordScreen(botID: botID)
+        } else if let bot = store.bot(botID) {
             page(bot)
         } else {
             SettingsPage("Discord bot", subtitle: "This bot was removed.") {
@@ -1439,6 +1460,497 @@ struct DiscordBotScreen: View {
         newMode = .normal
         Haptics.success()
         YouStore.shared.say("Channel added.")
+    }
+}
+
+// MARK: - Paired: what the desktop has
+
+/// Where to do something: one quiet line.
+private struct YouBotsChannelHint: View {
+    let text: String
+
+    var body: some View {
+        HintLine(text: text, symbol: "desktopcomputer")
+            .padding(.horizontal, 8)
+    }
+}
+
+/// Channels while paired: the desktop's Discord bots and connectors, read only, with their status. A token, an address,
+/// a topic, a setting or a sender never reaches this phone, and no channel is added, edited or removed from it.
+struct YouBotsChannelsScreen: View {
+    private let live = YouBotsLive.shared
+
+    var body: some View {
+        let ready = live.load(.connectors) == .loaded || live.load(.discord) == .loaded
+        SettingsPage("Channels", subtitle: "Reach Kairos from the apps you already use, and choose where results go.") {
+            YouBotsLoadLine(part: .connectors, loading: "Reading your channels from your desktop.")
+            YouBotsLoadLine(part: .discord, loading: "Reading your Discord bots from your desktop.")
+            YouBotsNoticeLine(part: .connectors)
+            YouBotsNoticeLine(part: .discord)
+
+            if ready {
+                SettingsGroup("Your channels") {
+                    if live.discordBots.isEmpty && live.channels.isEmpty
+                        && live.load(.connectors) == .loaded && live.load(.discord) == .loaded {
+                        EmptyRow(text: "No channels yet. Add one in Kairos on your desktop to reach Kairos from your phone.")
+                    }
+                    ForEach(live.discordBots) { bot in
+                        discordRow(bot)
+                    }
+                    ForEach(live.channels) { channel in
+                        channelRow(channel)
+                    }
+                    if live.skippedChannels + live.skippedDiscord > 0 {
+                        EmptyRow(text: "Some channels could not be read here. See them in Kairos on your desktop.")
+                    }
+                }
+                .arrives(0)
+
+                if let checked = live.checkedAt {
+                    NoteText(text: "Status updates while this page is open. Checked at \(checked.formatted(date: .omitted, time: .standard)).", symbol: "arrow.clockwise")
+                }
+
+                YouBotsChannelHint(text: "Add, edit and remove a channel, its allowed senders, its token and the model it answers with in Kairos on your desktop. A token or an address never goes through this phone.")
+
+                NoteText(text: "Two-way channels answer only the senders you allow, and those senders can reach your agents by name. Send-only channels carry task results and agent notifications.")
+            }
+
+            SettingsGroup {
+                YouNavRow(title: "Reach me", detail: "The order bots use to message and call you.", symbol: "bell", to: .reachMe)
+            }
+            .arrives(1)
+        }
+        .task(id: YouBotsLive.connectionKey) {
+            while !Task.isCancelled {
+                await live.read(.connectors)
+                await live.read(.discord)
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+    }
+
+    private func discordRow(_ bot: YouBotsDiscord) -> some View {
+        let connected = live.discordLive.map { $0.contains(bot.name) }
+        let pill: (text: String, tone: StatusPill.Tone) = {
+            guard bot.hasToken else { return ("No token", .muted) }
+            switch connected {
+            case true?: return ("Listening", .ok)
+            case false?: return ("Not connected", .muted)
+            case nil: return ("Not checked", .muted)
+            }
+        }()
+        var detail = "Discord · " + (bot.hasAllowedUser ? "answers one allowed user" : "answers anyone in its channels")
+        if !bot.overrides.isEmpty { detail += " · \(bot.overrides.count) channel override\(bot.overrides.count == 1 ? "" : "s")" }
+        return NavigationLink(value: YouRoute.discord(bot.id)) {
+            HStack(spacing: 12) {
+                ChannelBadge(text: "D", tint: Palette.botLilac)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bot.name).font(KFont.ui(16)).foregroundStyle(Palette.ink)
+                    Text(detail)
+                        .font(KFont.ui(13.5, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                StatusPill(text: pill.text, tone: pill.tone)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.inkFaint)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 60)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(scale: 0.985))
+    }
+
+    private func channelRow(_ channel: YouBotsChannel) -> some View {
+        let platform = ChannelCatalog.platform(channel.kind)
+        let pill = channelPill(channel.state)
+        return NavigationLink(value: YouRoute.channel(channel.id)) {
+            HStack(spacing: 12) {
+                ChannelBadge(text: platform?.badge ?? "?", tint: platform?.tint ?? Palette.botGold)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(channel.name).font(KFont.ui(16)).foregroundStyle(Palette.ink)
+                    Text(detail(channel))
+                        .font(KFont.ui(13.5, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if channel.state == "error" {
+                        Text("This channel has a problem. Check it in Kairos on your desktop.")
+                            .font(KFont.ui(13.5, relativeTo: .footnote))
+                            .foregroundStyle(Palette.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                StatusPill(text: pill.text, tone: pill.tone)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.inkFaint)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 60)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(scale: 0.985))
+    }
+
+    private func detail(_ channel: YouBotsChannel) -> String {
+        guard channel.twoWay else { return "\(channel.label) · send only" }
+        var text = "\(channel.label) · \(channel.senders) allowed sender\(channel.senders == 1 ? "" : "s")"
+        if channel.anyone { text += " · anyone may message" }
+        return text
+    }
+}
+
+/// One channel while paired: its status, off behind a confirm, and a test message behind a confirm. The test sends a
+/// real message once; if its answer is lost it is never sent again from this phone.
+struct YouBotsChannelScreen: View {
+    let channelID: String
+    private let live = YouBotsLive.shared
+    @State private var turningOff = false
+    @State private var testing = false
+
+    var body: some View {
+        Group {
+            if let channel = live.channels.first(where: { $0.id == channelID }) {
+                page(channel)
+            } else if live.load(.connectors) == .loaded {
+                SettingsPage("Channel", subtitle: "This channel is not on your desktop any more.") {
+                    SettingsGroup {
+                        YouNavRow(title: "All channels", symbol: "list.bullet", to: .channels)
+                    }
+                }
+            } else {
+                SettingsPage("Channel", subtitle: "Reading it from your desktop.") {
+                    YouBotsLoadLine(part: .connectors, loading: "Reading this channel from your desktop.")
+                }
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) {
+            while !Task.isCancelled {
+                await live.read(.connectors)
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+    }
+
+    private func page(_ channel: YouBotsChannel) -> some View {
+        let platform = ChannelCatalog.platform(channel.kind)
+        let pill = channelPill(channel.state)
+        return SettingsPage(channel.name, subtitle: platform?.about ?? channel.label) {
+            YouBotsNoticeLine(part: .connectors)
+            SettingsGroup("Status") {
+                StatusRow(title: "On", detail: channel.enabled ? "Running now." : "Switched off. Nothing is received or sent.", symbol: "power",
+                          status: channel.enabled ? "On" : "Off", tone: channel.enabled ? .ok : .muted)
+                if channel.enabled {
+                    RowButtons {
+                        YouBotsChangeButton(part: .connectors, key: "connector:" + channel.id, title: "Turn off", working: "Turning off...") {
+                            turningOff = true
+                        }
+                    }
+                } else {
+                    YouBotsChannelHint(text: "It is turned back on in Kairos on your desktop.")
+                        .padding(.vertical, 10)
+                }
+                StatusRow(title: "Status", detail: channel.state == "error" ? "This channel has a problem. Check it in Kairos on your desktop." : nil,
+                          symbol: "antenna.radiowaves.left.and.right", status: pill.text, tone: pill.tone)
+                if channel.webhook {
+                    YouBotsChannelHint(text: "This channel's webhook address is shown in Kairos on your desktop. It never goes through this phone.")
+                        .padding(.vertical, 10)
+                }
+                testRow(channel)
+            }
+            .arrives(0)
+
+            if channel.twoWay {
+                SettingsGroup("Who can message it") {
+                    ValueRow(title: "Allowed senders", value: channel.senders == 0 ? "Nobody yet" : "\(channel.senders)")
+                    ValueRow(title: "Anyone can message", detail: "Answers strangers too. They never reach your agents.", value: channel.anyone ? "Yes" : "No")
+                }
+                .arrives(1)
+            }
+
+            YouBotsChannelHint(text: "Its settings, senders, token and model, and removing it, are done in Kairos on your desktop. A token or an address never goes through this phone.")
+        }
+        .sheet(isPresented: $turningOff) {
+            ConfirmSheet(title: "Turn off \(channel.name)?",
+                         detail: "Nothing is received or sent through it until it is turned on again in Kairos on your desktop. This phone cannot turn it back on.",
+                         confirm: "Turn off") {
+                Task { await live.connectorOff(channel.id) }
+            }
+        }
+        .sheet(isPresented: $testing) {
+            ConfirmSheet(title: "Send a test message?",
+                         detail: "A real message goes through \(channel.name) to where it sends notifications. It is sent once. If your desktop does not answer, this phone will not send another.",
+                         confirm: "Send test", danger: false) {
+                Task { await live.sendTest(channel.id) }
+            }
+        }
+    }
+
+    private func testRow(_ channel: YouBotsChannel) -> some View {
+        let state = live.testState(channel.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                switch state {
+                case .sending?:
+                    StatusPill(text: "Sending...", tone: .working)
+                case .unconfirmed?:
+                    StatusPill(text: "Not confirmed", tone: .warn)
+                    YouPillButton(title: "I checked, allow another", danger: false) {
+                        live.allowAnotherTest(channel.id)
+                    }
+                default:
+                    if channel.enabled && channel.state != "error" {
+                        YouPillButton(title: "Send test", symbol: "bell") { testing = true }
+                    }
+                }
+            }
+            if let words = testWords(state, channel) {
+                Text(words)
+                    .font(KFont.ui(14, relativeTo: .footnote))
+                    .foregroundStyle(failed(state) ? Palette.danger : Palette.inkDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func failed(_ state: YouBotsTestState?) -> Bool {
+        if case .refused? = state { return true }
+        return false
+    }
+
+    private func testWords(_ state: YouBotsTestState?, _ channel: YouBotsChannel) -> String? {
+        switch state {
+        case .sent?:
+            return "Sent. Check that it arrived."
+        case .refused(let words)?:
+            return words
+        case .unconfirmed?:
+            return "Your desktop did not answer, so this phone cannot tell whether the test was sent. While this phone stays paired as it is now, it will not send another one until you say you checked. Look in the channel itself, and in Kairos on your desktop."
+        case .sending?:
+            return nil
+        case nil:
+            if !channel.enabled { return "Turn it on in Kairos on your desktop to send a test." }
+            if channel.state == "error" { return "A test is not sent while the channel has a problem." }
+            return nil
+        }
+    }
+}
+
+/// One override's change the person asked for, waiting for their confirm.
+private struct YouBotsModeChange: Identifiable {
+    let id: String
+    let bot: String
+    let label: String
+    let from: ChannelOverrideMode
+    let to: ChannelOverrideMode
+    let hasAllowedUser: Bool
+}
+
+/// A Discord bot while paired: its connection, its voice (off behind a confirm), the first way bots call you (through
+/// Reach me), and its channel overrides (silent or normal, and remove, each behind a confirm). The token, the allowed
+/// user, the model and every channel id stay on the desktop.
+struct YouBotsDiscordScreen: View {
+    let botID: String
+    private let live = YouBotsLive.shared
+    private let voice = YouVoiceLive.shared
+    @State private var changing: YouBotsModeChange?
+    @State private var removing: YouBotsOverride?
+    @State private var clearingVoice = false
+
+    var body: some View {
+        Group {
+            if let bot = live.discordBots.first(where: { $0.id == botID }) {
+                page(bot)
+            } else if live.load(.discord) == .loaded {
+                SettingsPage("Discord bot", subtitle: "This bot is not on your desktop any more.") {
+                    SettingsGroup {
+                        YouNavRow(title: "All channels", symbol: "list.bullet", to: .channels)
+                    }
+                }
+            } else {
+                SettingsPage("Discord bot", subtitle: "Reading it from your desktop.") {
+                    YouBotsLoadLine(part: .discord, loading: "Reading this bot from your desktop.")
+                }
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) {
+            await live.read(.discord)
+            await voice.read(.reach)
+        }
+    }
+
+    private func connection(_ bot: YouBotsDiscord) -> (detail: String, status: String, tone: StatusPill.Tone) {
+        guard bot.hasToken else { return ("No token is saved on your desktop.", "No token", .muted) }
+        switch live.discordLive.map({ $0.contains(bot.name) }) {
+        case true?: return ("Connected to Discord.", "Listening", .ok)
+        case false?: return ("Not connected. Check the token, and that your desktop is on.", "Not connected", .muted)
+        case nil: return ("Whether it is connected could not be read.", "Not checked", .muted)
+        }
+    }
+
+    private func page(_ bot: YouBotsDiscord) -> some View {
+        let state = connection(bot)
+        return SettingsPage(bot.name, subtitle: "A Discord bot.") {
+            YouBotsNoticeLine(part: .discord)
+            SettingsGroup("Bot") {
+                StatusRow(title: "Connection", detail: state.detail, symbol: "antenna.radiowaves.left.and.right", status: state.status, tone: state.tone)
+                RowLabel(
+                    title: "Allowed user",
+                    detail: bot.hasAllowedUser
+                        ? "Only one allowed Discord user is answered outside open channels, and only they can reach your agents."
+                        : "Answers anyone in its channels. Agents are never reachable through it.",
+                    symbol: "person.crop.circle"
+                )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                YouBotsChannelHint(text: "The token, the allowed user and the default model are changed in Kairos on your desktop.")
+                    .padding(.vertical, 10)
+            }
+            .arrives(0)
+
+            SettingsGroup("Voice", footer: "Talk with this bot by voice in a server channel. It joins when you say \"call me\", speaks only to you, and leaves when you do. It needs the voice add-ons on your desktop.") {
+                RowLabel(title: "Voice channel", detail: bot.hasVoice ? "A voice channel is set. The bot joins only that one." : "Off. Choose a voice channel in Kairos on your desktop.",
+                         symbol: "waveform")
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                if bot.hasVoice {
+                    RowButtons {
+                        YouBotsChangeButton(part: .discord, key: "voice:" + bot.id, title: "Turn voice off", working: "Turning off...") {
+                            clearingVoice = true
+                        }
+                    }
+                }
+                callOrder
+                YouNavRow(title: "Reach me", detail: "The rest of the order, quiet hours and STOP.", symbol: "bell", to: .reachMe)
+            }
+            .arrives(1)
+
+            SettingsGroup("Channel overrides", footer: "Per-channel behaviour, and extra delivery targets for tasks.") {
+                if bot.overrides.isEmpty {
+                    EmptyRow(text: "No overrides. The bot follows its allow list everywhere.")
+                } else {
+                    ForEach(bot.overrides) { entry in
+                        overrideRow(bot, entry)
+                    }
+                }
+            }
+            .arrives(2)
+
+            YouBotsChannelHint(text: "Adding an override, opening a channel to anyone, and removing the bot are done in Kairos on your desktop.")
+        }
+        .sheet(item: $changing) { change in
+            ConfirmSheet(title: "Set #\(change.label) to \(change.to.title.lowercased())?",
+                         detail: Self.changeWords(change),
+                         confirm: "Set to \(change.to.title)", danger: false) {
+                Task { await live.setOverrideMode(bot: change.bot, entry: change.id, mode: change.to.rawValue, saidAllowedUser: change.hasAllowedUser) }
+            }
+        }
+        .sheet(item: $removing) { entry in
+            ConfirmSheet(title: "Remove #\(entry.label)?",
+                         detail: Self.removeWords(bot),
+                         confirm: "Remove") {
+                Task { await live.removeOverride(bot: bot.id, entry: entry.id) }
+            }
+        }
+        .sheet(isPresented: $clearingVoice) {
+            ConfirmSheet(title: "Turn voice off?",
+                         detail: "\(bot.name) stops joining its voice channel. This phone cannot set one again: do that in Kairos on your desktop.",
+                         confirm: "Turn voice off") {
+                Task { await live.clearVoice(bot: bot.id) }
+            }
+        }
+    }
+
+    private static func changeWords(_ change: YouBotsModeChange) -> String {
+        if change.to == .silent {
+            return "It will never reply there, whoever writes. It stays a delivery target for tasks. This phone cannot change it back."
+        }
+        if change.hasAllowedUser { return "Only your allowed user is answered there now." }
+        return "This bot has no allowed user, so it still answers anyone there. Set an allowed user in Kairos on your desktop to narrow it."
+    }
+
+    private static func removeWords(_ bot: YouBotsDiscord) -> String {
+        let base = "It goes back to the allow list and stops being a task delivery target. This phone cannot add it back: add one in Kairos on your desktop."
+        if bot.hasAllowedUser { return base }
+        return "This bot has no allowed user, so it answers anyone there after this. " + base
+    }
+
+    /// The first way bots call you: Reach me's own call order, changed through Reach me's own store.
+    @ViewBuilder private var callOrder: some View {
+        YouVoiceLoadLine(part: .reach, loading: "Reading Reach me from your desktop.")
+        if let view = voice.reach {
+            let first = view.call.first ?? ""
+            let options: [String] = (first.isEmpty ? [""] : []) + view.callChannels.filter { $0.ready || $0.id == first }.map { $0.id }
+            PickRow(
+                title: "When a bot calls you",
+                detail: "The first way in Reach me's call order. Changing one changes the other.",
+                selection: Binding(get: { first }, set: { way in
+                    if !way.isEmpty, way != first { Task { await live.setFirstCall(way) } }
+                }),
+                options: options
+            ) { id in
+                id.isEmpty ? "Calls are off" : (view.callChannels.first { $0.id == id }?.label ?? id)
+            }
+            .disabled(live.callChanging || voice.busy.contains("call") || voice.busy.contains("message"))
+        }
+        YouVoiceNoticeLine(part: .reach)
+    }
+
+    private func overrideRow(_ bot: YouBotsDiscord, _ entry: YouBotsOverride) -> some View {
+        let mode = ChannelOverrideMode(rawValue: entry.mode) ?? .normal
+        let key = "override:" + entry.id
+        let working = live.busy.contains(key)
+        // A silent channel stays silent from this phone: letting it answer again can open it to everyone.
+        let options: [ChannelOverrideMode]
+        switch mode {
+        case .open: options = [.open, .normal, .silent]
+        case .normal: options = [.normal, .silent]
+        case .silent: options = [.silent]
+        }
+        return HStack(spacing: 0) {
+            PickRow(
+                title: "#\(entry.label)",
+                detail: mode.detail,
+                selection: Binding(get: { mode }, set: { new in
+                    if new != mode, new != .open, mode == .open || new == .silent {
+                        changing = YouBotsModeChange(id: entry.id, bot: bot.id, label: entry.label, from: mode, to: new,
+                                                     hasAllowedUser: bot.hasAllowedUser)
+                    }
+                }),
+                options: options
+            ) { $0.title }
+            .disabled(working || mode == .silent)
+            if working {
+                StatusPill(text: "Working...", tone: .muted)
+                    .padding(.trailing, 12)
+            } else if live.unconfirmed[.discord]?.contains(key) == true {
+                StatusPill(text: "Not confirmed", tone: .warn)
+                    .padding(.trailing, 12)
+            } else if mode != .silent {
+                Button {
+                    Haptics.tap()
+                    removing = entry
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Palette.danger)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+                .padding(.trailing, 6)
+                .accessibilityLabel("Remove #\(entry.label)")
+            }
+        }
     }
 }
 

@@ -146,6 +146,14 @@ struct BotPrefsScreen: View {
     @State private var checklistOpen = false
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsPrefsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Bot preferences", subtitle: "How bots look and behave in chats. Saved for this account.") {
             SettingsGroup("Interface") {
                 PickRow(title: "Interface", detail: "Advanced shows threads and runs", selection: $interface, options: ["Simple", "Advanced"]) { $0 }
@@ -251,6 +259,14 @@ struct BotKeysScreen: View {
     private var groups: [String] { Array(Set(sample.keys.map(\.group))).sorted() }
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsKeysScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Keys", subtitle: "Keys are saved encrypted and never shown again. Testing a key shows only whether the provider accepted it.") {
             ForEach(groups, id: \.self) { group in
                 SettingsGroup(group) {
@@ -351,6 +367,14 @@ struct BotLoginsScreen: View {
     @State private var token = ""
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsLoginsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Signed-in sites", subtitle: "Logins a bot's computer can fill in for you. A bot never sees the password, and filling never presses the sign-in button.") {
             SettingsGroup("Saved logins (\(sample.logins.count))") {
                 if sample.logins.isEmpty {
@@ -493,6 +517,16 @@ struct AboutYouScreen: View {
     @State private var saveTask: Task<Void, Never>?
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            // The page the Bots area already reads from the desktop: the text is sent against the hash it was read
+            // with, a change made on the desktop keeps what was typed, and a learned fact is removed behind a confirm.
+            BotKnowAboutPage()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("About you", subtitle: "What every bot knows about you. It saves as you type.") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -563,6 +597,14 @@ struct SkillLibraryScreen: View {
     }
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsSkillsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Skill library", subtitle: "Skills any bot can be given. Each one is read in full before it is switched on.") {
             if let share = sample.pendingShare {
                 SettingsGroup("Waiting for you") {
@@ -699,6 +741,14 @@ struct BotUsageScreen: View {
     private let perBot: [(String, Double)] = [("scout", 12.4), ("producer", 9.1), ("kip", 6.3), ("quill", 3.8)]
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsUsageScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Usage and spend", subtitle: "What your bots used this month, at list prices.") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
@@ -756,6 +806,14 @@ struct BotHousekeepingScreen: View {
     @Bindable private var sample = BotsSettingsSample.shared
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsHousekeepingScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Housekeeping", subtitle: "Remove old trace details. Run totals and usage history are kept.") {
             SettingsGroup {
                 YouStepperRow(title: "Keep trace details", value: $sample.traceDays, range: 1...3650, unit: "days")
@@ -788,6 +846,14 @@ struct BotTemplatesScreen: View {
     ]
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsTemplatesScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Templates", subtitle: "Ready-made teams, and bot personas to import or share.") {
             GlassSwitch(items: ["Explore", "Import", "Share"], selection: $mode) { $0 }
             switch mode {
@@ -874,6 +940,14 @@ struct BotComputersScreen: View {
     @State private var checking = false
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsComputersScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Bot computers", subtitle: "Contained computers on your desktop that bots use to browse and work.") {
             Button {
                 checking = true
@@ -935,6 +1009,14 @@ struct ConnectedAppsScreen: View {
     }
 
     var body: some View {
+        if YouBotsLive.isPaired {
+            YouBotsAppsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Connected apps", subtitle: "The apps and tool servers your bots can use. Each bot gets only the ones you choose in its Access settings.") {
             NoteText(text: "Ledger has no apps. Allow some in its Access settings.", symbol: "exclamationmark.triangle")
             SearchField(prompt: "Search apps", text: $query)
@@ -1121,6 +1203,765 @@ private struct MCPServerEditSheet: View {
         }
         YouStore.shared.say("Saved \(name)")
         dismiss()
+    }
+}
+
+// MARK: - Paired: what the desktop has
+
+/// A bot's face when the paired desktop has sent it to this phone; nil otherwise (never a sample face).
+private func youBotsFace(_ id: String) -> Bot? {
+    let chats = ChatStore.shared
+    return chats.isSample ? nil : chats.bots.first { $0.id == id }
+}
+
+/// A round letter for a name that has no face yet.
+private struct YouBotsInitial: View {
+    let name: String
+    var size: CGFloat = 36
+
+    var body: some View {
+        Text(String(name.prefix(1)).uppercased())
+            .font(KFont.ui(size * 0.42, .semibold))
+            .foregroundStyle(Palette.ink)
+            .frame(width: size, height: size)
+            .background(Palette.ink.opacity(0.1), in: Circle())
+            .accessibilityHidden(true)
+    }
+}
+
+/// Where to do something: one quiet line.
+private struct YouBotsWhere: View {
+    let text: String
+
+    var body: some View {
+        HintLine(text: text, symbol: "desktopcomputer")
+            .padding(.horizontal, 8)
+    }
+}
+
+/// Bot preferences while paired: the new-bot defaults as the desktop has them, read only. How bots look in chats is
+/// kept in the desktop's own browser, so it has no route; one line says so.
+struct YouBotsPrefsScreen: View {
+    @Environment(AppModel.self) private var app
+    @Environment(AppRouter.self) private var router
+    private let live = YouBotsLive.shared
+
+    var body: some View {
+        SettingsPage("Bot preferences", subtitle: "How bots look and behave in chats.") {
+            SettingsGroup("Interface") {
+                YouBotsWhere(text: "Chat width, font, bubble colours, threads and the sidebar are set in Kairos on your desktop. It keeps them in its own browser, so this phone cannot show them.")
+                    .padding(.vertical, 12)
+            }
+            .arrives(0)
+
+            YouBotsLoadLine(part: .defaults, loading: "Reading the new bot defaults from your desktop.")
+            if let defaults = live.defaults {
+                SettingsGroup("New bots", footer: "What a new bot starts with. Change these in Kairos on your desktop.") {
+                    ValueRow(title: "Thread concurrency", detail: "How many threads one bot may run at once.",
+                             value: defaults.threadLimit.map { String($0) } ?? "Not set")
+                    ValueRow(title: "Runs a day", detail: "The most runs one bot starts in a day.",
+                             value: defaults.dailyRunCap.map { String($0) } ?? "No limit")
+                    ValueRow(title: "Where bots work", value: Self.placeWords(defaults.place))
+                    ValueRow(title: "Stay signed in to sites", value: Self.yesNo(defaults.keepSignedIn))
+                    ValueRow(title: "Keep their notes tidy", value: Self.yesNo(defaults.memoryUpkeep))
+                }
+                .arrives(1)
+            }
+
+            SettingsGroup("Get started") {
+                ActionRow(title: "Replay the tour", symbol: "hand.point.up.left") {
+                    router.sheet = nil
+                    router.paths[.home] = []
+                    router.select(.home)
+                    TourPresenter.start(after: 0.6)
+                }
+                ActionRow(title: "Replay the welcome", symbol: "play.circle") {
+                    router.sheet = nil
+                    app.replayOnboarding()
+                }
+            }
+            .arrives(2)
+            NoteText(text: "The send key is a desktop keyboard setting. On the phone, tap Send.")
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.defaults) }
+    }
+
+    private static func placeWords(_ place: String?) -> String {
+        guard let place else { return "Not set" }
+        switch place {
+        case "auto": return "Automatic"
+        case "computer": return "A bot computer"
+        case "browser": return "The browser"
+        case "off": return "Off"
+        default: return YouBotsWire.safe(place)
+        }
+    }
+
+    private static func yesNo(_ value: Bool?) -> String {
+        guard let value else { return "Not set" }
+        return value ? "Yes" : "No"
+    }
+}
+
+/// Keys while paired: only whether each slot is saved. A key is pasted, tested and cleared on the desktop.
+struct YouBotsKeysScreen: View {
+    private let live = YouBotsLive.shared
+    private static let order = ["AI", "Servers", "Voice", "Computers", "Apps", "Helpers"]
+
+    private var groups: [String] {
+        let found = Set(live.keys.map(\.group))
+        return Self.order.filter { found.contains($0) } + found.subtracting(Self.order).sorted()
+    }
+
+    var body: some View {
+        SettingsPage("Keys", subtitle: "Keys are saved encrypted on your desktop. This phone only sees whether each one is saved.") {
+            YouBotsLoadLine(part: .keys, loading: "Reading your keys from your desktop.")
+            if live.load(.keys) == .loaded {
+                ForEach(groups, id: \.self) { group in
+                    SettingsGroup(group) {
+                        ForEach(live.keys.filter { $0.group == group }) { key in
+                            StatusRow(title: key.label, detail: detail(key), status: key.hasValue ? "Saved" : "Not set",
+                                      tone: key.hasValue ? .ok : .muted)
+                        }
+                    }
+                }
+                if live.skippedKeys > 0 {
+                    YouBotsWhere(text: live.skippedKeys == 1 ? "1 key could not be read here. See it in Kairos on your desktop."
+                                 : "\(live.skippedKeys) keys could not be read here. See them in Kairos on your desktop.")
+                }
+                if let resources = live.resources {
+                    SettingsGroup("Helpers and quiet-time work", footer: "Claude and Codex cannot be helpers.") {
+                        ValueRow(title: "Helper model", value: Self.helperWords(resources.helper))
+                        ValueRow(title: "Daily tidy time", detail: "When bots tidy their memory", value: resources.tidyTime ?? "Not set")
+                        ValueRow(title: "Wait before saving memories", value: resources.quietMinutes.map { "\($0) min" } ?? "Not set")
+                        ValueRow(title: "Remember what is said in rooms", value: Self.roomWords(resources.roomCapture))
+                    }
+                }
+                YouBotsWhere(text: "Keys are pasted, tested and cleared in Kairos on your desktop. A key never goes through this phone, and these settings are changed there too.")
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.keys) }
+    }
+
+    private func detail(_ key: YouBotsKeyRow) -> String? {
+        var parts: [String] = []
+        if !key.hint.isEmpty { parts.append(key.hint) }
+        if key.inModels { parts.append("Change it in Settings, Models on your desktop.") }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    private static func helperWords(_ helper: String) -> String {
+        switch helper {
+        case "off": "Off"
+        case "chosen": "A model is chosen"
+        default: "The first local model"
+        }
+    }
+
+    private static func roomWords(_ value: String?) -> String {
+        switch value ?? "" {
+        case "off": return "Never"
+        case "ask": return "Ask me first"
+        case "on": return "Always"
+        default: return "Not set"
+        }
+    }
+}
+
+/// Signed-in sites while paired: the sites and usernames the desktop has saved, read only. A password or a code never
+/// reaches this phone, and none is added, changed or removed from it.
+struct YouBotsLoginsScreen: View {
+    private let live = YouBotsLive.shared
+
+    var body: some View {
+        SettingsPage("Signed-in sites", subtitle: "Logins a bot's computer can fill in for you. A bot never sees the password, and filling never presses the sign-in button.") {
+            YouBotsLoadLine(part: .logins, loading: "Reading your saved logins from your desktop.")
+            if live.load(.logins) == .loaded {
+                SettingsGroup("Saved logins (\(live.logins.count))") {
+                    if live.logins.isEmpty {
+                        EmptyRow(text: "No saved logins on your desktop.")
+                    }
+                    ForEach(live.logins, id: \.id) { login in
+                        HStack(spacing: 8) {
+                            RowLabel(title: site(login), detail: detail(login), symbol: "lock")
+                            if login.hasTotp == true { StatusPill(text: "2FA", tone: .muted) }
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .accessibilityElement(children: .combine)
+                    }
+                    if live.skippedLogins > 0 {
+                        EmptyRow(text: live.skippedLogins == 1 ? "1 login could not be read here. See it in Kairos on your desktop."
+                                 : "\(live.skippedLogins) logins could not be read here. See them in Kairos on your desktop.")
+                    }
+                }
+                SettingsGroup("1Password") {
+                    StatusRow(title: "1Password", detail: "Lets bots fill from the vaults you choose.", symbol: "key",
+                              status: onePasswordWords, tone: live.onePassword?.connected == true ? .ok : .muted)
+                }
+                YouBotsWhere(text: "Logins, passwords, one-time codes and 1Password are added, changed and removed in Kairos on your desktop. They never go through this phone.")
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.logins) }
+    }
+
+    private var onePasswordWords: String {
+        if live.onePassword?.connected == true { return "Connected" }
+        if live.onePassword?.available == false { return "Not available" }
+        return "Not connected"
+    }
+
+    private func site(_ login: BotKnowLoginDTO) -> String {
+        let text = login.site ?? ""
+        return YouVoiceWire.host(text) ?? YouBotsWire.safe(text)
+    }
+
+    private func detail(_ login: BotKnowLoginDTO) -> String {
+        var parts: [String] = []
+        if let name = login.username, !name.isEmpty { parts.append(YouBotsWire.safe(name)) }
+        parts.append(who(login))
+        parts.append("used " + BotKnowFormat.ago(login.lastUsed?.date))
+        return parts.joined(separator: " · ")
+    }
+
+    private func who(_ login: BotKnowLoginDTO) -> String {
+        if login.allBots { return "All bots" }
+        let ids = (login.bots?.array ?? []).compactMap { $0.string }
+        let names = ids.compactMap { youBotsFace($0)?.name }
+        if names.isEmpty { return ids.count == 1 ? "1 bot" : "\(ids.count) bots" }
+        return names.joined(separator: ", ")
+    }
+}
+
+/// The skill library while paired: the desktop's skills, with a switch-off behind a confirm. A skill is read, reviewed,
+/// turned on, imported, shared and removed on the desktop.
+struct YouBotsSkillsScreen: View {
+    private let live = YouBotsLive.shared
+    @State private var query = ""
+    @State private var tag = "All"
+    @State private var turningOff: YouBotsSkillRow?
+
+    private var tags: [String] { ["All"] + Array(Set(live.skills.flatMap(\.tags))).sorted() }
+
+    private var shown: [YouBotsSkillRow] {
+        live.skills.filter { skill in
+            (tag == "All" || skill.tags.contains(tag))
+                && (query.isEmpty || skill.id.contains(query.lowercased()) || skill.summary.lowercased().contains(query.lowercased()))
+        }
+    }
+
+    var body: some View {
+        SettingsPage("Skill library", subtitle: "Skills any bot can be given. Each one is read in full before it is switched on.") {
+            YouBotsLoadLine(part: .library, loading: "Reading the skill library from your desktop.")
+            YouBotsNoticeLine(part: .library)
+            if live.load(.library) == .loaded {
+                if live.pendingShares > 0 {
+                    NoteText(text: live.pendingShares == 1 ? "1 skill is waiting to be shared. Answer it in Kairos on your desktop."
+                             : "\(live.pendingShares) skills are waiting to be shared. Answer them in Kairos on your desktop.", symbol: "bookmark")
+                }
+                SearchField(prompt: "Search skills", text: $query)
+                YouChipPicker(items: tags, selection: $tag) { $0 == "All" ? "All" : "#\($0)" }
+                SettingsGroup(shown.count == live.skills.count ? "Library (\(live.skills.count))" : "Library (\(shown.count) of \(live.skills.count))") {
+                    if shown.isEmpty {
+                        EmptyRow(text: live.skills.isEmpty ? "The library is empty." : "No skills match.")
+                    }
+                    ForEach(shown) { skill in
+                        skillRow(skill)
+                    }
+                    if live.skippedSkills > 0 {
+                        EmptyRow(text: live.skippedSkills == 1 ? "1 skill could not be read here. See it in Kairos on your desktop."
+                                 : "\(live.skippedSkills) skills could not be read here. See them in Kairos on your desktop.")
+                    }
+                }
+                YouBotsWhere(text: "Reading, reviewing and turning a skill on, importing, sharing and removing are done in Kairos on your desktop.")
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.library) }
+        .sheet(item: $turningOff) { skill in
+            ConfirmSheet(title: "Turn off /\(skill.id)?",
+                         detail: "No bot can use it until it is read in full and turned on again in Kairos on your desktop. This phone cannot turn it back on.",
+                         confirm: "Turn off") {
+                if let revision = skill.revision {
+                    Task { await live.skillOff(skill.id, revision: revision) }
+                }
+            }
+        }
+    }
+
+    private func skillRow(_ skill: YouBotsSkillRow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                RowLabel(title: "/\(skill.id)", detail: detail(skill))
+                if skill.warning { StatusPill(text: "Warning", tone: .bad) }
+                StatusPill(text: stateWord(skill), tone: skill.effective ? .ok : (skill.enabled ? .warn : .muted))
+            }
+            if skill.enabled, skill.revision != nil {
+                HStack(spacing: 6) {
+                    YouBotsChangeButton(part: .library, key: "skill:" + skill.id, title: "Turn off", working: "Turning off...") {
+                        turningOff = skill
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func stateWord(_ skill: YouBotsSkillRow) -> String {
+        if skill.effective { return "On" }
+        return skill.enabled ? "Needs review" : "Off"
+    }
+
+    private func detail(_ skill: YouBotsSkillRow) -> String {
+        var parts = [skill.origin]
+        if !skill.summary.isEmpty { parts.append(skill.summary) }
+        if !skill.tags.isEmpty { parts.append(skill.tags.map { "#\($0)" }.joined(separator: " ")) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Usage and spend while paired: this month's spend against the cap, and each bot's share. The cap is changed on the desktop.
+struct YouBotsUsageScreen: View {
+    private let live = YouBotsLive.shared
+
+    var body: some View {
+        SettingsPage("Usage and spend", subtitle: "What your bots used this month, at list prices.") {
+            YouBotsLoadLine(part: .usage, loading: "Reading your usage from your desktop.")
+            if let spend = live.spend {
+                summary(spend)
+                    .arrives(0)
+                SettingsGroup("Monthly spend cap", footer: spend.note.map { $0 + ". Unknown costs are excluded." } ?? "List-price equivalent, not billed. Unknown costs are excluded.") {
+                    ValueRow(title: "Cap in US dollars", value: spend.cap.map { String(format: "$%.0f", $0) } ?? "No cap")
+                    ValueRow(title: "Warns at", value: "\(spend.warnPercent)%")
+                }
+                .arrives(1)
+                YouBotsWhere(text: "The cap is changed in Kairos on your desktop.")
+                SettingsGroup("By bot") {
+                    if live.botSpend.isEmpty {
+                        EmptyRow(text: "No bot has run this month.")
+                    }
+                    ForEach(live.botSpend) { item in
+                        row(item)
+                    }
+                    if live.skippedBotSpend > 0 {
+                        EmptyRow(text: "\(live.skippedBotSpend) could not be read here.")
+                    }
+                }
+                .arrives(2)
+            }
+            YouNavRow(title: "Housekeeping", detail: "How long run details are kept", symbol: "archivebox", to: .botHousekeeping)
+                .kCard(radius: 22)
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.usage) }
+    }
+
+    private func summary(_ spend: YouBotsSpend) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(String(format: "$%.2f", spend.spent)).font(KFont.ui(34, .semibold)).foregroundStyle(Palette.ink)
+                Text(YouBotsWire.monthName(spend.month) ?? "this month").font(KFont.ui(15)).foregroundStyle(Palette.inkFaint)
+                Spacer()
+            }
+            if spend.cap != nil {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Palette.ink.opacity(0.1))
+                        Capsule().fill(spend.ratio > 0.8 ? Palette.danger : Palette.gold)
+                            .frame(width: proxy.size.width * min(1, spend.ratio))
+                    }
+                }
+                .frame(height: 10)
+            }
+            Text(words(spend))
+                .font(KFont.ui(14, relativeTo: .footnote))
+                .foregroundStyle(spend.capped || spend.nearCap ? Palette.danger : Palette.inkDim)
+        }
+        .padding(16)
+        .kCard(radius: 22)
+    }
+
+    private func words(_ spend: YouBotsSpend) -> String {
+        if spend.capped { return "Monthly spend cap reached. Raise it in Kairos on your desktop." }
+        if spend.nearCap { return "Bot usage is near the monthly spend cap." }
+        if spend.unknown { return "Some runs have no known price, so this month's spend is not fully known." }
+        guard let cap = spend.cap else { return "No cap is set." }
+        return "\(Int(spend.ratio * 100))% of your $\(String(format: "%.0f", cap)) cap"
+    }
+
+    private func row(_ item: YouBotsBotSpend) -> some View {
+        let bot = youBotsFace(item.id)
+        let name = bot?.name ?? "A bot"
+        return HStack(spacing: 12) {
+            if let bot { BotFace(bot: bot, size: 36) } else { YouBotsInitial(name: name) }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name).font(KFont.ui(16)).foregroundStyle(Palette.ink)
+                Text(item.runs == 1 ? "1 run" : "\(item.runs) runs").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+            }
+            Spacer()
+            Text(BotKnowFormat.cost(item.cost)).font(KFont.ui(15, .medium)).foregroundStyle(Palette.inkDim).monospacedDigit()
+        }
+        .padding(.horizontal, 16).frame(minHeight: 52)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Housekeeping while paired: how long run details are kept. A form: it is filled from the desktop, and a save sends the
+/// desktop's own values read again just before, with only what the person changed on top.
+struct YouBotsHousekeepingScreen: View {
+    private let live = YouBotsLive.shared
+    @State private var confirming = false
+
+    var body: some View {
+        let working = live.busy.contains("housekeeping") || live.unconfirmed[.housekeeping]?.isEmpty == false
+        SettingsPage("Housekeeping", subtitle: "Remove old trace details. Run totals and usage history are kept.") {
+            YouBotsLoadLine(part: .housekeeping, loading: "Reading housekeeping from your desktop.")
+            YouBotsNoticeLine(part: .housekeeping)
+            if let shown = live.housekeepingShown {
+                SettingsGroup {
+                    YouStepperRow(title: "Keep trace details", value: Binding(get: { shown.days }, set: { live.editHousekeeping(days: $0) }),
+                                  range: 1...3650, unit: "days")
+                    YouStepperRow(title: "Trace size cap", value: Binding(get: { shown.megabytes }, set: { live.editHousekeeping(megabytes: $0) }),
+                                  range: 1...4096, step: 16, unit: "MB")
+                    ActionRow(title: live.busy.contains("housekeeping") ? "Saving..." : "Save housekeeping", symbol: "checkmark", tone: .gold) {
+                        if live.housekeepingLowers {
+                            confirming = true
+                        } else {
+                            Task { await live.saveHousekeeping() }
+                        }
+                    }
+                    .disabled(working || live.housekeepingEdits.isEmpty)
+                    .opacity(working || live.housekeepingEdits.isEmpty ? 0.4 : 1)
+                }
+                .disabled(live.busy.contains("housekeeping"))
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.housekeeping) }
+        .sheet(isPresented: $confirming) {
+            let shown = live.housekeepingShown
+            ConfirmSheet(title: "Delete older trace details?",
+                         detail: "Trace details older than \(shown?.days ?? 0) days (or beyond \(shown?.megabytes ?? 0) MB) are deleted at the next daily cleanup. This cannot be undone.",
+                         confirm: "Save") {
+                Task { await live.saveHousekeeping() }
+            }
+        }
+    }
+}
+
+/// Ready-made teams while paired: their names and members, read only. A team is added on the desktop.
+struct YouBotsTemplatesScreen: View {
+    private let live = YouBotsLive.shared
+
+    var body: some View {
+        SettingsPage("Templates", subtitle: "Ready-made teams you can add on your desktop.") {
+            YouBotsLoadLine(part: .templates, loading: "Reading the ready-made teams from your desktop.")
+            if live.load(.templates) == .loaded {
+                Text("A team for your work").font(KFont.display(28)).foregroundStyle(Palette.ink).padding(.horizontal, 4)
+                if live.teams.isEmpty {
+                    EmptyRow(text: "Your desktop listed no teams.").kCard(radius: 22)
+                }
+                ForEach(live.teams) { team in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(team.name).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
+                        if !team.summary.isEmpty {
+                            Text(team.summary).font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.inkDim)
+                        }
+                        if !team.members.isEmpty {
+                            Text(team.members.joined(separator: ", ")).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .kCard(radius: 22)
+                    .accessibilityElement(children: .combine)
+                }
+                YouBotsWhere(text: "Adding a team, and importing or sharing bots, are done in Kairos on your desktop.")
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.templates) }
+    }
+}
+
+/// Bot computers while paired (admin accounts): Docker and the limits as the desktop has them, and each bot's computer
+/// with Sleep behind a confirm. Starting one, taking the wheel and the limits stay on the desktop.
+struct YouBotsComputersScreen: View {
+    private let live = YouBotsLive.shared
+    @State private var sleeping: YouBotsComputer?
+
+    var body: some View {
+        SettingsPage("Bot computers", subtitle: "Contained computers on your desktop that bots use to browse and work.", trailing: {
+            Button {
+                Task { await live.read(.computers) }
+            } label: {
+                Text("Check again").font(KFont.ui(15, .medium)).foregroundStyle(Palette.ink)
+                    .padding(.horizontal, 16).frame(height: 44)
+            }
+            .buttonStyle(PressStyle())
+            .kGlass(Capsule(), interactive: true)
+        }) {
+            if !YouBotsLive.isAdmin || live.memberOnly.contains(.computers) {
+                YouAccessLine(text: "Bot computers are seen by an admin. This phone is paired as a member account.")
+            } else {
+                YouBotsLoadLine(part: .computers, loading: "Reading the bot computers from your desktop.")
+                YouBotsNoticeLine(part: .computers)
+                if live.load(.computers) == .loaded {
+                    if let info = live.computerInfo {
+                        SettingsGroup("Computer runtime") {
+                            StatusRow(title: "Docker", detail: dockerDetail(info), symbol: "shippingbox", status: dockerWord(info), tone: dockerTone(info))
+                        }
+                        .arrives(0)
+                        SettingsGroup("Limits") {
+                            ValueRow(title: "Running computers", value: info.maxRunning.map { String($0) } ?? "Not set")
+                            ValueRow(title: "Idle minutes", detail: "Sleep after this long", value: info.idleMinutes.map { String($0) } ?? "Not set")
+                        }
+                        .arrives(1)
+                    }
+                    SettingsGroup("Computers") {
+                        if live.computers.isEmpty { EmptyRow(text: "No bot computers") }
+                        ForEach(live.computers) { computer in
+                            row(computer)
+                        }
+                        if live.skippedComputers > 0 {
+                            EmptyRow(text: "\(live.skippedComputers) could not be read here.")
+                        }
+                    }
+                    .arrives(2)
+                    YouBotsWhere(text: "Starting a computer, taking the wheel and the limits are done in Kairos on your desktop.")
+                }
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) {
+            if YouBotsLive.isAdmin { await live.read(.computers) }
+        }
+        .sheet(item: $sleeping) { computer in
+            ConfirmSheet(title: "Put \(computer.name)'s computer to sleep?",
+                         detail: computer.takenOver
+                             ? "You have the wheel right now, and sleeping ends that. A bot wakes the computer when it needs it."
+                             : "Whatever it is doing there stops. A bot wakes the computer when it needs it.",
+                         confirm: "Sleep", danger: false) {
+                Task { await live.sleepComputer(computer.id) }
+            }
+        }
+    }
+
+    private func row(_ computer: YouBotsComputer) -> some View {
+        HStack(spacing: 12) {
+            if let bot = youBotsFace(computer.id) { BotFace(bot: bot, size: 38) } else { YouBotsInitial(name: computer.name, size: 38) }
+            RowLabel(title: computer.name, detail: computer.running ? (computer.takenOver ? "You have the wheel" : "Running") : "Asleep")
+            if computer.running {
+                YouBotsChangeButton(part: .computers, key: "sleep:" + computer.id, title: "Sleep", working: "Sleeping...", danger: false) {
+                    sleeping = computer
+                }
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 6).frame(minHeight: 56)
+    }
+
+    private func dockerWord(_ info: YouBotsComputerInfo) -> String {
+        guard info.dockerAvailable == true else { return "Not ready" }
+        return info.imageReady == false ? "Needs setup" : "Ready"
+    }
+
+    private func dockerTone(_ info: YouBotsComputerInfo) -> StatusPill.Tone {
+        guard info.dockerAvailable == true else { return .bad }
+        return info.imageReady == false ? .warn : .ok
+    }
+
+    private func dockerDetail(_ info: YouBotsComputerInfo) -> String {
+        if info.dockerAvailable != true, !info.dockerReason.isEmpty { return info.dockerReason }
+        return "Runs each computer in its own box"
+    }
+}
+
+/// Connected apps while paired: the desktop's apps and tool servers. A Google account can be named; a tool server can
+/// be turned off behind a confirm. Connecting, signing in, adding, editing and testing stay on the desktop.
+struct YouBotsAppsScreen: View {
+    private let live = YouBotsLive.shared
+    @State private var query = ""
+    @State private var show = "All"
+    @State private var open: String?
+    @State private var turningOff: YouBotsApp?
+
+    private func matches(_ app: YouBotsApp) -> Bool {
+        (show != "Connected" || app.state == "connected")
+            && (query.isEmpty || app.name.lowercased().contains(query.lowercased()))
+    }
+
+    private var native: [YouBotsApp] { live.apps.filter { !$0.isMCP && matches($0) } }
+    private var servers: [YouBotsApp] { live.apps.filter { $0.isMCP && matches($0) } }
+
+    var body: some View {
+        SettingsPage("Connected apps", subtitle: "The apps and tool servers your bots can use. Each bot gets only the ones you choose in its Access settings.") {
+            YouBotsLoadLine(part: .apps, loading: "Reading your connected apps from your desktop.")
+            YouBotsNoticeLine(part: .apps)
+            if live.load(.apps) == .loaded {
+                if !live.botsWithoutApps.isEmpty {
+                    NoteText(text: "\(live.botsWithoutApps.joined(separator: ", ")) \(live.botsWithoutApps.count == 1 ? "has" : "have") no apps. Allow some in the bot's Access settings.",
+                             symbol: "exclamationmark.triangle")
+                }
+                SearchField(prompt: "Search apps", text: $query)
+                YouChipPicker(items: ["All", "Connected", "MCP"], selection: $show) { $0 }
+
+                if show != "MCP" {
+                    ForEach(Array(Set(native.map(\.category))).sorted(), id: \.self) { category in
+                        SettingsGroup(category) {
+                            ForEach(native.filter { $0.category == category }) { app in
+                                appRow(app)
+                            }
+                        }
+                    }
+                    if native.isEmpty { EmptyRow(text: "No apps match.").kCard(radius: 22) }
+                }
+
+                if show != "Connected" || !servers.isEmpty {
+                    SettingsGroup("MCP servers (\(live.apps.filter(\.isMCP).count))") {
+                        if servers.isEmpty { EmptyRow(text: "No tool servers match.") }
+                        ForEach(servers) { server in
+                            serverRow(server)
+                        }
+                    }
+                }
+                if live.skippedApps > 0 {
+                    YouBotsWhere(text: live.skippedApps == 1 ? "1 app could not be read here. See it in Kairos on your desktop."
+                                 : "\(live.skippedApps) apps could not be read here. See them in Kairos on your desktop.")
+                }
+                YouBotsWhere(text: "Connecting, signing in and disconnecting an app, and adding, editing, testing and turning on a tool server, are done in Kairos on your desktop. A server's address and command never go through this phone.")
+            }
+        }
+        .task(id: YouBotsLive.connectionKey) { await live.read(.apps) }
+        .sheet(item: $turningOff) { server in
+            ConfirmSheet(title: "Turn off \(server.name)?",
+                         detail: "No bot can use its tools until it is turned on again in Kairos on your desktop. This phone cannot turn it back on.",
+                         confirm: "Turn off") {
+                Task { await live.mcpOff(server.id) }
+            }
+        }
+    }
+
+    private func appRow(_ app: YouBotsApp) -> some View {
+        let expanded = open == app.id
+        let pill = Self.pill(app.state)
+        return VStack(alignment: .leading, spacing: 10) {
+            Button {
+                Haptics.select()
+                withAnimation(Motion.snappy) { open = expanded ? nil : app.id }
+            } label: {
+                HStack(spacing: 10) {
+                    YouBotsInitial(name: app.name, size: 34)
+                    RowLabel(title: app.name, detail: app.summary.isEmpty ? nil : app.summary)
+                    StatusPill(text: pill.text, tone: pill.tone)
+                    Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.inkFaint)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle(scale: 0.99))
+            if expanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(app.usedBy.isEmpty ? "No bot uses it yet." : "Used by \(app.usedBy.joined(separator: ", "))")
+                        .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                    if let words = Self.stateWords(app.state) {
+                        Text(words).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(Array(app.accounts.enumerated()), id: \.element.id) { index, account in
+                        YouBotsAccountRow(app: app.id, account: account, number: index + 1, canName: app.id == "google")
+                    }
+                    if app.category == "Google" || app.id == "google" {
+                        Text("To add another Google account, finish signing in in Kairos on your desktop.")
+                            .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func serverRow(_ server: YouBotsApp) -> some View {
+        let pill = Self.pill(server.state)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                RowLabel(title: server.name, detail: Self.stateWords(server.state))
+                StatusPill(text: pill.text, tone: pill.tone)
+            }
+            if server.enabled {
+                HStack(spacing: 6) {
+                    Spacer()
+                    YouBotsChangeButton(part: .apps, key: "mcp:" + server.id, title: "Turn off", working: "Turning off...") {
+                        turningOff = server
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    /// Fixed words for a state. The desktop's own failure text can carry a server address or a path, so it is never read.
+    private static func stateWords(_ state: String) -> String? {
+        switch state {
+        case "failed": return "The server did not answer at its last check. See why in Kairos on your desktop."
+        case "pending": return "Not tested yet."
+        case "expired": return "Sign in again in Kairos on your desktop."
+        case "unavailable": return "Not set up. See Kairos on your desktop."
+        case "off": return "Switched off."
+        default: return nil
+        }
+    }
+
+    private static func pill(_ state: String) -> (text: String, tone: StatusPill.Tone) {
+        switch state {
+        case "connected": return ("Connected", .ok)
+        case "expired": return ("Reconnect", .warn)
+        case "failed": return ("Problem", .bad)
+        case "pending": return ("Not finished", .warn)
+        case "off": return ("Off", .muted)
+        case "added": return ("Added", .muted)
+        case "unavailable": return ("Not set up", .muted)
+        default: return (state.capitalized, .muted)
+        }
+    }
+}
+
+/// One account of an app: its alias (a Google account's alias can be changed, and only when the person edits it), and
+/// whether it works. The account's email address is never read.
+private struct YouBotsAccountRow: View {
+    let app: String
+    let account: YouBotsAccount
+    let number: Int
+    let canName: Bool
+    private let live = YouBotsLive.shared
+
+    var body: some View {
+        let busy = live.busy.contains("alias:\(app)|\(account.id)")
+        let edited = live.aliasEdited(app, account.id)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                if canName {
+                    TextField("Account \(number)", text: Binding(get: { live.aliasShown(app, account) }, set: { live.editAlias(app, account.id, to: $0) }))
+                        .font(KFont.ui(15)).foregroundStyle(Palette.ink)
+                        .disabled(busy)
+                } else {
+                    Text(account.alias.isEmpty ? "Account \(number)" : YouBotsWire.safe(account.alias))
+                        .font(KFont.ui(15)).foregroundStyle(Palette.ink)
+                    Spacer(minLength: 0)
+                }
+                StatusPill(text: account.status == "connected" ? "Connected" : "Reconnect", tone: account.status == "connected" ? .ok : .warn)
+            }
+            .padding(.horizontal, 12).frame(minHeight: 44)
+            .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            if canName, edited {
+                HStack(spacing: 6) {
+                    if busy {
+                        StatusPill(text: "Saving...", tone: .muted)
+                    } else if live.unconfirmed[.apps]?.contains("alias:\(app)|\(account.id)") == true {
+                        StatusPill(text: "Not confirmed", tone: .warn)
+                    } else {
+                        YouPillButton(title: "Save alias", prominent: true) { Task { await live.saveAlias(app, account.id) } }
+                    }
+                }
+            }
+        }
     }
 }
 
