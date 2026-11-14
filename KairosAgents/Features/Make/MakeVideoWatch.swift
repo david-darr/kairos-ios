@@ -316,11 +316,12 @@ extension EditorModel {
     /// A render finished while the editor was open: it is offered at once, then the desktop's listing confirms it.
     func noteRenderReady(_ job: MakeVideoJobDTO) {
         guard let live, stillLive(live), let item = MakeVideoRenderFile(job: job) else { return }
-        live.rendersSerial += 1
         if let old = live.renders.first(where: { $0.aspect == item.aspect }) {
             if old.number > item.number { return }
             live.renders.removeAll { $0.aspect == item.aspect }
         }
+        // Only now is a listing read in flight out of date.
+        live.rendersSerial += 1
         live.renders.append(item)
         let order = MakeVideoWire.renderSlugs.map(\.aspect)
         live.renders.sort { (order.firstIndex(of: $0.aspect) ?? 9) < (order.firstIndex(of: $1.aspect) ?? 9) }
@@ -412,23 +413,27 @@ extension EditorModel {
 
 // MARK: - The system player
 
-/// The app's audio session while the player is open: the category it had is put back when the player closes, and a
-/// session already set up for a call (play and record) is left alone.
+/// The app's audio session while the player is open: the category it had is put back when the player closes. It
+/// goes by the app's real call state, not by the category: a live call keeps its session, at open and at close.
 @MainActor
 final class MakeVideoPlayerAudio {
     private var saved: (category: AVAudioSession.Category, mode: AVAudioSession.Mode, options: AVAudioSession.CategoryOptions)?
 
     func take() {
         let session = AVAudioSession.sharedInstance()
-        guard saved == nil, session.category != .playAndRecord, session.category != .playback else { return }
+        // A live call keeps its session. After a call has ended its category can linger, so the category is not asked.
+        guard saved == nil, CallCenter.shared.session == nil else { return }
         saved = (session.category, session.mode, session.categoryOptions)
-        try? session.setCategory(.playback)
+        try? session.setCategory(.playback, mode: .moviePlayback)
     }
 
     func give() {
         guard let saved else { return }
         self.saved = nil
-        try? AVAudioSession.sharedInstance().setCategory(saved.category, mode: saved.mode, options: saved.options)
+        let session = AVAudioSession.sharedInstance()
+        // A call that started while the player was open owns the session now: leave it alone.
+        guard CallCenter.shared.session == nil, session.category == .playback else { return }
+        try? session.setCategory(saved.category, mode: saved.mode, options: saved.options)
     }
 }
 
@@ -875,19 +880,26 @@ struct EditorLivePreview: View {
                     .font(KFont.ui(14.5, relativeTo: .subheadline))
                     .foregroundStyle(Color.white)
                     .multilineTextAlignment(.center)
-                VStack(spacing: 10) {
-                    MakePillButton(title: "Try again", symbol: "arrow.clockwise") { attempt += 1 }
-                    // A finished render for this aspect is the real video, so it is offered beside Try again.
-                    if let live = model.live, let doc = live.doc,
-                       let item = live.renders.first(where: { $0.aspect == (doc.aspects.first ?? "16:9") }) {
-                        MakePillButton(title: "Watch the latest render", symbol: "play.fill", filled: true) {
-                            model.watchRender(item)
-                        }
-                        .editorEnabled(!live.watch.busy)
-                    }
+                // Side by side where they fit, so the panel stays inside a wide, short preview.
+                ViewThatFits {
+                    HStack(spacing: 10) { failedButtons }
+                    VStack(spacing: 8) { failedButtons }
                 }
             }
-            .padding(20)
+            .padding(14)
+        }
+    }
+
+    @ViewBuilder
+    private var failedButtons: some View {
+        MakePillButton(title: "Try again", symbol: "arrow.clockwise") { attempt += 1 }
+        // A finished render for this aspect is the real video, so it is offered beside Try again.
+        if let live = model.live, let doc = live.doc,
+           let item = live.renders.first(where: { $0.aspect == (doc.aspects.first ?? "16:9") }) {
+            MakePillButton(title: "Watch the latest render", symbol: "play.fill", filled: true) {
+                model.watchRender(item)
+            }
+            .editorEnabled(!live.watch.busy)
         }
     }
 }

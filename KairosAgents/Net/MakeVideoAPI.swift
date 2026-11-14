@@ -183,19 +183,23 @@ nonisolated enum MakeVideoWebPaths {
     /// The private address every page, script, font and picture of the preview has.
     static let origin = "kairosvideo://player"
 
-    /// The Content-Security-Policy for the player page: the desktop's own, with the desktop's address replaced by the
-    /// private one, so the page may load only from this scheme. When the desktop sent none, the same directives built here.
+    /// The Content-Security-Policy for the player page: the desktop's own directives, with its sources narrowed to
+    /// the private scheme. Scheme-only sources are the plainest case for a web view's matcher, and nobody can try
+    /// this page on a phone before it ships. Which paths inside the scheme may load is enforced by the scheme
+    /// handler's own allow list, and the content rule list blocks every other address. The hash for the page's
+    /// inline import map is taken from the desktop's header, so it follows the desktop; built here when none came.
     static func policy(fromDesktop header: String?, video: String) -> String {
-        if let header, !header.trimmingCharacters(in: .whitespaces).isEmpty,
-           let regex = try? NSRegularExpression(pattern: #"https?://[^/\s;'"]+"#) {
-            let range = NSRange(header.startIndex..., in: header)
-            return regex.stringByReplacingMatches(in: header, range: range, withTemplate: NSRegularExpression.escapedTemplate(for: origin))
+        var hashes: [String] = []
+        if let header, let regex = try? NSRegularExpression(pattern: #"'sha(?:256|384|512)-[A-Za-z0-9+/=_-]+'"#) {
+            let whole = header as NSString
+            hashes = regex.matches(in: header, range: NSRange(location: 0, length: whole.length)).map { whole.substring(with: $0.range) }
         }
-        let map = #"{"imports":{"three":"/static/vendor/three/three.module.js"}}"#
-        let hash = Data(SHA256.hash(data: Data(map.utf8))).base64EncodedString()
-        return "default-src 'none'; script-src \(origin)/static/motion/ \(origin)/static/vendor/three/ 'sha256-\(hash)'; "
-            + "style-src 'unsafe-inline'; img-src \(origin)/api/videos/\(video)/assets/; font-src \(origin)/api/design-fonts/; "
-            + "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+        if hashes.isEmpty {
+            let map = #"{"imports":{"three":"/static/vendor/three/three.module.js"}}"#
+            hashes = ["'sha256-" + Data(SHA256.hash(data: Data(map.utf8))).base64EncodedString() + "'"]
+        }
+        return "default-src 'none'; script-src kairosvideo: \(hashes.joined(separator: " ")); style-src 'unsafe-inline'; "
+            + "img-src kairosvideo:; font-src kairosvideo:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
 
     /// Blocks every address that is not the private scheme. Compiled before the page loads.
