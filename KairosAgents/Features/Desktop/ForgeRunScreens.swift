@@ -26,6 +26,16 @@ struct ForgeTerminalScreen: View {
     private var pane: TerminalPane { panes[min(current, panes.count - 1)] }
 
     var body: some View {
+        // Paired with a desktop: no shell on the phone, and nothing is sent.
+        if DeskForgeLive.shared.on {
+            DeskChangesLineScreen(title: "Terminal", subtitle: DeskForgeLive.shared.session(sessionID)?.title,
+                                  line: "Use the terminal in Kairos on your desktop")
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -276,6 +286,15 @@ struct ForgePreviewScreen: View {
     private var app: RunningApp? { store.apps(for: sessionID).first }
 
     var body: some View {
+        // Paired with a desktop: the app's status and logs. Its page opens on the desktop only.
+        if DeskForgeLive.shared.on {
+            DeskChangesAppView(sessionID: sessionID)
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         VStack(spacing: 10) {
             if let app {
                 addressBar(app)
@@ -464,5 +483,176 @@ struct SamplePage: View {
         .animation(Motion.snappy, value: width)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Preview of the shop site, \(width.rawValue) width")
+    }
+}
+
+// MARK: - Paired with a desktop
+
+/// What the app screen is asking the person to confirm.
+enum DeskChangesAppAsk: String, Identifiable {
+    case restart, stop
+    var id: String { rawValue }
+}
+
+/// The session's running app on the paired desktop: its status and last log lines, with Restart and Stop.
+/// The app listens on the desktop only, so its page is not shown here. Starting it is done from the session.
+struct DeskChangesAppView: View {
+    let sessionID: String
+    @State private var live = DeskChangesLive.shared
+    @State private var forge = DeskForgeLive.shared
+    @State private var ask: DeskChangesAppAsk?
+    @State private var notice: String?
+    @State private var toast: String?
+
+    private var state: DeskChangesAppState? { live.app(sessionID) }
+    private var busy: Bool { live.isBusy("app:" + sessionID) || live.approval(sessionID)?.active == true }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if let line = notice ?? live.note(sessionID) {
+                    DeskForgeLine(text: line, action: "OK") {
+                        notice = nil
+                        live.clearNote(sessionID)
+                    }
+                }
+                if forge.isAdmin, live.gone(sessionID) == nil, let state, state.load == .loaded {
+                    content(state)
+                } else {
+                    DeskChangesGate(sessionID: sessionID, load: state?.load ?? .loading, reading: "Reading this app from your desktop.") {
+                        Task { await live.loadApp(sessionID) }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 40)
+        }
+        .scrollIndicators(.hidden)
+        .refreshable { await live.loadApp(sessionID) }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ScreenHeader(title: "App", subtitle: forge.session(sessionID)?.title) {
+                GlassIconButton(symbol: "arrow.clockwise", label: "Refresh the app") {
+                    Task { await live.loadApp(sessionID) }
+                }
+            }
+        }
+        .kScreen()
+        .sheet(item: $ask) { item in
+            switch item {
+            case .restart:
+                ConfirmSheet(title: "Restart the app?",
+                             detail: "Stops it on your desktop and starts it again with its saved command. Your desktop may ask you to approve the command first.",
+                             confirm: "Restart", danger: false) {
+                    notice = nil
+                    live.startApproval(sessionID, .restart)
+                }
+            case .stop:
+                ConfirmSheet(title: "Stop the app?",
+                             detail: "Stops it on your desktop. Anything using it loses its place. You can start it again from the session.",
+                             confirm: "Stop app") {
+                    Task {
+                        let outcome = await live.stopApp(sessionID)
+                        if let line = outcome.line {
+                            notice = line
+                        } else if outcome == .done {
+                            Haptics.success()
+                            toast = "The app was stopped"
+                        }
+                    }
+                }
+            }
+        }
+        .machineToast($toast)
+        .task(id: DeskForgeLive.connectionKey + "|" + sessionID) {
+            guard live.on else { return }
+            await live.loadApp(sessionID)
+            // The status and logs move while the app runs: read them while this screen is open.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                if Task.isCancelled { break }
+                await live.loadApp(sessionID)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ state: DeskChangesAppState) -> some View {
+        let app = state.app
+        let running = app?.running == true
+        let place = app?.port.map { "On port \($0) on your desktop" } ?? "On your desktop"
+        if let stale = live.stale(sessionID) {
+            DeskForgeLine(text: stale, action: "Try again") { Task { await live.loadApp(sessionID) } }
+        }
+        if let approval = live.approval(sessionID), approval.kind == .restart {
+            DeskChangesApprovalCard(sessionID: sessionID, approval: approval)
+        }
+        HStack(spacing: 12) {
+            if running {
+                PulsingDot(color: app?.ready == true ? Palette.success : Palette.working, size: 8)
+            } else {
+                Circle().fill(Palette.inkFaint).frame(width: 8, height: 8)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(running ? (app?.ready == true ? "Running" : "Starting") : "Stopped")
+                    .font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
+                Text(running ? place : stoppedLine(app))
+                    .font(KFont.ui(13.5)).foregroundStyle(Palette.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .kCard(radius: 20)
+        if running {
+            HStack(spacing: 10) {
+                DeskPillButton(title: "Restart", symbol: "arrow.clockwise") { ask = .restart }
+                    .disabled(busy)
+                    .opacity(busy ? 0.45 : 1)
+                DeskPillButton(title: "Stop app", symbol: "stop.fill", tint: Palette.danger) { ask = .stop }
+                    .disabled(busy)
+                    .opacity(busy ? 0.45 : 1)
+            }
+        } else {
+            NoteLine(text: "Start the app from this session's actions.", symbol: "play.circle")
+        }
+        NoteLine(text: "The app's page opens on your desktop only. It listens there, so it cannot be shown here.", symbol: "desktopcomputer")
+        logs(state)
+    }
+
+    private func stoppedLine(_ app: DeskChangesAppDTO?) -> String {
+        if let code = app?.exitCode { return "It exited with code \(code)." }
+        return "No app is running for this session."
+    }
+
+    @ViewBuilder
+    private func logs(_ state: DeskChangesAppState) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel(text: "Logs")
+            switch state.logsLoad {
+            case .loaded:
+                if state.logs.isEmpty {
+                    NoteLine(text: "No log lines yet.")
+                } else {
+                    // Selection stays off: the logs are for reading here, and there is no copy-all.
+                    ScrollView {
+                        Text(state.logs.suffix(200).joined(separator: "\n"))
+                            .font(CodeFont.mono(12.5))
+                            .foregroundStyle(Palette.ink)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                    }
+                    .defaultScrollAnchor(.bottom)
+                    .frame(maxHeight: 380)
+                    .background(Palette.groundDeep.opacity(0.85), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            case .failed(let why):
+                DeskForgeLine(text: "The logs could not be read. " + why, action: "Try again") {
+                    Task { await live.loadApp(sessionID) }
+                }
+            case .idle, .loading:
+                DeskForgeLine(text: "Reading the logs from your desktop.")
+            }
+        }
     }
 }
