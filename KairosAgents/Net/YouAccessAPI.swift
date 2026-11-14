@@ -290,16 +290,24 @@ nonisolated enum YouAccessWire {
         return parts.last
     }
 
+    /// The desktop sends 0 (1970) for a time it does not have, so anything before the year 2000 is not known.
+    static let earliestKnown = Date(timeIntervalSince1970: 946_684_800)
+
     static func time(_ value: JSONValue?) -> Date? {
-        guard let seconds = value?.double, seconds > 0 else { return nil }
-        return Date(timeIntervalSince1970: seconds)
+        guard let seconds = value?.double else { return nil }
+        return known(Date(timeIntervalSince1970: seconds))
+    }
+
+    static func known(_ date: Date?) -> Date? {
+        guard let date, date >= earliestKnown else { return nil }
+        return date
     }
 
     /// A paired phone's id, as the desktop's route accepts it (phone_app_routes.py: ^d_[0-9a-f]{24}$).
     static func deviceID(_ id: String) throws -> String {
         let hex = id.dropFirst(2)
         guard id.hasPrefix("d_"), hex.count == 24, hex.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else {
-            throw APIError.unreadable("device id")
+            throw YouAccessNotSent(plain: "The phone's id could not be read, so nothing was sent.")
         }
         return id
     }
@@ -308,7 +316,7 @@ nonisolated enum YouAccessWire {
     static func ruleID(_ id: String) throws -> String {
         guard !id.isEmpty, id.count <= 80,
               id.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" }) else {
-            throw APIError.unreadable("rule id")
+            throw YouAccessNotSent(plain: "This rule's id could not be read, so nothing was sent.")
         }
         return id
     }
@@ -319,7 +327,7 @@ nonisolated enum YouAccessWire {
         guard parts.count == 2, parts[0] == "chat" || parts[0] == "agent", !parts[1].isEmpty, parts[1].count <= 120,
               parts[1].unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" || $0 == "." }),
               parts[1] != ".", parts[1] != ".." else {
-            throw APIError.unreadable("computer owner")
+            throw YouAccessNotSent(plain: "This computer's owner could not be read, so nothing was sent.")
         }
         return owner
     }
@@ -547,5 +555,57 @@ nonisolated enum YouAccessSamples {
             }
             return "folder name only, terminal on"
         },
+        DecodeCheck("youaccess.mask") {
+            // Made-up values only.
+            let cases: [(String, String)] = [
+                ("git status", "git status"),
+                ("curl -H 'Authorization: Bearer madeupvalue' https://example.com/x",
+                 "curl -H 'Authorization: Bearer ••••' https://example.com/x"),
+                ("https://someone:notreal@example.com/sign-in", "https://example.com/sign-in"),
+                ("https://example.com/cb?code=abc&state=xyz", "https://example.com/cb?code=••••&state=••••"),
+                ("export API_KEY=madeup && run", "export API_KEY=•••• && run"),
+                ("login password=\"two words\" now", "login password=•••• now"),
+                ("use secret=madeup", "use secret=••••"),
+                ("send abcdefghij0123456789ABCDEFGHIJ ok", "send •••• ok"),
+                ("aaaaaaaaaabbbbbbbbbbcccccccccc", "aaaaaaaaaabbbbbbbbbbcccccccccc"),
+            ]
+            for (text, wanted) in cases where youAccessMasked(text) != wanted {
+                throw SampleMismatch("mask: " + wanted)
+            }
+            let read = try KJSON.decode(YouAccessPermissionsDTO.self, from: #"""
+            {"rules": [{"id": "0a1b2c3d", "tool": "Bash", "content": "deploy --token=madeup"}],
+             "audit": [{"at": 1793000000, "decision": "allow", "tool": "Bash", "content": "deploy --token=madeup"}]}
+            """#)
+            let rows = YouAccessLive.rules(from: read)
+            let lines = YouAccessLive.decisions(from: read)
+            guard rows.first?.content == "deploy --token=••••", rows.first?.id == "0a1b2c3d",
+                  lines.first?.title.contains("madeup") == false else { throw SampleMismatch("masked rows") }
+            return "\(cases.count) texts, rows masked, id kept"
+        },
+        DecodeCheck("youaccess.guards") {
+            let devices = try KJSON.decode(YouAccessDevicesDTO.self, from: #"""
+            {"devices": [{"id": "d_0123456789abcdef01234567", "created_at": 0, "last_seen_at": "1970-01-01T00:00:00Z"}]}
+            """#)
+            guard devices.devices.count == 1,
+                  YouAccessWire.known(devices.devices[0].createdAt?.date) == nil,
+                  YouAccessWire.known(devices.devices[0].lastSeenAt?.date) == nil,
+                  YouAccessWire.time(.number(100)) == nil, YouAccessWire.time(.number(1793000000)) != nil,
+                  YouAccessLive.ago(Date(timeIntervalSince1970: 0)) == "not yet" else { throw SampleMismatch("old dates") }
+            guard notSent({ try YouAccessWire.ruleID("a/b") }), notSent({ try YouAccessWire.deviceID("d_x") }),
+                  notSent({ try YouAccessWire.ownerPath("chat:../x") }) else {
+                throw SampleMismatch("a bad id was not refused as not sent")
+            }
+            return "dates before 2000 not known, bad ids not sent"
+        },
     ]
+
+    /// The path guard refused this id as never sent.
+    private static func notSent(_ guardCall: () throws -> String) -> Bool {
+        do {
+            _ = try guardCall()
+            return false
+        } catch {
+            return error is YouAccessNotSent
+        }
+    }
 }

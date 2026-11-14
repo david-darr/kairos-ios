@@ -1063,7 +1063,7 @@ struct YouAccessAgentToolsScreen: View {
 
     var body: some View {
         SettingsPage("Agent tools", subtitle: "The tools every chat and bot may use.") {
-            if !YouAccessLive.isAdmin {
+            if live.asMember(.tools) {
                 YouAccessLine(text: "Agent tools are changed by an admin. This phone is paired as a member account.")
             } else {
                 YouAccessLoadLine(part: .tools, loading: "Reading the agent tools from your desktop.")
@@ -1161,7 +1161,7 @@ struct YouAccessComputerUseScreen: View {
                     .arrives(1)
             }
 
-            if YouAccessLive.isAdmin {
+            if !live.asMember(.computerStatus) {
                 YouAccessLoadLine(part: .computerStatus, loading: "Reading Docker and the kept profiles.")
                 if let docker = live.docker {
                     SettingsGroup("Docker") {
@@ -1186,6 +1186,8 @@ struct YouAccessComputerUseScreen: View {
                     }
                     .arrives(3)
                 }
+            } else {
+                YouAccessLine(text: "Docker and the kept browser profiles are seen by an admin. This phone is paired as a member account.")
             }
 
             YouAccessLoadLine(part: .computers, loading: "Reading the running computers.")
@@ -1318,7 +1320,7 @@ struct YouAccessForgeScreen: View {
 
     var body: some View {
         SettingsPage("Forge", subtitle: "Where coding projects live, and who may use their terminals.") {
-            if !YouAccessLive.isAdmin {
+            if live.asMember(.forge) {
                 YouAccessLine(text: "Forge settings need an admin account on your desktop. This phone is paired as a member account.")
             } else {
                 YouAccessLoadLine(part: .forge, loading: "Reading the Forge settings from your desktop.")

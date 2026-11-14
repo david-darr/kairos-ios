@@ -15,7 +15,8 @@ nonisolated enum YouAccessPart: Hashable, Sendable {
 nonisolated struct YouAccessRule: Identifiable, Hashable, Sendable {
     let id: String
     var tool: String
-    /// The rule's text exactly as the desktop keeps it. Nil covers the whole tool.
+    /// The rule's text as the desktop keeps it, with what looks secret masked (display only, never sent back;
+    /// the rule is revoked by its id). Nil covers the whole tool.
     var content: String?
     var allowed: Bool
     var scope: String
@@ -74,6 +75,34 @@ nonisolated struct YouAccessDocker: Hashable, Sendable {
     var imageReady: Bool?
 }
 
+/// Rule and decision text with what looks secret replaced by "••••", for display only. It is never sent back to the
+/// desktop (a rule is revoked by its id). Masked: the user and password of an address (`scheme://user:pass@host`
+/// shows as `scheme://host`), query values, what follows `Bearer ` or `token=`, `key=`, `secret=`, `password=`,
+/// and any run of 24 or more of letters, digits, `-`, `_`, `+`, `/`, `=` holding both a letter and a digit.
+nonisolated func youAccessMasked(_ text: String) -> String {
+    let dots = "••••"
+    var out = text
+    func replace(_ pattern: String, _ template: String) {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return }
+        out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
+    }
+    replace(#"([a-z][a-z0-9+.\-]*://)[^\s/@?#]+@"#, "$1")
+    replace(#"(bearer\s+)[^\s'"]+"#, "$1" + dots)
+    replace(#"((?:token|key|secret|password)\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s&#'"]+)"#, "$1" + dots)
+    replace(#"([?&][^\s=&#?]+=)[^\s&#]+"#, "$1" + dots)
+    guard let long = try? NSRegularExpression(pattern: #"[A-Za-z0-9\-_+/=]{24,}"#) else { return out }
+    let whole = out as NSString
+    var result = ""
+    var at = 0
+    for match in long.matches(in: out, range: NSRange(location: 0, length: whole.length)) {
+        let run = whole.substring(with: match.range)
+        guard run.contains(where: \.isLetter), run.contains(where: \.isNumber) else { continue }
+        result += whole.substring(with: NSRange(location: at, length: match.range.location - at)) + dots
+        at = match.range.location + match.range.length
+    }
+    return result + whole.substring(from: at)
+}
+
 /// A change stopped before anything was sent to the desktop.
 nonisolated struct YouAccessNotSent: Error, Sendable {
     let plain: String
@@ -127,6 +156,14 @@ final class YouAccessLive {
     var notice: [YouAccessPart: String] = [:]
     /// Unpairing this phone did not go through.
     var thisPhoneNotice: String?
+    /// Admin-only parts the desktop answered 403: the screen shows the member line.
+    private(set) var memberOnly: Set<YouAccessPart> = []
+
+    /// The parts only an admin may read.
+    private static let adminOnly: Set<YouAccessPart> = [.tools, .computerStatus, .forge]
+
+    /// Show the member line for this admin-only part: the cached flag says member, or the desktop answered 403.
+    func asMember(_ part: YouAccessPart) -> Bool { !Self.isAdmin || memberOnly.contains(part) }
 
     @ObservationIgnored private var liveAccount = "sample"
     @ObservationIgnored private var reads: [YouAccessPart: Int] = [:]
@@ -194,6 +231,7 @@ final class YouAccessLive {
         unconfirmed = [:]
         notice = [:]
         thisPhoneNotice = nil
+        memberOnly = []
         reads = [:]
         writes = [:]
         liveAccount = key
@@ -275,6 +313,7 @@ final class YouAccessLive {
                 let value = try await fetch(try liveClient())
                 guard stillLive(account), mine == reads[part] else { return false }
                 guard before == (writes[part] ?? 0) else { continue }
+                memberOnly.remove(part)
                 apply(value)
                 // A real read shows what the desktop has, so a change it did not confirm can be judged again.
                 if unconfirmed[part]?.isEmpty == false {
@@ -285,8 +324,16 @@ final class YouAccessLive {
                 return true
             } catch {
                 if error is CancellationError || Task.isCancelled { return false }
+                // An answer for a pairing that has ended never changes the connection.
+                guard stillLive(account) else { return false }
                 Connection.shared.note(error)
-                guard stillLive(account), mine == reads[part] else { return false }
+                guard mine == reads[part] else { return false }
+                if Self.adminOnly.contains(part), case .server(status: 403, _)? = error as? APIError {
+                    // The desktop says this account is not an admin, whatever the cached flag says.
+                    memberOnly.insert(part)
+                    loads[part] = .loaded
+                    return false
+                }
                 loads[part] = .failed(failure + " " + error.plainWords)
                 return false
             }
@@ -300,7 +347,8 @@ final class YouAccessLive {
         let kept = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var fresh = dto.devices.map { device in
             YouAccessDevice(id: device.id, name: device.name?.string ?? "Phone", model: device.model?.string ?? "",
-                            paired: device.createdAt?.date, lastSeen: device.lastSeenAt?.date,
+                            paired: YouAccessWire.known(device.createdAt?.date),
+                            lastSeen: YouAccessWire.known(device.lastSeenAt?.date),
                             current: device.current?.bool ?? false)
         }
         // A phone with an unpair on its way stays as it was until the desktop answers.
@@ -361,7 +409,7 @@ final class YouAccessLive {
 
     nonisolated static func rules(from read: YouAccessPermissionsDTO) -> [YouAccessRule] {
         read.rules.map { dto in
-            let content = dto.content?.string.flatMap { $0.isEmpty ? nil : $0 }
+            let content = dto.content?.string.flatMap { $0.isEmpty ? nil : youAccessMasked($0) }
             var scope: String
             if let team = dto.teamName?.string, !team.isEmpty {
                 scope = "For the \(team) team"
@@ -402,7 +450,7 @@ final class YouAccessLive {
             }
             if let tool = entry.tool?.string, !tool.isEmpty {
                 title += " · " + tool
-                if let content = entry.content?.string, !content.isEmpty { title += " (\(content))" }
+                if let content = entry.content?.string, !content.isEmpty { title += " (\(youAccessMasked(content)))" }
             }
             var detail: [String] = []
             if let at = YouAccessWire.time(entry.at) { detail.append(at.formatted(date: .abbreviated, time: .shortened)) }
@@ -478,6 +526,8 @@ final class YouAccessLive {
             Haptics.success()
             YouStore.shared.say(words.done)
         } catch {
+            // An answer for a pairing that has ended never changes the connection.
+            guard stillLive(account) else { return }
             if !(error is YouAccessNotSent) { Connection.shared.note(error) }
             guard stillLive(account) else { return }
             if words.missingIsDone, Self.isMissing(error) {
@@ -611,9 +661,12 @@ final class YouAccessLive {
                          _ = try await client.youAccessSetComputerUse(values)
                      },
                      check: { client in
-                         guard let wanted = sent.values else { return false }
+                         // Off is what was asked; the other three may have changed on the desktop since.
                          let fresh = try await client.youAccessSettings()
-                         return fresh.computerUse?.values == wanted
+                         // Unreadable: it could not be checked (never "it has not happened").
+                         guard let enabled = fresh.computerUse?.enabled?.bool else { throw APIError.unreadable("computer use") }
+                         if !enabled { sent.values = fresh.computerUse?.values }
+                         return !enabled
                      },
                      done: {
                          if let values = sent.values { computerUse = values } else { computerUse?.enabled = false }
@@ -665,12 +718,26 @@ final class YouAccessLive {
             }
             guard stillLive(account) else { return false }
             if Self.isMissing(error) {
-                Connection.shared.forgetPairing()
-                return true
+                // The token got through, so a 404 means the desktop did not find this id (or has no such route):
+                // the pairing is forgotten here only if the desktop no longer knows this phone's token.
+                do {
+                    _ = try await liveClient().phoneSession()
+                    guard stillLive(account) else { return false }
+                    thisPhoneNotice = "Your desktop did not unpair this phone, and it is still paired. Unpair it in Kairos on your desktop, in Settings, Remote access."
+                    return false
+                } catch {
+                    if case .unauthorized? = error as? APIError {
+                        Connection.shared.forgetPairing()
+                        return true
+                    }
+                    guard stillLive(account) else { return false }
+                    thisPhoneNotice = "Your desktop did not unpair this phone. Check Paired phones in Kairos on your desktop, in Settings, Remote access."
+                    return false
+                }
             }
-            Connection.shared.note(error)
+            if !(error is YouAccessNotSent) { Connection.shared.note(error) }
             if Self.wasRefused(error) {
-                thisPhoneNotice = "This phone was not unpaired. " + error.plainWords
+                thisPhoneNotice = "This phone was not unpaired. " + Self.words(error)
                 return false
             }
             // The answer was lost: ask the desktop whether this phone's token still works.
@@ -693,12 +760,12 @@ final class YouAccessLive {
 
     /// Turn a date into the short words the screens use.
     nonisolated static func day(_ date: Date?) -> String {
-        guard let date else { return "at a time not known" }
+        guard let date = YouAccessWire.known(date) else { return "at a time not known" }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     nonisolated static func ago(_ date: Date?) -> String {
-        guard let date else { return "not yet" }
+        guard let date = YouAccessWire.known(date) else { return "not yet" }
         return date.formatted(.relative(presentation: .named))
     }
 }
