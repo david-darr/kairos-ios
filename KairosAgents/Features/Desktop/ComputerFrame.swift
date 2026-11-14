@@ -1,4 +1,133 @@
 import SwiftUI
+import UIKit
+
+/// The live screen of a computer, while paired: the last picture the stream sent, kept in memory only. A picture
+/// that is not live is dimmed and marked with its time, so an old frame never passes as the live one. Pinch to
+/// zoom, drag to look around when zoomed in. Nothing here saves, shares or sends the picture.
+struct DeskComputerPicture: View {
+    let image: UIImage?
+    let phase: DeskComputerPhase
+    let lastEvent: Date?
+    let pictureTime: Date?
+    let closedAt: Date?
+    /// The app is not in front: the picture is covered.
+    let shielded: Bool
+
+    @State private var zoom: CGFloat = 1
+    @State private var pinchBase: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var panBase: CGSize = .zero
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let fresh = phase == .live && (lastEvent.map { context.date.timeIntervalSince($0) < 8 } ?? false)
+            let mark = label(fresh)
+            Color.black
+                .aspectRatio(16 / 10, contentMode: .fit)
+                .overlay {
+                    GeometryReader { geometry in
+                        ZStack {
+                            if let image {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
+                                    .scaleEffect(zoom)
+                                    .offset(pan)
+                            } else {
+                                empty
+                            }
+                            if mark != nil { Color.black.opacity(0.4).allowsHitTesting(false) }
+                            if let mark {
+                                Text(mark)
+                                    .font(KFont.ui(13.5, .medium, relativeTo: .footnote))
+                                    .foregroundStyle(Palette.ink)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .kGlass(Capsule())
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                    .allowsHitTesting(false)
+                            }
+                            if shielded { Palette.ground }
+                        }
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                        .contentShape(Rectangle())
+                        .gesture(drag(geometry.size), including: zoom > 1.01 ? .all : .none)
+                        .simultaneousGesture(pinch)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(fresh ? Palette.gold : Palette.line, lineWidth: fresh ? 2 : 1))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(shielded ? "The computer's screen is hidden while Kairos is in the background" : "The computer's screen")
+    }
+
+    @ViewBuilder
+    private var empty: some View {
+        switch phase {
+        case .connecting, .idle:
+            VStack(spacing: 8) {
+                ProgressView().tint(Palette.cream)
+                Text("Opening the live screen").font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.cream)
+            }
+        case .paused:
+            Text("Paused while Kairos is in the background")
+                .font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.cream)
+        default:
+            VStack(spacing: 8) {
+                Image(systemName: "photo").font(.system(size: 22, weight: .medium)).foregroundStyle(Palette.cream)
+                Text("No picture yet").font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.cream)
+            }
+        }
+    }
+
+    /// What marks a picture that is not live, or nil when it is.
+    private func label(_ fresh: Bool) -> String? {
+        guard image != nil else { return nil }
+        switch phase {
+        case .idle: return nil
+        case .live where fresh: return nil
+        case .closed: return "Computer closed. Last picture " + Self.time(closedAt ?? pictureTime)
+        default: return "Not live. Last picture " + Self.time(pictureTime)
+        }
+    }
+
+    private static func time(_ date: Date?) -> String {
+        guard let date else { return "earlier" }
+        return "at " + date.formatted(date: .omitted, time: .standard)
+    }
+
+    private var pinch: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in zoom = min(max(1, pinchBase * value.magnification), 4) }
+            .onEnded { _ in
+                pinchBase = zoom
+                if zoom <= 1.01 {
+                    withAnimation(Motion.snappy) {
+                        zoom = 1
+                        pan = .zero
+                    }
+                    pinchBase = 1
+                    panBase = .zero
+                }
+            }
+    }
+
+    private func drag(_ size: CGSize) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                let maxX = size.width * (zoom - 1) / 2
+                let maxY = size.height * (zoom - 1) / 2
+                pan = CGSize(width: min(max(-maxX, panBase.width + value.translation.width), maxX),
+                             height: min(max(-maxY, panBase.height + value.translation.height), maxY))
+            }
+            .onEnded { _ in panBase = pan }
+    }
+}
 
 /// One frame of the desktop screen, drawn from sample data at 16 by 10.
 /// Everything is laid out in the PC's own 1280 by 800 space and scaled to fit.

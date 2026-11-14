@@ -47,6 +47,16 @@ struct BrowseScreen: View {
     private var tab: BrowseTab { store.active }
 
     var body: some View {
+        // Paired with a desktop: tabs, history, downloads, site settings and saved passwords have no route, so
+        // none of them is drawn. One line says where Browse is (DeskFilesLive.swift).
+        if DeskForgeLive.shared.on {
+            DeskFilesBrowseScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         VStack(spacing: 8) {
             strips
             page
