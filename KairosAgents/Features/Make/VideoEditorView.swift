@@ -22,6 +22,7 @@ enum VideoEditorDebug {
 
 struct VideoEditorScreen: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(MakeToast.self) private var toast
     @State private var model: EditorModel
     private let start: VideoEditorStart
@@ -34,26 +35,37 @@ struct VideoEditorScreen: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
-                EditorPreview(model: model)
-                transport
-                workArea
-                HStack(spacing: 10) {
-                    MakePillButton(title: "Ask Kairos", symbol: "sparkles", expand: true) { model.sheet = .ask }
-                    MakePillButton(title: renderTitle, symbol: "film", filled: true, expand: true) { model.startRender() }
-                        .editorEnabled(!model.isRendering)
+                if model.showsEditor {
+                    EditorPreview(model: model)
+                    transport
+                    workArea
+                    if model.isLive { EditorLiveBar(model: model) }
+                    HStack(spacing: 10) {
+                        MakePillButton(title: "Ask Kairos", symbol: "sparkles", expand: true) { model.sheet = .ask }
+                        MakePillButton(title: renderTitle, symbol: "film", filled: true, expand: true) { renderTapped() }
+                            .editorEnabled(model.isLive ? model.canRenderLive : !model.isRendering)
+                    }
+                    if model.isLive { EditorLiveTools(model: model) }
+                    if model.showsRenderCard {
+                        if model.isLive {
+                            EditorLiveRenderCard(model: model)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        } else {
+                            EditorRenderCard(model: model)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+                    EditorTimeline(model: model)
+                    EditorTrackRow(model: model)
+                    EditorSelectionPanel(model: model)
+                } else {
+                    EditorLiveNote(model: model)
                 }
-                if model.render != .idle {
-                    EditorRenderCard(model: model)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                EditorTimeline(model: model)
-                EditorTrackRow(model: model)
-                EditorSelectionPanel(model: model)
             }
             .padding(.horizontal, 16)
             .padding(.top, 6)
             .padding(.bottom, 40)
-            .animation(Motion.snappy, value: model.render == .idle)
+            .animation(Motion.snappy, value: model.showsRenderCard)
         }
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .top) { header }
@@ -61,11 +73,34 @@ struct VideoEditorScreen: View {
         .sheet(item: $model.sheet) { sheet in
             EditorSheetHost(model: model, sheet: sheet)
         }
+        .sheet(item: $model.confirm) { confirm in
+            confirmSheet(confirm)
+        }
         .task { await boot() }
-        .onDisappear { model.pause() }
+        .task(id: MakeVideoLive.connectionKey) { await model.follow() }
+        .onChange(of: scenePhase) {
+            // Coming back to the front: read the video again. Unsaved edits stay on top of what changed.
+            if scenePhase == .active, model.isLive, model.live?.phase == .ready { Task { await model.loadLive() } }
+        }
+        .onDisappear {
+            model.pause()
+            model.stopWatching()
+            model.stashDraft()
+        }
+        .onAppear {
+            model.watchJob()
+            model.watchAsk()
+            // The editor is in memory again, so a draft kept when it was left is older than what is on screen.
+            model.discardDraft()
+        }
     }
 
     private var renderTitle: String {
+        if let live = model.live {
+            if live.job?.isActive == true { return "Rendering" }
+            if live.job?.isReady == true { return "Render again" }
+            return "Render"
+        }
         switch model.render {
         case .running: return "Rendering"
         case .done: return "Render again"
@@ -73,8 +108,51 @@ struct VideoEditorScreen: View {
         }
     }
 
+    private func renderTapped() {
+        if model.isLive {
+            Task { await model.prepareRenderLive() }
+        } else {
+            model.startRender()
+        }
+    }
+
+    @ViewBuilder private func confirmSheet(_ confirm: EditorConfirm) -> some View {
+        switch confirm {
+        case .render:
+            ConfirmSheet(title: "Render \(model.title)?",
+                         detail: "\(EditorFormat.clock(model.live?.seconds ?? model.total)) long, \(model.live?.renderAspect ?? model.aspectText). It takes minutes. Your desktop must stay open while it renders.",
+                         confirm: "Render", danger: false) {
+                Task { await model.startRenderLive() }
+            }
+        case .stopRender:
+            ConfirmSheet(title: "Stop this render?", detail: "Your desktop stops drawing this video.", confirm: "Stop render") {
+                Task { await model.stopRenderLive() }
+            }
+        case .narrate:
+            ConfirmSheet(title: "Speak the lines?",
+                         detail: "Your desktop speaks each line that is not spoken yet and saves it as a new version. It takes minutes, and your desktop must stay open.",
+                         confirm: "Narrate", danger: false) {
+                Task { await model.narrateLive() }
+            }
+        case .leave:
+            ConfirmSheet(title: "Leave without saving?", detail: "Your changes to this video are not saved on your desktop. They will be lost.",
+                         confirm: "Leave without saving") {
+                model.abandonEdits()
+                dismiss()
+            }
+        }
+    }
+
+    private func goBack() {
+        if model.isDirty {
+            model.confirm = .leave
+        } else {
+            dismiss()
+        }
+    }
+
     private var header: some View {
-        MakeHeader(title: model.title, subtitle: "\(EditorFormat.clock(model.total)), 9:16, 30 fps", back: { dismiss() }) {
+        MakeHeader(title: model.title, subtitle: "\(EditorFormat.clock(model.total)), \(model.aspectText), \(model.fpsText)", back: { goBack() }) {
             GlassIconButton(symbol: "arrow.uturn.backward", label: "Undo") { model.undo() }
                 .editorEnabled(model.canUndo)
             GlassIconButton(symbol: "arrow.uturn.forward", label: "Redo") { model.redo() }
@@ -161,6 +239,8 @@ struct VideoEditorScreen: View {
 
 nonisolated enum EditorBeatKind: String, Hashable, Sendable {
     case scene, story, stage, blocky
+    /// Any other kind the desktop makes (title, statement, big number, list, image, quote, split, logo, end).
+    case card
 
     var title: String {
         switch self {
@@ -168,6 +248,7 @@ nonisolated enum EditorBeatKind: String, Hashable, Sendable {
         case .story: "Story"
         case .stage: "3D stage"
         case .blocky: "Blocky world"
+        case .card: "Card"
         }
     }
 }
@@ -212,13 +293,35 @@ nonisolated struct EditorBeat: Identifiable, Hashable, Sendable {
     var shots: [String] = ["medium"]
     var world = "meadow"
     var pedestal = false
+    /// Paired desktop only: the desktop's own kind word, which field the caption is (say or text), and how long
+    /// one bar runs at this video's tempo.
+    var rawKind = ""
+    var captionField = "text"
+    var barSeconds = EditorBeat.secondsPerBar
 
-    var length: Double { narrated ? seconds : bars * Self.secondsPerBar }
+    var length: Double { narrated ? seconds : bars * barSeconds }
+
+    /// The kind in words: the four drawn kinds by name, any other as the desktop calls it.
+    var kindName: String {
+        guard kind == .card, !rawKind.isEmpty else { return kind.title }
+        let words = rawKind.replacingOccurrences(of: "-", with: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
+    }
 }
 
 nonisolated enum EditorClipKind: Hashable, Sendable {
     case text, shape
-    var title: String { self == .text ? "Text" : "Shape" }
+    /// A picture or a video file on the overlay track. Shown and timed on the phone, changed on the desktop.
+    case image, video
+
+    var title: String {
+        switch self {
+        case .text: "Text"
+        case .shape: "Shape"
+        case .image: "Image"
+        case .video: "Video"
+        }
+    }
 }
 
 nonisolated struct EditorClip: Identifiable, Hashable, Sendable {
@@ -242,10 +345,17 @@ nonisolated struct EditorClip: Identifiable, Hashable, Sendable {
     var height = 12.0
     var animated: Set<String> = []
     var keyTimes: [Double] = []
+    /// Paired desktop only: where in its own time the clip starts (the desktop's `in`).
+    var source = 0.0
 
     var end: Double { start + length }
     var label: String {
-        kind == .text ? (text.isEmpty ? "Empty text" : text) : "\(colour) \(shape.lowercased())"
+        switch kind {
+        case .text: text.isEmpty ? "Empty text" : text
+        case .shape: "\(colour) \(shape.lowercased())"
+        case .image: "Picture"
+        case .video: "Video file"
+        }
     }
 }
 
@@ -261,13 +371,14 @@ nonisolated struct EditorState: Hashable, Sendable {
 nonisolated enum EditorSelection: Hashable, Sendable { case beat(Int), clip(Int) }
 
 nonisolated enum EditorSheet: Hashable, Identifiable, Sendable {
-    case beat(Int), clip(Int), ask
+    case beat(Int), clip(Int), ask, history
 
     var id: String {
         switch self {
         case .beat(let id): "beat-\(id)"
         case .clip(let id): "clip-\(id)"
         case .ask: "ask"
+        case .history: "history"
         }
     }
 }
@@ -316,6 +427,15 @@ nonisolated enum EditorOptions {
 }
 
 nonisolated enum EditorSample {
+    static var comments: [EditorComment] {
+        [
+            EditorComment(id: 1, time: 3.5, text: "The caption feels long here."),
+            EditorComment(id: 2, time: 27, text: "Music could dip lower."),
+        ]
+    }
+
+    static let chapters: [(beat: Int, title: String)] = [(1, "Opening"), (4, "The offer")]
+
     static var state: EditorState {
         var b1 = EditorBeat(id: 1, kind: .scene, caption: "Spring is here, and the trails are calling.", narrated: true, seconds: 6.4, bars: 3)
         b1.setting = "meadow"
@@ -367,7 +487,7 @@ nonisolated enum EditorSample {
 @Observable
 final class EditorModel {
     let projectID: String
-    let title = "Spring ride"
+    var title = "Spring ride"
     var state: EditorState
     private(set) var past: [EditorState] = []
     private(set) var future: [EditorState] = []
@@ -382,6 +502,13 @@ final class EditorModel {
     var selection: EditorSelection?
     var sheet: EditorSheet?
     var render: EditorRender = .idle
+    /// Paired desktop only: the session with the desktop's copy of this video. Nil is the sample editor.
+    var live: MakeVideoLive?
+    var confirm: EditorConfirm?
+    var aspectRatio = 9.0 / 16.0
+    var aspectText = "9:16"
+    var fpsText = "30 fps"
+    var musicMood = "Warm"
 
     @ObservationIgnored var toast: MakeToast?
     @ObservationIgnored var booted = false
@@ -392,15 +519,33 @@ final class EditorModel {
     @ObservationIgnored private var renderRate = 0.012
     @ObservationIgnored private var askCount = 0
 
-    let comments: [EditorComment] = [
-        EditorComment(id: 1, time: 3.5, text: "The caption feels long here."),
-        EditorComment(id: 2, time: 27, text: "Music could dip lower."),
-    ]
-    private let chapters: [(beat: Int, title: String)] = [(1, "Opening"), (4, "The offer")]
+    var comments: [EditorComment] = EditorSample.comments
+    var chapters: [(beat: Int, title: String)] = EditorSample.chapters
 
     init(projectID: String) {
         self.projectID = projectID
         self.state = EditorSample.state
+        // Paired, the editor opens the desktop's video with this id and never the sample.
+        if !Connection.shared.usesSampleData { enterLive() }
+    }
+
+    /// Back to the sample editor (the phone was unpaired).
+    func restoreSample() {
+        state = EditorSample.state
+        title = "Spring ride"
+        aspectRatio = 9.0 / 16.0
+        aspectText = "9:16"
+        fpsText = "30 fps"
+        musicMood = "Warm"
+        comments = EditorSample.comments
+        chapters = EditorSample.chapters
+        render = .idle
+    }
+
+    func resetHistory() {
+        past = []
+        future = []
+        lastTag = nil
     }
 
     // Reading
@@ -431,6 +576,9 @@ final class EditorModel {
 
     func index(of id: Int) -> Int? { state.beats.firstIndex { $0.id == id } }
     func clipIndex(_ id: Int) -> Int? { state.clips.firstIndex { $0.id == id } }
+
+    /// The number a clip shows: the sample's own number, or its place on the overlay track when paired.
+    func clipNumber(_ clip: EditorClip) -> Int { live == nil ? clip.id : (clipIndex(clip.id) ?? 0) + 1 }
 
     var selectedBeat: EditorBeat? {
         if case .beat(let id)? = selection { return state.beats.first { $0.id == id } }
@@ -645,6 +793,7 @@ final class EditorModel {
     // Beats
 
     func moveBeat(_ id: Int, by offset: Int) {
+        guard !structureLocked else { toast?.say(Self.structureLine); return }
         guard let i = index(of: id) else { return }
         let j = i + offset
         guard j >= 0, j < state.beats.count else { return }
@@ -653,6 +802,7 @@ final class EditorModel {
     }
 
     func dropBeat(_ id: Int, at time: Double) {
+        guard !structureLocked else { toast?.say(Self.structureLine); return }
         guard let from = index(of: id) else { return }
         let s = starts
         var target = 0
@@ -677,8 +827,10 @@ final class EditorModel {
     }
 
     func duplicateBeat(_ id: Int) {
+        guard !structureLocked else { toast?.say(Self.structureLine); return }
         guard let i = index(of: id) else { return }
         let newID = state.nextID
+        liveMint("beat", prefix: "b", handle: newID, copying: id)
         mutate { s in
             var copy = s.beats[i]
             copy.id = newID
@@ -691,6 +843,7 @@ final class EditorModel {
     }
 
     func deleteBeat(_ id: Int) {
+        guard !structureLocked else { toast?.say(Self.structureLine); return }
         guard state.beats.count > 1, let i = index(of: id) else { return }
         mutate { _ = $0.beats.remove(at: i) }
         if selection == .beat(id) { selection = nil }
@@ -749,6 +902,7 @@ final class EditorModel {
             return
         }
         let id = state.nextID
+        liveMint("clip", prefix: "k", handle: id)
         let clip: EditorClip
         if kind == .text {
             clip = EditorClip(id: id, kind: .text, start: start, length: length, top: 40)
@@ -781,7 +935,12 @@ final class EditorModel {
         let end = clip.end
         switch edge {
         case .start:
-            let newStart = frame(min(max(room.prevEnd, clip.start + delta), end - oneFrame))
+            // On the desktop a start trim moves the clip's `in` point by the same amount as its start, for every
+            // kind of clip, so the footage (or the keyframes) stay where they were and `in` cannot go below 0.
+            let followsFile = live != nil
+            let earliest = followsFile ? max(room.prevEnd, clip.start - clip.source) : room.prevEnd
+            let newStart = frame(min(max(earliest, clip.start + delta), end - oneFrame))
+            if followsFile { clip.source = max(0, clip.source + (newStart - clip.start)) }
             clip.start = newStart
             clip.length = end - newStart
         case .end:
@@ -794,7 +953,9 @@ final class EditorModel {
     }
 
     func canSplit(_ clip: EditorClip) -> Bool {
-        playhead > clip.start + 1.0 / 30 && playhead < clip.end - 1.0 / 30
+        // A clip that is animated on the desktop is not cut on the phone: its keyframes would not follow.
+        if live != nil, !clip.animated.isEmpty || clip.kind == .image || clip.kind == .video { return false }
+        return playhead > clip.start + 1.0 / 30 && playhead < clip.end - 1.0 / 30
     }
 
     func isInside(_ clip: EditorClip) -> Bool { playhead >= clip.start && playhead <= clip.end }
@@ -807,6 +968,8 @@ final class EditorModel {
         var left = original
         var right = original
         right.id = state.nextID
+        right.source = original.source + local
+        liveMint("clip", prefix: "k", handle: right.id, copying: id)
         left.length = cut - original.start
         left.fadeOut = 0
         left.fadeIn = min(left.fadeIn, left.length)
@@ -845,6 +1008,7 @@ final class EditorModel {
     }
 
     func setAnimated(_ id: Int, _ name: String, _ on: Bool) {
+        guard live == nil else { return }
         guard unlocked(), let i = clipIndex(id) else { return }
         let clip = state.clips[i]
         let local = frame(playhead - clip.start)
@@ -863,6 +1027,7 @@ final class EditorModel {
     }
 
     func addKeys(_ id: Int) {
+        guard live == nil else { return }
         guard unlocked(), let i = clipIndex(id), isInside(state.clips[i]) else { return }
         let local = frame(playhead - state.clips[i].start)
         mutate { s in
@@ -899,6 +1064,7 @@ final class EditorModel {
     }
 
     func removeTrack() {
+        guard live == nil else { return }
         mutate { s in
             s.trackRemoved = true
             s.clips = []
@@ -917,7 +1083,8 @@ final class EditorModel {
 
     func goToComment(_ comment: EditorComment) {
         seek(comment.time)
-        toast?.say("Comment \(comment.id): \(comment.text)")
+        let number = (comments.firstIndex { $0.id == comment.id } ?? 0) + 1
+        toast?.say("Comment \(number): \(comment.text)")
     }
 
     // Render
@@ -1003,9 +1170,9 @@ nonisolated enum EditorFormat {
 
     static func seconds(_ t: Double) -> String { String(format: "%.1f s", t) }
 
-    static func bars(_ b: Double) -> String {
+    static func bars(_ b: Double, perBar: Double = EditorBeat.secondsPerBar) -> String {
         let count = b == b.rounded() ? String(Int(b)) : String(format: "%.1f", b)
-        return "\(count) \(b == 1 ? "bar" : "bars"), \(seconds(b * EditorBeat.secondsPerBar))"
+        return "\(count) \(b == 1 ? "bar" : "bars"), \(seconds(b * perBar))"
     }
 
     static func ruler(_ t: Double, step: Double) -> String {
@@ -1023,6 +1190,7 @@ nonisolated enum EditorArt {
         case .story: key = beat.timeOfDay == "dusk" ? "dusk" : beat.place
         case .stage: key = beat.world
         case .blocky: key = beat.timeOfDay == "day" ? beat.world : beat.timeOfDay
+        case .card: key = "lavender"
         }
         switch key {
         case "city": return (0x3E4A6B, 0xC98B6B, 0x4A3B3A)
@@ -1047,6 +1215,7 @@ nonisolated enum EditorArt {
         case .stage: return "3D \(beat.world) set, \(beat.shot) shot"
         case .blocky: return "Blocky \(beat.world), \(beat.timeOfDay), \(beat.shot) shot"
         case .story: return beat.flashback ? "Flashback: \(beat.caption)" : "Story shot, \(beat.place)"
+        case .card: return beat.kindName
         }
     }
 
@@ -1162,8 +1331,8 @@ struct EditorPreview: View {
                 .allowsHitTesting(false)
             }
         }
-        .aspectRatio(9.0 / 16.0, contentMode: .fit)
-        .frame(height: 360)
+        .aspectRatio(model.aspectRatio, contentMode: .fit)
+        .frame(height: model.aspectRatio < 1 ? 360 : nil)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
         .shadow(color: .black.opacity(0.22), radius: 14, y: 8)
@@ -1268,6 +1437,11 @@ struct EditorSceneArt: View {
             }
             EditorPuppet(colour: Palette.botSand, speaks: false, size: w * scale, square: true)
                 .position(x: w * 0.4, y: h * 0.68)
+        case .card:
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.3))
+                .frame(width: w * 0.72, height: h * 0.2)
+                .position(x: w * 0.5, y: h * 0.42)
         }
     }
 }
@@ -1318,6 +1492,10 @@ struct EditorClipArt: View {
                 }
         case .shape:
             shape(colour)
+        case .image, .video:
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.black.opacity(0.28))
+                .overlay(Image(systemName: clip.kind == .image ? "photo" : "film").font(.system(size: 18)).foregroundStyle(Color.white.opacity(0.85)))
         }
     }
 
@@ -1525,7 +1703,7 @@ struct EditorTimeline: View {
             }
             .gesture(reorderGesture(beat, centre: start + beat.length / 2))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Beat \(index + 1), \(beat.kind.title), \(EditorFormat.seconds(beat.length))")
+            .accessibilityLabel("Beat \(index + 1), \(beat.kindName), \(EditorFormat.seconds(beat.length))")
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityAction { model.select(.beat(beat.id)) }
     }
@@ -1569,7 +1747,7 @@ struct EditorTimeline: View {
                             trimBase = beat.bars
                             model.select(.beat(beat.id))
                         }
-                        let bars = base + Double(value.translation.width) / model.zoom / EditorBeat.secondsPerBar
+                        let bars = base + Double(value.translation.width) / model.zoom / beat.barSeconds
                         model.setBars(beat.id, bars, tag: "trim-\(beat.id)")
                     }
                     .onEnded { _ in trimBase = nil }
@@ -1639,7 +1817,7 @@ struct EditorTimeline: View {
                 }
                 context.stroke(path, with: .color(line), lineWidth: 1.5)
             }
-            Text("Music, Warm")
+            Text("Music, \(model.musicMood)")
                 .font(KFont.ui(11, .medium, relativeTo: .caption2))
                 .foregroundStyle(Palette.ink)
                 .fixedSize()
@@ -1647,7 +1825,7 @@ struct EditorTimeline: View {
         }
         .frame(width: width, height: EditorLane.music, alignment: .topLeading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Music, Warm. It dips under the voice.")
+        .accessibilityLabel("Music, \(model.musicMood). It dips under the voice.")
     }
 
     private func overlayLane(_ width: CGFloat) -> some View {
@@ -1675,12 +1853,12 @@ struct EditorTimeline: View {
     private func commentLane(_ width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             Color.clear
-            ForEach(model.comments) { comment in
+            ForEach(Array(model.comments.enumerated()), id: \.element.id) { place, comment in
                 Button {
                     Haptics.tap()
                     model.goToComment(comment)
                 } label: {
-                    Text("\(comment.id)")
+                    Text("\(place + 1)")
                         .font(KFont.ui(11, .semibold, relativeTo: .caption2))
                         .foregroundStyle(Palette.onGold)
                         .frame(width: 20, height: 20)
@@ -1690,7 +1868,7 @@ struct EditorTimeline: View {
                 }
                 .buttonStyle(PressStyle())
                 .offset(x: x(comment.time) - 22)
-                .accessibilityLabel("Comment \(comment.id): \(comment.text)")
+                .accessibilityLabel("Comment \(place + 1): \(comment.text)")
             }
         }
         .frame(width: width, height: EditorLane.comments, alignment: .topLeading)
@@ -1708,10 +1886,10 @@ struct EditorBeatChip: View {
             .fill(selected ? Palette.gold.opacity(0.3) : Palette.surface2)
             .overlay(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("\(number) \(beat.kind.title)")
+                    Text("\(number) \(beat.kindName)")
                         .font(KFont.ui(12, .semibold, relativeTo: .caption))
                         .foregroundStyle(Palette.ink)
-                    Text(beat.narrated ? EditorFormat.seconds(beat.length) : EditorFormat.bars(beat.bars))
+                    Text(beat.narrated ? EditorFormat.seconds(beat.length) : EditorFormat.bars(beat.bars, perBar: beat.barSeconds))
                         .font(KFont.ui(10.5, relativeTo: .caption2))
                         .foregroundStyle(Palette.inkFaint)
                 }
@@ -1785,12 +1963,21 @@ struct EditorTrackRow: View {
                     MakePillButton(title: s.trackLocked ? "Unlock" : "Lock", symbol: s.trackLocked ? "lock.open.fill" : "lock.fill", expand: true) {
                         model.toggleLocked()
                     }
-                    MakePillButton(title: "Remove", symbol: "trash", danger: true, expand: true) { model.removeTrack() }
+                    if model.live == nil {
+                        MakePillButton(title: "Remove", symbol: "trash", danger: true, expand: true) { model.removeTrack() }
+                    }
                 }
                 if s.trackLocked {
                     Text(EditorOptions.lockNote)
                         .font(KFont.ui(13.5, relativeTo: .footnote))
                         .foregroundStyle(Palette.goldText)
+                }
+                if let live = model.live {
+                    HintLine(text: "A track is removed on your desktop.", symbol: "desktopcomputer")
+                    if live.otherTracks > 0 {
+                        HintLine(text: "\(live.otherTracks) other \(live.otherTracks == 1 ? "track" : "tracks") (sound or more overlays) \(live.otherTracks == 1 ? "is" : "are") on your desktop.",
+                                 symbol: "desktopcomputer")
+                    }
                 }
             }
         }
@@ -1821,7 +2008,7 @@ struct EditorSelectionPanel: View {
     @ViewBuilder private func beatPanel(_ beat: EditorBeat, index: Int) -> some View {
         let count = model.state.beats.count
         VStack(alignment: .leading, spacing: 2) {
-            Text("Beat \(index + 1), \(beat.kind.title)")
+            Text("Beat \(index + 1), \(beat.kindName)")
                 .font(KFont.ui(17, .semibold, relativeTo: .headline))
                 .foregroundStyle(Palette.ink)
             Text(EditorArt.label(beat))
@@ -1829,18 +2016,22 @@ struct EditorSelectionPanel: View {
                 .foregroundStyle(Palette.inkFaint)
                 .lineLimit(2)
         }
-        HStack(spacing: 8) {
-            MakePillButton(title: "Move earlier", symbol: "chevron.left", expand: true) { model.moveBeat(beat.id, by: -1) }
-                .editorEnabled(index > 0)
-            MakePillButton(title: "Move later", symbol: "chevron.right", expand: true) { model.moveBeat(beat.id, by: 1) }
-                .editorEnabled(index < count - 1)
+        if model.structureLocked {
+            HintLine(text: EditorModel.structureLine, symbol: "desktopcomputer")
+        } else {
+            HStack(spacing: 8) {
+                MakePillButton(title: "Move earlier", symbol: "chevron.left", expand: true) { model.moveBeat(beat.id, by: -1) }
+                    .editorEnabled(index > 0)
+                MakePillButton(title: "Move later", symbol: "chevron.right", expand: true) { model.moveBeat(beat.id, by: 1) }
+                    .editorEnabled(index < count - 1)
+            }
         }
         if beat.narrated {
             Text("Length set by its narration. \(EditorFormat.seconds(beat.length)).")
                 .font(KFont.ui(14, relativeTo: .footnote))
                 .foregroundStyle(Palette.inkDim)
         } else {
-            EditorStepRow(title: "Length", value: EditorFormat.bars(beat.bars),
+            EditorStepRow(title: "Length", value: EditorFormat.bars(beat.bars, perBar: beat.barSeconds),
                           canMinus: beat.bars > 0.5, canPlus: beat.bars < 8, last: true,
                           minus: { model.setBars(beat.id, beat.bars - 0.5) },
                           plus: { model.setBars(beat.id, beat.bars + 0.5) })
@@ -1848,15 +2039,17 @@ struct EditorSelectionPanel: View {
         }
         HStack(spacing: 8) {
             MakePillButton(title: "Edit beat", symbol: "slider.horizontal.3", filled: true, expand: true) { model.sheet = .beat(beat.id) }
-            MakePillButton(title: "Duplicate", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
-            EditorIconButton(symbol: "trash", label: "Delete beat", enabled: count > 1) { model.deleteBeat(beat.id) }
+            if !model.structureLocked {
+                MakePillButton(title: "Duplicate", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
+                EditorIconButton(symbol: "trash", label: "Delete beat", enabled: count > 1) { model.deleteBeat(beat.id) }
+            }
         }
     }
 
     @ViewBuilder private func clipPanel(_ clip: EditorClip) -> some View {
         let locked = model.state.trackLocked
         VStack(alignment: .leading, spacing: 2) {
-            Text("\(clip.kind.title) clip \(clip.id)")
+            Text("\(clip.kind.title) clip \(model.clipNumber(clip))")
                 .font(KFont.ui(17, .semibold, relativeTo: .headline))
                 .foregroundStyle(Palette.ink)
             Text("\(clip.label). \(EditorFormat.timecode(clip.start)) to \(EditorFormat.timecode(clip.end)), \(EditorFormat.seconds(clip.length))")
@@ -2012,7 +2205,13 @@ struct EditorSheetHost: View {
         switch sheet {
         case .beat(let id): EditorBeatSheet(model: model, beatID: id)
         case .clip(let id): EditorClipSheet(model: model, clipID: id)
-        case .ask: EditorAskSheet(model: model)
+        case .ask:
+            if model.isLive {
+                EditorLiveAskSheet(model: model)
+            } else {
+                EditorAskSheet(model: model)
+            }
+        case .history: EditorHistorySheet(model: model)
         }
     }
 }
@@ -2043,21 +2242,26 @@ struct EditorBeatForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            MakeSheetTitle(title: "\(beat.kind.title) beat \(number)", detail: "\(EditorArt.label(beat)). \(EditorFormat.seconds(beat.length)).")
-            MakeField(label: "Caption", text: $beat.caption, prompt: "What this beat says", limit: 140, lines: 1...3)
+            MakeSheetTitle(title: "\(beat.kindName) beat \(number)", detail: "\(EditorArt.label(beat)). \(EditorFormat.seconds(beat.length)).")
+            MakeField(label: "Caption", text: $beat.caption, prompt: "What this beat says", limit: beat.captionField == "say" ? 400 : 140, lines: 1...3)
             lengthGroup
             switch beat.kind {
             case .scene: sceneFields
             case .story: storyFields
             case .stage: stageFields
             case .blocky: blockyFields
+            case .card: cardFields
             }
-            HStack(spacing: 8) {
-                MakePillButton(title: "Duplicate beat", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
-                MakePillButton(title: "Delete beat", symbol: "trash", danger: true, expand: true) { model.deleteBeat(beat.id) }
-                    .editorEnabled(model.state.beats.count > 1)
+            if model.structureLocked {
+                HintLine(text: EditorModel.structureLine, symbol: "desktopcomputer")
+            } else {
+                HStack(spacing: 8) {
+                    MakePillButton(title: "Duplicate beat", symbol: "plus.square.on.square", expand: true) { model.duplicateBeat(beat.id) }
+                    MakePillButton(title: "Delete beat", symbol: "trash", danger: true, expand: true) { model.deleteBeat(beat.id) }
+                        .editorEnabled(model.state.beats.count > 1)
+                }
+                .padding(.top, 4)
             }
-            .padding(.top, 4)
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 28)
@@ -2072,7 +2276,7 @@ struct EditorBeatForm: View {
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                EditorStepRow(title: "Length", value: EditorFormat.bars(beat.bars),
+                EditorStepRow(title: "Length", value: EditorFormat.bars(beat.bars, perBar: beat.barSeconds),
                               canMinus: beat.bars > 0.5, canPlus: beat.bars < 8, last: true,
                               minus: { beat.bars = max(0.5, beat.bars - 0.5) },
                               plus: { beat.bars = min(8, beat.bars + 0.5) })
@@ -2087,18 +2291,23 @@ struct EditorBeatForm: View {
             MakeChoiceRow(title: "Setting", options: EditorOptions.settings, selection: $beat.setting)
             MakeChoiceRow(title: "Shot", options: EditorOptions.shots, selection: $beat.shot, last: true)
         }
-        SectionLabel(text: "Characters on screen (\(beat.characters.count) of 3)")
-        ForEach(beat.characters) { character in
-            characterCard(character.id)
+        if model.isLive {
+            HintLine(text: "Characters and props change on your desktop. \(beat.characters.count) on screen, \(beat.props.count) props.",
+                     symbol: "desktopcomputer")
+        } else {
+            SectionLabel(text: "Characters on screen (\(beat.characters.count) of 3)")
+            ForEach(beat.characters) { character in
+                characterCard(character.id)
+            }
+            MakePillButton(title: "Add a character", symbol: "plus") { addCharacter() }
+                .editorEnabled(beat.characters.count < 3)
+            SectionLabel(text: "Props (\(beat.props.count) of 6)")
+            ForEach(beat.props) { prop in
+                propCard(prop.id)
+            }
+            MakePillButton(title: "Add a prop", symbol: "plus") { addProp() }
+                .editorEnabled(beat.props.count < 6)
         }
-        MakePillButton(title: "Add a character", symbol: "plus") { addCharacter() }
-            .editorEnabled(beat.characters.count < 3)
-        SectionLabel(text: "Props (\(beat.props.count) of 6)")
-        ForEach(beat.props) { prop in
-            propCard(prop.id)
-        }
-        MakePillButton(title: "Add a prop", symbol: "plus") { addProp() }
-            .editorEnabled(beat.props.count < 6)
     }
 
     private func characterBinding(_ id: Int) -> Binding<EditorCharacter> {
@@ -2171,25 +2380,34 @@ struct EditorBeatForm: View {
 
     @ViewBuilder private var storyFields: some View {
         EditorGroup {
-            MakeChoiceRow(title: "Who speaks it", options: EditorOptions.speakers, selection: $beat.speaker)
-            EditorSliderRow(title: "Gap after the line", value: $beat.gap, range: 0.1...1.6, step: 0.1,
-                            text: String(format: "%.1f s", beat.gap))
+            if !model.isLive {
+                MakeChoiceRow(title: "Who speaks it", options: EditorOptions.speakers, selection: $beat.speaker)
+            }
+            if !model.isLive || beat.captionField == "say" {
+                EditorSliderRow(title: "Gap after the line", value: $beat.gap, range: 0.1...1.6, step: 0.1,
+                                text: String(format: "%.1f s", beat.gap))
+            }
             MakeToggleRow(title: "Flashback", detail: "Sepia, with a FLASHBACK tag", isOn: $beat.flashback, last: true)
         }
-        VStack(alignment: .leading, spacing: 6) {
-            MakeField(label: "Key words", text: $beat.keyWords, prompt: "bike, spring, tune-up")
-            Text("\(keyWordCount) of 8. Comma separated. The captions show them in the speaker's colour.")
-                .font(KFont.ui(13, relativeTo: .footnote))
-                .foregroundStyle(Palette.inkFaint)
-        }
-        .onChange(of: beat.keyWords) {
-            let parts = beat.keyWords.split(separator: ",", omittingEmptySubsequences: false)
-            if parts.count > 8 { beat.keyWords = parts.prefix(8).joined(separator: ",") }
+        if model.isLive {
+            HintLine(text: "The speaker, key words and shots change on your desktop.", symbol: "desktopcomputer")
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                MakeField(label: "Key words", text: $beat.keyWords, prompt: "bike, spring, tune-up")
+                Text("\(keyWordCount) of 8. Comma separated. The captions show them in the speaker's colour.")
+                    .font(KFont.ui(13, relativeTo: .footnote))
+                    .foregroundStyle(Palette.inkFaint)
+            }
+            .onChange(of: beat.keyWords) {
+                let parts = beat.keyWords.split(separator: ",", omittingEmptySubsequences: false)
+                if parts.count > 8 { beat.keyWords = parts.prefix(8).joined(separator: ",") }
+            }
         }
         EditorGroup {
             MakeChoiceRow(title: "Place", options: EditorOptions.places, selection: $beat.place)
             MakeChoiceRow(title: "Time of day", options: EditorOptions.storyTimes, selection: $beat.timeOfDay, last: true)
         }
+        if !model.isLive {
         SectionLabel(text: "Shots (\(beat.shots.count) of 3)")
         EditorGroup {
             ForEach(Array(beat.shots.indices), id: \.self) { i in
@@ -2207,6 +2425,7 @@ struct EditorBeatForm: View {
         }
         MakePillButton(title: "Add a shot", symbol: "plus") { beat.shots.append("medium") }
             .editorEnabled(beat.shots.count < 3)
+        }
     }
 
     private func shotBinding(_ i: Int) -> Binding<String> {
@@ -2234,6 +2453,11 @@ struct EditorBeatForm: View {
             MakeChoiceRow(title: "Time of day", options: EditorOptions.worldTimes, selection: $beat.timeOfDay)
             MakeChoiceRow(title: "Shot", options: EditorOptions.shots, selection: $beat.shot, last: true)
         }
+    }
+
+    private var cardFields: some View {
+        HintLine(text: "A \(beat.kindName.lowercased()) beat changes its picture, numbers and list on your desktop. Its text and length change here.",
+                 symbol: "desktopcomputer")
     }
 }
 
@@ -2263,7 +2487,7 @@ struct EditorClipForm: View {
     var body: some View {
         let locked = model.state.trackLocked
         VStack(alignment: .leading, spacing: 16) {
-            MakeSheetTitle(title: "\(clip.kind.title) clip \(clip.id)",
+            MakeSheetTitle(title: "\(clip.kind.title) clip \(model.clipNumber(clip))",
                        detail: "Overlay 1, \(EditorFormat.timecode(clip.start)) to \(EditorFormat.timecode(clip.end)), \(EditorFormat.seconds(clip.length))")
             if locked {
                 Text(EditorOptions.lockNote)
@@ -2274,7 +2498,13 @@ struct EditorClipForm: View {
                     .kCard(radius: 16)
             }
             Group {
-                if clip.kind == .text { textFields } else { shapeFields }
+                switch clip.kind {
+                case .text: textFields
+                case .shape: shapeFields
+                case .image, .video:
+                    HintLine(text: "A picture or video clip changes on your desktop. Its timing, fades and position change here.",
+                             symbol: "desktopcomputer")
+                }
                 timing
                 look
                 motion
@@ -2372,19 +2602,24 @@ struct EditorClipForm: View {
     @ViewBuilder private var motion: some View {
         let inside = model.isInside(clip)
         SectionLabel(text: "Motion")
-        EditorGroup {
-            ForEach(EditorOptions.keyNames, id: \.self) { name in
-                MakeToggleRow(title: "Animate \(name.lowercased())",
-                              detail: "\(model.motionValue(clip, name)) at the playhead",
-                              isOn: animateBinding(name), last: name == "Opacity")
+        if model.isLive {
+            HintLine(text: clip.animated.isEmpty ? "Keyframes are added on your desktop." : "Animated: \(clip.animated.sorted().joined(separator: ", ")). Keyframes change on your desktop.",
+                     symbol: "desktopcomputer")
+        } else {
+            EditorGroup {
+                ForEach(EditorOptions.keyNames, id: \.self) { name in
+                    MakeToggleRow(title: "Animate \(name.lowercased())",
+                                  detail: "\(model.motionValue(clip, name)) at the playhead",
+                                  isOn: animateBinding(name), last: name == "Opacity")
+                }
             }
-        }
-        MakePillButton(title: "Add keyframes here", symbol: "diamond.fill") { model.addKeys(clip.id) }
-            .editorEnabled(inside)
-        if !inside {
-            Text("Move the playhead inside the clip to add keyframes.")
-                .font(KFont.ui(13, relativeTo: .footnote))
-                .foregroundStyle(Palette.inkFaint)
+            MakePillButton(title: "Add keyframes here", symbol: "diamond.fill") { model.addKeys(clip.id) }
+                .editorEnabled(inside)
+            if !inside {
+                Text("Move the playhead inside the clip to add keyframes.")
+                    .font(KFont.ui(13, relativeTo: .footnote))
+                    .foregroundStyle(Palette.inkFaint)
+            }
         }
         if !clip.keyTimes.isEmpty {
             SectionLabel(text: "Keyframes of this clip")
