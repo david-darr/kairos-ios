@@ -5,6 +5,8 @@ import WebKit
 // Designs: the list in Library > Designs and the design viewer (boards, canvas, focus, versions,
 // compare, comments, tokens, export). Boards are web content, so they render in a web view.
 // Selection and comments are native: each selectable element has a known rect in the sample data.
+// Paired with a desktop, the list and the design screen hand over to MakeDesignLive.swift, which shows
+// the desktop's own designs; everything below is then the sample path only.
 
 // MARK: - Public entry points
 
@@ -575,6 +577,8 @@ nonisolated enum DesignSample {
 /// A board's page in a web view. Previews never scroll and never take touches; selection is native.
 struct DesignWebView: UIViewRepresentable {
     let html: String
+    /// Where the page's own pictures and fonts hang from. The sample pages need none.
+    var base: URL? = nil
 
     func makeCoordinator() -> DesignWebCoordinator { DesignWebCoordinator() }
 
@@ -582,6 +586,8 @@ struct DesignWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.dataDetectorTypes = []
+        // Nothing this view loads, the token in a picture's address included, is written to disk.
+        configuration.websiteDataStore = WKWebsiteDataStore.nonPersistent()
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.isOpaque = false
         view.backgroundColor = .clear
@@ -591,14 +597,14 @@ struct DesignWebView: UIViewRepresentable {
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.isUserInteractionEnabled = false
         context.coordinator.html = html
-        view.loadHTMLString(html, baseURL: nil)
+        view.loadHTMLString(html, baseURL: base)
         return view
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
         guard context.coordinator.html != html else { return }
         context.coordinator.html = html
-        view.loadHTMLString(html, baseURL: nil)
+        view.loadHTMLString(html, baseURL: base)
     }
 }
 
@@ -809,6 +815,15 @@ struct DesignListScreen: View {
     }
 
     var body: some View {
+        // Paired: the desktop's own designs, never a sample one. Not paired: the sample list below.
+        if Connection.shared.usesSampleData {
+            sampleBody
+        } else {
+            MakeDesignListLive()
+        }
+    }
+
+    private var sampleBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Screens, pages and slides on a canvas, made and changed with any model.")
@@ -1007,6 +1022,15 @@ struct DesignScreen: View {
     }
 
     var body: some View {
+        // Paired: the desktop's own design by its own id. Not paired: the sample design below.
+        if Connection.shared.usesSampleData {
+            sampleBody
+        } else {
+            MakeDesignScreenLive(designID: designID, start: start)
+        }
+    }
+
+    private var sampleBody: some View {
         ZStack {
             if let current = doc {
                 mainArea(current)
