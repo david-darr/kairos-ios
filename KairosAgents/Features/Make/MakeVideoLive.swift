@@ -646,6 +646,23 @@ enum MakeVideoDrafts {
     static func drop(account: String, video: String) { kept.removeValue(forKey: account + "|" + video) }
 }
 
+/// An Ask whose answer never arrived: when it was sent, which runs existed before it, and its (stripped) text.
+nonisolated struct MakeVideoAskPending {
+    var since: Date
+    var before: Set<String>
+    var request: String
+}
+
+/// The unconfirmed Ask, kept in memory next to the drafts so closing and reopening the video never turns Ask back
+/// on. Cleared only when that Ask's own run is seen or when the person confirms "Ask again anyway", never on unpair.
+enum MakeVideoAskStore {
+    private static var kept: [String: MakeVideoAskPending] = [:]
+
+    static func put(_ pending: MakeVideoAskPending, account: String, video: String) { kept[account + "|" + video] = pending }
+    static func get(account: String, video: String) -> MakeVideoAskPending? { kept[account + "|" + video] }
+    static func clear(account: String, video: String) { kept.removeValue(forKey: account + "|" + video) }
+}
+
 // MARK: - The live session
 
 nonisolated enum MakeVideoPhase: Equatable, Sendable {
@@ -722,6 +739,9 @@ final class MakeVideoLive {
     @ObservationIgnored var knownRuns: Set<String> = []
     @ObservationIgnored var narrateMissing = 0
     @ObservationIgnored var askSince: Date?
+    /// The run ids that existed before the unconfirmed Ask was sent, and its stripped text.
+    @ObservationIgnored var askBefore: Set<String> = []
+    @ObservationIgnored var askRequest = ""
     @ObservationIgnored var askWatchTask: Task<Void, Never>?
     @ObservationIgnored var restoreFrom: Int?
     /// The person chose to leave without saving: nothing is kept for next time.
@@ -740,6 +760,16 @@ final class MakeVideoLive {
         let connection = Connection.shared
         guard !connection.usesSampleData, let desktop = connection.desktop else { return "sample" }
         return desktop.address + "|" + desktop.username
+    }
+
+    /// This Ask is settled: its run was seen, or the person confirmed asking again.
+    func clearAsk() {
+        askUnconfirmed = false
+        askMayRepeat = false
+        askSince = nil
+        askBefore = []
+        askRequest = ""
+        MakeVideoAskStore.clear(account: account, video: videoID)
     }
 
     /// A key that changes when the phone is paired or unpaired, the desktop comes back, or another desktop or
@@ -821,6 +851,10 @@ extension EditorModel {
         if first {
             await refreshReview()
             await adoptRunningJob()
+            if live.askUnconfirmed, stillLive(live) {
+                await checkAskLive(quiet: true)
+                watchAsk()
+            }
         }
     }
 
@@ -839,6 +873,14 @@ extension EditorModel {
         if let draft = MakeVideoDrafts.take(account: next.account, video: projectID) {
             next.ids = draft.ids
             next.pendingDraft = draft
+        }
+        if let pending = MakeVideoAskStore.get(account: next.account, video: projectID) {
+            next.askUnconfirmed = true
+            next.askSince = pending.since
+            next.askBefore = pending.before
+            next.askRequest = pending.request
+            next.askMayRepeat = Date().timeIntervalSince(pending.since) >= Self.askRepeatAfter
+            next.askLine = "An earlier request to Kairos was not confirmed by your desktop. Ask stays off until its reply shows up."
         }
         live = next
         state = EditorState(beats: [], clips: [], nextID: next.ids.nextNew)
@@ -903,6 +945,8 @@ extension EditorModel {
 
     /// Make the editor show this project. The person's edits stay on top unless `dropEdits`.
     func fill(from doc: MakeVideoDoc, live: MakeVideoLive, dropEdits: Bool) {
+        // The document never moves backwards: a read older than the one on screen is ignored.
+        if let current = live.doc?.version, doc.version < current { return }
         let filledNew = MakeVideoCodec.state(doc, ids: live.ids)
         var merged: MakeVideoMerge?
         var restored = false
@@ -1507,8 +1551,7 @@ extension EditorModel {
         let before = live.knownRuns
         let sentAt = Date()
         if again {
-            live.askUnconfirmed = false
-            live.askMayRepeat = false
+            live.clearAsk()
             live.askWatchTask?.cancel()
         }
         defer {
@@ -1531,7 +1574,10 @@ extension EditorModel {
             live.askUnconfirmed = true
             live.askMayRepeat = false
             live.askSince = sentAt
-            await settleAsk(live: live, before: before)
+            live.askBefore = before
+            live.askRequest = request
+            MakeVideoAskStore.put(MakeVideoAskPending(since: sentAt, before: before, request: request), account: live.account, video: projectID)
+            await settleAsk(live: live)
             watchAsk()
         }
     }
@@ -1549,18 +1595,24 @@ extension EditorModel {
         }
     }
 
+    /// The run that is this Ask's: not there before it was sent, and with the same stripped request text.
+    private static func askRun(in runs: [MakeVideoRunDTO], live: MakeVideoLive) -> MakeVideoRunDTO? {
+        runs.first { run in
+            !live.askBefore.contains(run.id)
+                && run.request.trimmingCharacters(in: .whitespacesAndNewlines) == live.askRequest
+        }
+    }
+
     /// The answer never arrived: read the runs for one that was not there before.
-    private func settleAsk(live: MakeVideoLive, before: Set<String>) async {
+    private func settleAsk(live: MakeVideoLive) async {
         do {
             let read = try await liveClient().makeVideoReview(projectID)
             guard stillLive(live) else { return }
             live.review = read
             live.knownRuns.formUnion(read.runs.map(\.id))
-            if let fresh = read.runs.first(where: { !before.contains($0.id) }) {
+            if let fresh = Self.askRun(in: read.runs, live: live) {
                 live.latestRun = fresh
-                live.askUnconfirmed = false
-                live.askMayRepeat = false
-                live.askSince = nil
+                live.clearAsk()
                 live.askLine = "Your desktop did not confirm the answer, but Kairos did reply there."
                 await afterRun(live: live)
             } else {
@@ -1582,12 +1634,10 @@ extension EditorModel {
             let read = try await liveClient().makeVideoReview(projectID)
             guard stillLive(live), live.askUnconfirmed else { return }
             live.review = read
-            if let fresh = read.runs.first(where: { !live.knownRuns.contains($0.id) }) {
+            if let fresh = Self.askRun(in: read.runs, live: live) {
                 live.knownRuns.formUnion(read.runs.map(\.id))
                 live.latestRun = fresh
-                live.askUnconfirmed = false
-                live.askMayRepeat = false
-                live.askSince = nil
+                live.clearAsk()
                 live.askLine = "Kairos did reply on your desktop."
                 await afterRun(live: live)
             } else if let since = live.askSince, Date().timeIntervalSince(since) >= Self.askRepeatAfter {

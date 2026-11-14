@@ -935,9 +935,9 @@ final class EditorModel {
         let end = clip.end
         switch edge {
         case .start:
-            // A video clip on the desktop moves its `in` point by the same amount as its start, so the footage
-            // stays where it was and cannot start before the beginning of the file.
-            let followsFile = live != nil && clip.kind == .video
+            // On the desktop a start trim moves the clip's `in` point by the same amount as its start, for every
+            // kind of clip, so the footage (or the keyframes) stay where they were and `in` cannot go below 0.
+            let followsFile = live != nil
             let earliest = followsFile ? max(room.prevEnd, clip.start - clip.source) : room.prevEnd
             let newStart = frame(min(max(earliest, clip.start + delta), end - oneFrame))
             if followsFile { clip.source = max(0, clip.source + (newStart - clip.start)) }
