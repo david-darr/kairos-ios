@@ -1,12 +1,12 @@
 import SwiftUI
 
-// Search while the phone is paired. Everything it lists is the paired desktop's own, read from the stores the
-// areas already keep (bots and chats, teams and rooms, notes, documents and chat files, tasks, calendar, mail)
-// and from the desktop searches the areas already have (the Vault, documents, Drive) plus the desktop's bot chat
-// search. Search only reads: it never writes anything to the desktop, and nothing it finds is kept on the phone
-// beyond the open sheet. Not paired, `SearchView` shows its sample sheet exactly as before.
+// Search while the phone is paired. Everything it lists is the paired desktop's own. An area another screen has
+// already read is listed from that screen's store; an area nobody has read yet is read here, into this sheet only,
+// so no other screen's store is ever marked as reading, filled or changed by Search. The text searches are the
+// desktop's own (the Vault, documents, Drive and bot chats). Search only reads: nothing here writes to the desktop,
+// and nothing it finds is kept on the phone beyond the open sheet. Not paired, `SearchView` shows its sample sheet.
 
-/// Where one desktop search stands.
+/// Where one desktop text search stands.
 nonisolated enum SearchLiveWait: Equatable, Sendable {
     /// Answered, or nothing was asked.
     case ready
@@ -15,28 +15,68 @@ nonisolated enum SearchLiveWait: Equatable, Sendable {
     case failed(String)
 }
 
+/// Where Search's own read of one area stands: not asked yet, asking, or answered (with items, with nothing, or
+/// failed). A read cut short goes back to not asked.
+nonisolated enum SearchLiveAsk: Equatable, Sendable {
+    case notAsked
+    case asking
+    case answered
+    case failed(String)
+}
+
+/// The areas Search reads itself when no other screen has read them yet.
+nonisolated enum SearchLiveArea: CaseIterable, Hashable, Sendable {
+    case rooms, teams, notes, documents, chatFiles, tasks, calendar, mail, drive
+}
+
+/// One plain row Search keeps from its own read.
+nonisolated struct SearchLiveRow: Identifiable, Hashable, Sendable {
+    let id: String
+    var title: String
+    var detail: String
+}
+
 nonisolated struct SearchLiveVaultHit: Identifiable, Hashable, Sendable {
     let id: String
     var title: String
     var snippet: String
 }
 
+nonisolated struct SearchLiveDocHit: Identifiable, Hashable, Sendable {
+    let id: String
+    var title: String
+    var snippet: String
+}
+
 nonisolated struct SearchLiveChatHit: Identifiable, Hashable, Sendable {
-    /// The bot conversation's id.
+    /// The bot conversation's id (the desktop session).
     let id: String
     var botID: String
     var title: String
     var snippet: String
 }
 
-/// The desktop searches behind the paired sheet. A search runs only after a short pause in typing and only for
-/// two or more characters; an answer for an older query is dropped; closing the sheet cancels everything.
+/// Where a desktop conversation opens on this phone.
+nonisolated enum SearchLivePlace: Equatable, Sendable {
+    /// A chat with a model.
+    case model
+    /// A bot's seat in a room: only the room shows it.
+    case room(String)
+    /// One of a bot's own conversations.
+    case bot(String)
+    case gone
+    case failed(String)
+}
+
+/// The desktop reads behind the paired sheet. A text search runs only after a short pause in typing; an answer for
+/// an older query or another account is dropped; closing the sheet stops everything and leaves nothing marked as
+/// asking.
 @Observable
 final class SearchLiveModel {
+    // The desktop's text searches, for the query in `asked`.
     private(set) var vault: [SearchLiveVaultHit] = []
     private(set) var vaultWait: SearchLiveWait = .ready
-    /// Document id to snippet ("" for a title match).
-    private(set) var docs: [String: String] = [:]
+    private(set) var docHits: [SearchLiveDocHit] = []
     private(set) var docsWait: SearchLiveWait = .ready
     /// Drive file ids, as the Drive store keeps them.
     private(set) var drive: [String] = []
@@ -46,15 +86,33 @@ final class SearchLiveModel {
     /// The query the desktop is being asked about, "" when none.
     private(set) var asked = ""
 
+    // Search's own reads of the areas no other screen has read yet.
+    private(set) var asks: [SearchLiveArea: SearchLiveAsk] = [:]
+    private(set) var rooms: [BotRoomDTO] = []
+    private(set) var teams: [SearchLiveRow] = []
+    private(set) var notes: [KNote] = []
+    private(set) var documents: [LibraryDocument] = []
+    private(set) var groups: [ChatDocsGroup] = []
+    private(set) var tasks: [SearchLiveRow] = []
+    private(set) var events: [CalEvent] = []
+    private(set) var mail: [SearchLiveRow] = []
+    /// Which desktop and account everything above belongs to.
+    private(set) var owner = ""
+
     @ObservationIgnored private var serial = 0
-    @ObservationIgnored private var account = ""
-    @ObservationIgnored private var driveQuery = ""
+    @ObservationIgnored private var launched = -1
+    @ObservationIgnored private var driveAsked = -1
     @ObservationIgnored private var searches: [Task<Void, Never>] = []
-    @ObservationIgnored private var warmups: [Task<Void, Never>] = []
+    @ObservationIgnored private var workers: [Task<Void, Never>] = []
+    @ObservationIgnored private var queue: [SearchLiveArea] = []
     @ObservationIgnored private var warmed = false
 
     static let pause: Duration = .milliseconds(350)
     static let minimum = 2
+    /// The bot chat search scans every message on the desktop: it waits for three characters.
+    static let chatMinimum = 3
+    /// At most this many area reads at once.
+    static let lanes = 3
 
     /// Which desktop and account the answers belong to.
     static var accountKey: String {
@@ -63,74 +121,96 @@ final class SearchLiveModel {
         return desktop.address + "|" + desktop.username
     }
 
-    /// Drive can be searched with one call: the paired desktop's Google accounts are already read.
+    /// Answers held here belong to the desktop and account paired right now.
+    var isCurrent: Bool { owner == Self.accountKey && !Connection.shared.usesSampleData }
+
+    /// Drive can be searched with one call: the Google accounts are read and one is connected.
     var driveSearchable: Bool {
         let store = DriveStore.shared
         return !store.isSample && store.liveAccount == DriveStore.accountKey && store.accountsLoad == .loaded
             && store.currentAccountID != nil
     }
 
+    func ask(_ area: SearchLiveArea) -> SearchLiveAsk { isCurrent ? (asks[area] ?? .notAsked) : .notAsked }
+
     private func current(_ mine: Int) -> Bool {
-        serial == mine && account == Self.accountKey && !Connection.shared.usesSampleData
+        serial == mine && isCurrent
     }
 
-    // MARK: Asking
+    /// Another desktop or account: nothing read for the one before is kept or shown.
+    private func followAccount() {
+        let key = Self.accountKey
+        guard owner != key else { return }
+        stopAll()
+        owner = key
+        asks = [:]
+        rooms = []
+        teams = []
+        notes = []
+        documents = []
+        groups = []
+        tasks = []
+        events = []
+        mail = []
+        warmed = false
+        clearSearch()
+    }
 
-    /// A new query: every older search stops, and the desktop is asked after a short pause.
+    private func clearSearch() {
+        vault = []
+        docHits = []
+        drive = []
+        chats = []
+        asked = ""
+        vaultWait = .ready
+        docsWait = .ready
+        driveWait = .ready
+        chatsWait = .ready
+    }
+
+    // MARK: The text searches
+
+    /// A new query: every older search stops, and the desktop is asked after a short pause, once the phone has
+    /// finished connecting.
     func search(_ raw: String) {
+        followAccount()
         stopSearches()
         serial += 1
         let mine = serial
         let query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        vault = []
-        docs = [:]
-        drive = []
-        chats = []
-        driveQuery = ""
-        guard query.count >= Self.minimum, !Connection.shared.usesSampleData else {
-            asked = ""
-            vaultWait = .ready
-            docsWait = .ready
-            driveWait = .ready
-            chatsWait = .ready
-            return
-        }
+        clearSearch()
+        guard query.count >= Self.minimum, !Connection.shared.usesSampleData else { return }
         asked = query
-        account = Self.accountKey
         vaultWait = .waiting
         docsWait = .waiting
-        chatsWait = .waiting
+        chatsWait = query.count >= Self.chatMinimum ? .waiting : .ready
         driveWait = driveSearchable ? .waiting : .ready
         searches.append(Task { [weak self] in
             try? await Task.sleep(for: Self.pause)
+            guard !Task.isCancelled else { return }
+            await BotsStore.waitWhileConnecting()
             guard let self, !Task.isCancelled, self.current(mine) else { return }
             self.launch(query, mine)
         })
     }
 
     private func launch(_ query: String, _ mine: Int) {
+        launched = mine
         searches.append(Task { [weak self] in await self?.searchVault(query, mine) })
         searches.append(Task { [weak self] in await self?.searchDocs(query, mine) })
-        searches.append(Task { [weak self] in await self?.searchChats(query, mine) })
-        if driveSearchable {
-            driveQuery = query
-            driveWait = .waiting
-            searches.append(Task { [weak self] in await self?.searchDrive(query, mine) })
+        if query.count >= Self.chatMinimum {
+            searches.append(Task { [weak self] in await self?.searchChats(query, mine) })
         }
+        startDrive(query, mine)
     }
 
-    /// The Drive accounts were read while a query waited: Drive is searched for it now.
-    private func driveReady() {
-        guard asked.count >= Self.minimum, driveSearchable, driveQuery != asked, current(serial) else { return }
-        let mine = serial
-        let query = asked
-        driveQuery = query
+    /// One Drive search per pause in typing: started at the launch, or later when the Google accounts arrive
+    /// after it, never both.
+    private func startDrive(_ query: String, _ mine: Int) {
+        guard driveSearchable, driveAsked != mine, launched == mine, current(mine) else { return }
+        driveAsked = mine
         driveWait = .waiting
-        searches.append(Task { [weak self] in
-            try? await Task.sleep(for: Self.pause)
-            guard let self, !Task.isCancelled, self.current(mine) else { return }
-            await self.searchDrive(query, mine)
-        })
+        searches.append(Task { [weak self] in await self?.searchDrive(query, mine) })
     }
 
     private func searchVault(_ query: String, _ mine: Int) async {
@@ -157,16 +237,26 @@ final class SearchLiveModel {
     }
 
     private func searchDocs(_ query: String, _ mine: Int) async {
-        let store = DocsLiveStore.shared
-        store.followConnection()
-        let found = await store.search(query)
-        guard !Task.isCancelled, current(mine) else { return }
-        guard let found else {
-            docsWait = .failed("Your documents could not be searched. Try again.")
+        guard let client = Connection.shared.client else {
+            if current(mine) { docsWait = .failed(APIError.notPaired.plain) }
             return
         }
-        docs = found.mapValues(SearchLiveText.line)
-        docsWait = .ready
+        do {
+            let found = try await client.docsSearch(query)
+            guard !Task.isCancelled, current(mine) else { return }
+            var seen = Set<String>()
+            docHits = found.hits.compactMap { hit -> SearchLiveDocHit? in
+                guard seen.insert(hit.id).inserted else { return nil }
+                let title = hit.title?.string ?? ""
+                return SearchLiveDocHit(id: hit.id, title: title.isEmpty ? "Untitled" : title,
+                                        snippet: SearchLiveText.line(hit.snippet?.string ?? ""))
+            }
+            docsWait = .ready
+        } catch {
+            guard !(error is CancellationError), !Task.isCancelled, current(mine) else { return }
+            Connection.shared.note(error)
+            docsWait = .failed("Your documents could not be searched. " + error.plainWords)
+        }
     }
 
     private func searchDrive(_ query: String, _ mine: Int) async {
@@ -189,22 +279,21 @@ final class SearchLiveModel {
     }
 
     private func searchChats(_ query: String, _ mine: Int) async {
-        guard let client = Connection.shared.client, !ChatStore.shared.isSample else {
+        guard let client = Connection.shared.client else {
             if current(mine) { chatsWait = .failed(APIError.notPaired.plain) }
             return
         }
         do {
             let found = try await client.searchBotChats(query, limit: 30)
             guard !Task.isCancelled, current(mine) else { return }
-            // Only the paired desktop's own bots, and only the version of each conversation that is on screen.
-            let known = Set(ChatStore.shared.bots.map(\.id))
+            // Only the version of each conversation that is on screen. Which bots are shown is decided when the
+            // rows are drawn, so a hit is not lost because Home has not read its bots yet.
             var seen = Set<String>()
             var hits: [SearchLiveChatHit] = []
             for hit in found.hits where !hit.isOtherVersion {
-                guard let bot = hit.bot, known.contains(bot), seen.insert(hit.sessionId).inserted else { continue }
-                hits.append(SearchLiveChatHit(id: hit.sessionId, botID: bot, title: hit.title?.string ?? "",
+                guard let bot = hit.bot, seen.insert(hit.sessionId).inserted else { continue }
+                hits.append(SearchLiveChatHit(id: hit.sessionId, botID: bot, title: SearchLiveText.line(hit.title?.string ?? ""),
                                               snippet: SearchLiveText.line(hit.snippet?.string ?? "")))
-                if hits.count == 8 { break }
             }
             chats = hits
             chatsWait = .ready
@@ -215,72 +304,209 @@ final class SearchLiveModel {
         }
     }
 
-    // MARK: What the stores already hold
+    // MARK: Reading the areas nobody has read yet
 
-    /// Once per open sheet, at the first letter typed: every store that has not been read yet is read once, the
-    /// way its own screen reads it, so its items can be searched here. A store already reading is left to it.
+    /// At the first letter of an open sheet: each area that no screen has read yet, and Search has not asked about
+    /// in this sheet, is asked once, a few at a time, after the phone has finished connecting.
     func warmUp() {
+        followAccount()
         guard !warmed, !Connection.shared.usesSampleData else { return }
         warmed = true
-        warmups.append(Task { await HomeFaces.loadTeams() })
-        warmups.append(Task {
-            let rooms = BotRoomLiveStore.shared
-            switch rooms.roomListState() {
-            case .idle, .failed: await rooms.loadRoomList()
-            case .loading, .loaded: break
-            }
-        })
-        warmups.append(Task {
-            let notes = NotesStore.shared
-            switch notes.liveLoad {
-            case .idle, .failed: await notes.loadLive()
-            case .loading, .loaded: break
-            }
-        })
-        warmups.append(Task {
-            let docs = DocsLiveStore.shared
-            let idle: (DocsLiveLoad) -> Bool = { load in
-                switch load {
-                case .idle, .failed: true
-                case .loading, .loaded: false
-                }
-            }
-            if idle(docs.docsLoad) || idle(docs.filesLoad) { await docs.loadAll() }
-        })
-        warmups.append(Task { await TasksStore.shared.loadLiveIfNeeded() })
-        warmups.append(Task {
-            let calendar = CalStore.shared
-            switch calendar.liveLoad {
-            case .idle, .failed: await calendar.loadLive()
-            case .loading, .loaded: break
-            }
-        })
-        warmups.append(Task {
-            let mail = MailStore.shared
-            switch mail.liveLoad {
-            case .idle, .failed: await mail.loadLive()
-            case .loading, .loaded: break
-            }
-        })
-        warmups.append(Task { [weak self] in
-            await DriveStore.shared.overviewTask()
-            guard !Task.isCancelled else { return }
-            self?.driveReady()
-        })
+        let wanted = SearchLiveArea.allCases.filter { (asks[$0] ?? .notAsked) == .notAsked && Self.unread($0) }
+        guard !wanted.isEmpty else { return }
+        for area in wanted { asks[area] = .asking }
+        queue = wanted
+        for _ in 0..<min(Self.lanes, wanted.count) {
+            workers.append(Task { [weak self] in await self?.lane() })
+        }
     }
 
-    /// Every store moves to the paired desktop and account now, before anything of theirs is listed.
-    static func followStores() {
-        guard !Connection.shared.usesSampleData else { return }
-        VaultStore.shared.followConnection()
-        NotesStore.shared.followConnection()
-        DocsLiveStore.shared.followConnection()
-        DriveStore.shared.followConnection()
-        BotsStore.shared.followConnection()
-        BotRoomLiveStore.shared.followConnection()
-        TasksStore.shared.followConnection()
-        CalStore.shared.followConnection()
-        MailStore.shared.followConnection()
+    /// No screen has read this area for the paired account yet (or its last read failed, for Drive's accounts).
+    static func unread(_ area: SearchLiveArea) -> Bool {
+        switch area {
+        case .rooms:
+            let store = BotRoomLiveStore.shared
+            return !(store.isCurrent && store.roomListLoad == .loaded)
+        case .teams:
+            let store = BotsStore.shared
+            return !(store.liveMode && store.rosterLoad == .loaded)
+        case .notes:
+            let store = NotesStore.shared
+            return !(!store.isSample && store.liveAccount == NotesStore.accountKey && store.liveLoad == .loaded)
+        case .documents:
+            let store = DocsLiveStore.shared
+            return !(store.isLive && store.account == DocsLiveStore.accountKey && store.docsLoad == .loaded)
+        case .chatFiles:
+            let store = DocsLiveStore.shared
+            return !(store.isLive && store.account == DocsLiveStore.accountKey && store.filesLoad == .loaded)
+        case .tasks:
+            let store = TasksStore.shared
+            return !(store.isLive && store.liveAccount == TasksStore.accountKey && store.boardLoad == .loaded)
+        case .calendar:
+            let store = CalStore.shared
+            return !(!store.isSample && store.liveAccount == CalStore.accountKey && store.liveLoad == .loaded)
+        case .mail:
+            let store = MailStore.shared
+            return !(!store.isSample && store.liveAccount == MailStore.accountKey && store.liveLoad == .loaded)
+        case .drive:
+            // Drive's own store is read here (a Drive hit opens the real Drive screen, which needs it). Its read
+            // puts itself back to "not read" when it is stopped, so nothing is left marked as reading.
+            let store = DriveStore.shared
+            guard !store.isSample, store.liveAccount == DriveStore.accountKey else { return true }
+            switch store.accountsLoad {
+            case .idle, .failed: return true
+            case .loading, .loaded: return false
+            }
+        }
+    }
+
+    private func lane() async {
+        await BotsStore.waitWhileConnecting()
+        while !Task.isCancelled, !queue.isEmpty {
+            let area = queue.removeFirst()
+            await read(area)
+        }
+    }
+
+    private func read(_ area: SearchLiveArea) async {
+        let mine = owner
+        func live() -> Bool { owner == mine && isCurrent }
+        guard live() else { return }
+        guard let client = Connection.shared.client else {
+            asks[area] = .failed("Your desktop could not be read. " + APIError.notPaired.plain)
+            return
+        }
+        do {
+            switch area {
+            case .rooms:
+                let answer = try await client.botRoomList()
+                guard live() else { return }
+                rooms = BotRoutineWire.items(answer.rooms).items
+            case .teams:
+                let map = try await client.botTeamMap()
+                guard live() else { return }
+                let people = map.members ?? map.bots ?? []
+                teams = (map.departments ?? []).sorted { ($0.order ?? 0) < ($1.order ?? 0) }.map { department -> SearchLiveRow in
+                    let count = people.filter { $0.departmentId == department.id }.count
+                    return SearchLiveRow(id: department.id, title: department.name ?? "Team",
+                                         detail: count == 1 ? "1 bot" : "\(count) bots")
+                }
+            case .notes:
+                let answer = try await client.notesList()
+                guard live() else { return }
+                notes = answer.notes.enumerated().compactMap { pair -> KNote? in
+                    pair.element.dismissed?.bool == true ? nil : NotesStore.liveNote(pair.element, order: pair.offset)
+                }
+            case .documents:
+                let answer = try await client.docsList()
+                guard live() else { return }
+                documents = answer.documents.map(DocsLiveStore.liveDocument)
+            case .chatFiles:
+                let answer = try await client.docsChatFiles()
+                guard live() else { return }
+                groups = DocsLiveStore.liveGroups(answer)
+            case .tasks:
+                let records = try await client.tasksList()
+                guard live() else { return }
+                tasks = records.map { record -> SearchLiveRow in
+                    if record.scheduleKind == "card" {
+                        let column = WorkColumn(rawValue: record.status ?? "") ?? .backlog
+                        return SearchLiveRow(id: "c-" + record.id, title: record.name ?? "Untitled card", detail: "Card · " + column.title)
+                    }
+                    return SearchLiveRow(id: "j-" + record.id, title: record.name ?? "Untitled task", detail: "Scheduled task")
+                }
+            case .calendar:
+                // The weeks the Calendar shows first: two back, six ahead.
+                let today = CalDates.day(.now)
+                let found = try await client.calendarEvents(start: CalDates.add(-14, to: today), end: CalDates.add(43, to: today))
+                guard live() else { return }
+                var seen = Set<String>()
+                events = found.compactMap(CalendarWire.event).filter { seen.insert($0.id).inserted }
+            case .mail:
+                let triage = try await client.mailTriage()
+                guard live() else { return }
+                // Only what the Mail list shows: sender, subject and when. Never a message's text or the reason.
+                mail = triage.items.enumerated().map { pair -> SearchLiveRow in
+                    let dto = pair.element
+                    let sender = MailWire.parse(dto.from ?? "")
+                    let subject = dto.subject ?? ""
+                    return SearchLiveRow(id: "\(pair.offset)", title: subject.isEmpty ? "(no subject)" : subject,
+                                         detail: [sender.name.isEmpty ? "Unknown sender" : sender.name, MailWire.timeText(dto.date)]
+                                            .filter { !$0.isEmpty }.joined(separator: " · "))
+                }
+            case .drive:
+                let store = DriveStore.shared
+                store.followConnection()
+                guard !store.isSample else {
+                    asks[area] = .answered
+                    return
+                }
+                switch store.accountsLoad {
+                case .idle, .failed: await store.loadAccountsLive()
+                case .loading, .loaded: break
+                }
+                guard live(), !Task.isCancelled else {
+                    if live() { asks[area] = .notAsked }
+                    return
+                }
+                switch store.accountsLoad {
+                case .loaded:
+                    asks[area] = .answered
+                    startDrive(asked, serial)
+                case .failed(let why):
+                    asks[area] = .failed(why)
+                case .idle, .loading:
+                    // Stopped before it was answered: asked again next time.
+                    asks[area] = .notAsked
+                }
+                return
+            }
+            asks[area] = .answered
+        } catch {
+            guard live() else { return }
+            if error is CancellationError || Task.isCancelled {
+                asks[area] = .notAsked
+                return
+            }
+            Connection.shared.note(error)
+            asks[area] = .failed(Self.failure(area) + " " + error.plainWords)
+        }
+    }
+
+    static func failure(_ area: SearchLiveArea) -> String {
+        switch area {
+        case .rooms: return "Your rooms could not be read."
+        case .teams: return "Your teams could not be read."
+        case .notes: return "Your notes could not be read."
+        case .documents: return "Your documents could not be read."
+        case .chatFiles: return "Your chat files could not be read."
+        case .tasks: return "Your tasks could not be read."
+        case .calendar: return "Your calendar could not be read."
+        case .mail: return "Your mail could not be read."
+        case .drive: return "Your Google accounts could not be read."
+        }
+    }
+
+    // MARK: Where a conversation opens
+
+    /// Asks the desktop what one conversation is (GET /api/sessions/{id}, a read): a model chat, a bot's own
+    /// conversation, or a bot's seat in a room.
+    func place(of sessionID: String) async -> SearchLivePlace {
+        guard let client = Connection.shared.client else { return .failed(APIError.notPaired.plain) }
+        do {
+            let session = try await client.searchSession(sessionID)
+            guard isCurrent else { return .failed("Your paired desktop changed. Try again.") }
+            if let target = session.botsTarget, target.tab == "botsRoom", let room = target.roomId, !room.isEmpty {
+                return .room(room)
+            }
+            if let bot = session.agentId, !bot.isEmpty { return .bot(bot) }
+            return .model
+        } catch {
+            if error is CancellationError { return .failed("Stopped.") }
+            Connection.shared.note(error)
+            if case .server(status: 404, _)? = error as? APIError { return .gone }
+            return .failed(error.plainWords)
+        }
     }
 
     // MARK: Stopping
@@ -290,12 +516,23 @@ final class SearchLiveModel {
         searches = []
     }
 
-    /// The sheet closed: every search and read it started stops.
-    func stop() {
+    private func stopAll() {
         stopSearches()
-        for task in warmups { task.cancel() }
-        warmups = []
+        for task in workers { task.cancel() }
+        workers = []
+        queue = []
         serial += 1
+        launched = -1
+        driveAsked = -1
+    }
+
+    /// The sheet closed: every search and read it started stops, and nothing stays marked as asking, so the next
+    /// look asks again.
+    func stop() {
+        stopAll()
+        for (area, state) in asks where state == .asking { asks[area] = .notAsked }
+        warmed = false
+        clearSearch()
     }
 }
 
@@ -326,7 +563,7 @@ struct SearchLiveHit: Identifiable {
     let symbol: String
     var bot: Bot? = nil
     var keywords = ""
-    /// True when running it leaves Search open (a cover or sheet over it).
+    /// True when running it leaves Search open (a cover or sheet over it, or a check first).
     var stays = false
     var gold = false
     let run: () -> Void
@@ -366,6 +603,7 @@ struct SearchLiveView: View {
     @State private var notice: String?
     @State private var openingChat = false
     @State private var opening: Task<Void, Never>?
+    @State private var started = false
     @FocusState private var typing: Bool
 
     private let chats = ChatStore.shared
@@ -379,7 +617,16 @@ struct SearchLiveView: View {
     private let calendar = CalStore.shared
     private let mail = MailStore.shared
 
-    private var needle: String { query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var needle: String { trimmed.lowercased() }
+
+    /// The phone is paired but the desktop is not answering: one line says so instead of a line per section.
+    private var unreachable: String? {
+        switch Connection.shared.state {
+        case .offline, .signedOut: return Connection.shared.statusLine
+        case .sample, .connecting, .connected: return nil
+        }
+    }
 
     // MARK: Matching
 
@@ -395,10 +642,29 @@ struct SearchLiveView: View {
         return Array(hits.filter { matches(needle, $0.title, $0.detail, $0.keywords) }.prefix(limit))
     }
 
+    /// One area's state in this sheet: what another screen already read, else Search's own read.
+    private func apply(_ ask: SearchLiveAsk, to section: inout SearchLiveSection) {
+        switch ask {
+        case .notAsked, .answered: break
+        case .asking: section.waiting = true
+        case .failed(let why): section.problems.append(why)
+        }
+    }
+
+    private func apply(_ wait: SearchLiveWait, to section: inout SearchLiveSection) {
+        switch wait {
+        case .ready: break
+        case .waiting: section.waiting = true
+        case .failed(let why): section.problems.append(why)
+        }
+    }
+
+    /// Answers of the desktop's text searches for the query on screen, under the account paired now.
+    private var searched: Bool { model.isCurrent && !model.asked.isEmpty && model.asked == trimmed }
+
     // MARK: Sections
 
     private var actions: [SearchLiveHit] {
-        let you = YouStore.shared
         var hits: [SearchLiveHit] = []
         hits.append(SearchLiveHit(id: "a-chat", title: "New chat", detail: "Start a chat with a model", symbol: "plus.bubble", keywords: "start ask", gold: true) {
             router.push(.newChat, on: .home)
@@ -422,22 +688,18 @@ struct SearchLiveView: View {
             router.select(.home)
             TourPresenter.start(after: 0.6)
         })
-        for account in you.accounts where account.id != you.currentID {
-            hits.append(SearchLiveHit(id: "a-switch-\(account.id)", title: "Switch to \(account.name)", detail: "Account on this phone",
-                                      symbol: "arrow.left.arrow.right", keywords: "account user", stays: true, gold: true) {
-                you.pendingRoute = .accounts
-                router.sheet = .you
-            })
-        }
+        // No "Switch to" actions while paired: the accounts behind them are this phone's samples.
         return hits
     }
 
-    /// Bots and chats come from Home's own store, which reads them when the phone pairs.
+    /// Bots and chats come from Home's own store, which reads them when the phone connects.
     private var homeWait: (waiting: Bool, problem: String?) {
-        guard !chats.isSample else { return (true, nil) }
-        if chats.homeLoaded { return (false, nil) }
+        guard !chats.isSample, !chats.homeLoaded else { return (false, nil) }
         if let error = chats.homeError { return (false, "Your bots and chats could not be read. " + error) }
-        return (true, nil)
+        switch Connection.shared.state {
+        case .connecting, .connected: return (true, nil)
+        case .sample, .offline, .signedOut: return (false, "Your bots and chats could not be read. " + Connection.shared.statusLine)
+        }
     }
 
     private var botHits: [SearchLiveHit] {
@@ -465,45 +727,67 @@ struct SearchLiveView: View {
         return hits
     }
 
-    /// Bot conversations whose messages match, from the desktop's own chat search.
-    private var botChatHits: [SearchLiveHit] {
-        guard model.asked.lowercased() == needle else { return [] }
-        return model.chats.compactMap { hit -> SearchLiveHit? in
-            guard let bot = chats.bots.first(where: { $0.id == hit.botID }) else { return nil }
-            let title = hit.title.isEmpty ? bot.name : "\(bot.name) · \(hit.title)"
-            return SearchLiveHit(id: "bc-\(hit.id)", title: title, detail: hit.snippet, symbol: "bubble.left.and.text.bubble.right") {
-                router.push(.bot(bot.id), on: .home)
-            }
-        }
+    /// The rooms list, from the Rooms screen's store when it has read it, else from Search's own read.
+    private var roomList: [BotRoomDTO] {
+        if rooms.isCurrent && rooms.roomListLoad == .loaded { return rooms.shownRoomList() }
+        return model.ask(.rooms) == .answered ? model.rooms : []
     }
 
-    private func wait(_ state: BotsLiveLoad) -> (waiting: Bool, problem: String?) {
-        switch state {
-        case .idle, .loading: (true, nil)
-        case .loaded: (false, nil)
-        case .failed(let why): (false, why)
+    /// Bot conversations whose messages match, from the desktop's own chat search. Each row names the bot and the
+    /// conversation. A match in a bot's seat in a room opens that room. Any other match opens the bot's chat and says
+    /// where the match is: this phone cannot open one exact bot conversation yet.
+    private var botChatHits: [SearchLiveHit] {
+        guard searched else { return [] }
+        let list = roomList
+        var hits: [SearchLiveHit] = []
+        for hit in model.chats {
+            guard let bot = chats.bots.first(where: { $0.id == hit.botID }) else { continue }
+            if let room = list.first(where: { room in (room.members ?? []).contains { $0.seatSessionId == hit.id } }) {
+                let name = (room.name ?? "").isEmpty ? "Room" : (room.name ?? "Room")
+                hits.append(SearchLiveHit(id: "bc-\(hit.id)", title: "\(name) · \(bot.name)", detail: hit.snippet.isEmpty ? "In this room" : hit.snippet,
+                                          symbol: "number", stays: true) {
+                    cover = .room(room.id)
+                })
+            } else {
+                let title = hit.title.isEmpty ? "\(bot.name) · A conversation" : "\(bot.name) · \(hit.title)"
+                hits.append(SearchLiveHit(id: "bc-\(hit.id)", title: title, detail: hit.snippet.isEmpty ? "In a conversation with \(bot.name)" : hit.snippet,
+                                          symbol: "bubble.left.and.text.bubble.right", stays: true) {
+                    openConversation(hit.id, title: hit.title)
+                })
+            }
+            if hits.count == 8 { break }
         }
+        return hits
     }
 
     private var teamSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Teams")
-        guard bots.liveMode else { section.waiting = true; return section }
-        (section.waiting, section.problems) = split(wait(bots.rosterLoad))
-        guard bots.rosterLoad == .loaded else { return section }
-        section.hits = picked(bots.teams.map { team -> SearchLiveHit in
-            SearchLiveHit(id: "tm-\(team.id)", title: team.name,
-                          detail: [team.department, team.members.count == 1 ? "1 bot" : "\(team.members.count) bots"].filter { !$0.isEmpty }.joined(separator: " · "),
-                          symbol: "person.3", keywords: "team", stays: true) {
-                cover = .team(team.id)
+        var hits: [SearchLiveHit] = []
+        if bots.liveMode && bots.rosterLoad == .loaded {
+            hits = bots.teams.map { team -> SearchLiveHit in
+                teamHit(team.id, title: team.name,
+                        detail: [team.department, team.members.count == 1 ? "1 bot" : "\(team.members.count) bots"].filter { !$0.isEmpty }.joined(separator: " · "))
             }
-        })
+        } else {
+            apply(model.ask(.teams), to: &section)
+            if model.ask(.teams) == .answered {
+                hits = model.teams.map { teamHit($0.id, title: $0.title, detail: $0.detail) }
+            }
+        }
+        section.hits = picked(hits)
         return section
+    }
+
+    private func teamHit(_ id: String, title: String, detail: String) -> SearchLiveHit {
+        SearchLiveHit(id: "tm-\(id)", title: title, detail: detail, symbol: "person.3", keywords: "team", stays: true) {
+            cover = .team(id)
+        }
     }
 
     private var roomSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Rooms")
-        (section.waiting, section.problems) = split(wait(rooms.roomListState()))
-        section.hits = picked(rooms.shownRoomList().map { room -> SearchLiveHit in
+        if !(rooms.isCurrent && rooms.roomListLoad == .loaded) { apply(model.ask(.rooms), to: &section) }
+        section.hits = picked(roomList.map { room -> SearchLiveHit in
             let name = (room.name ?? "").isEmpty ? "Room" : (room.name ?? "Room")
             let count = room.members?.count ?? 0
             return SearchLiveHit(id: "rm-\(room.id)", title: name, detail: count == 1 ? "1 bot" : "\(count) bots",
@@ -519,12 +803,13 @@ struct SearchLiveView: View {
         let live = !vaultStore.isSample && vaultStore.liveAccount == VaultStore.accountKey
         var hits: [SearchLiveHit] = []
         if live && !needle.isEmpty {
-            // Titles the vault list already holds, at once; then what the desktop's text search finds.
+            // Titles the Vault screen already holds, at once; then what the desktop's search finds (it searches
+            // titles too, so the Vault list is not read here).
             let named = vaultStore.notes.values.filter { $0.title.lowercased().contains(needle) }
                 .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }.prefix(8)
             hits = named.map { note in vaultHit(note.id, title: note.title, detail: note.folder.isEmpty ? "Vault" : note.folder) }
         }
-        if live && model.asked.lowercased() == needle {
+        if live && searched {
             for hit in model.vault where !hits.contains(where: { $0.id == "v-\(hit.id)" }) {
                 hits.append(vaultHit(hit.id, title: hit.title, detail: hit.snippet.isEmpty ? "Vault" : hit.snippet))
             }
@@ -540,44 +825,50 @@ struct SearchLiveView: View {
         }
     }
 
+    private var notesRead: Bool { !SearchLiveModel.unread(.notes) }
+
     private var noteSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Notes")
-        guard !notes.isSample, notes.liveAccount == NotesStore.accountKey else { section.waiting = true; return section }
-        switch notes.liveLoad {
-        case .idle, .loading: section.waiting = notes.notes.isEmpty
-        case .loaded: break
-        case .failed(let why): if notes.notes.isEmpty { section.problems = [why] }
+        let list: [KNote]
+        if notesRead {
+            list = notes.notes
+        } else {
+            apply(model.ask(.notes), to: &section)
+            list = model.ask(.notes) == .answered ? model.notes : []
         }
-        section.hits = picked(notes.notes.map { note -> SearchLiveHit in
+        let fromStore = notesRead
+        section.hits = picked(list.map { note -> SearchLiveHit in
             let detail = note.done ? "Done" : (note.due.map { "Due " + SearchLiveText.day($0) } ?? "Note")
-            return SearchLiveHit(id: "n-\(note.id)", title: SearchLiveText.line(note.text), detail: detail, symbol: "note.text", stays: true) {
-                noteSheet = NotesSheetItem(id: note.id)
+            return SearchLiveHit(id: "n-\(note.id)", title: SearchLiveText.line(note.text), detail: detail, symbol: "note.text", stays: fromStore) {
+                if fromStore && notes.note(note.id) != nil {
+                    noteSheet = NotesSheetItem(id: note.id)
+                } else {
+                    // The Notes screen has not read its list yet, so its note sheet cannot open from here.
+                    router.open(.notes)
+                    chrome.say("Notes is open. The note is in the list.")
+                }
             }
         })
         return section
     }
 
-    private var docsLive: Bool { docs.isLive && docs.account == DocsLiveStore.accountKey }
+    private var documentList: [LibraryDocument] {
+        if !SearchLiveModel.unread(.documents) { return docs.documents }
+        return model.ask(.documents) == .answered ? model.documents : []
+    }
 
     private var documentSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Documents")
-        guard docsLive else { section.waiting = true; return section }
-        switch docs.docsLoad {
-        case .idle, .loading: section.waiting = docs.documents.isEmpty
-        case .loaded: break
-        case .failed(let why): if docs.documents.isEmpty { section.problems = [why] }
-        }
-        var hits = picked(docs.documents.map { doc -> SearchLiveHit in
+        if SearchLiveModel.unread(.documents) { apply(model.ask(.documents), to: &section) }
+        let list = documentList
+        var hits = picked(list.map { doc -> SearchLiveHit in
             documentHit(doc.id, title: doc.title, detail: "Updated " + SearchLiveText.day(doc.updated))
         })
-        if model.asked.lowercased() == needle {
-            // The desktop's text search, in the list's order.
-            let order = docs.documents.map(\.id)
-            let found = model.docs.keys.sorted { (order.firstIndex(of: $0) ?? .max) < (order.firstIndex(of: $1) ?? .max) }
-            for id in found where !hits.contains(where: { $0.id == "doc-\(id)" }) {
-                guard let doc = docs.documents.first(where: { $0.id == id }) else { continue }
-                let snippet = model.docs[id] ?? ""
-                hits.append(documentHit(id, title: doc.title, detail: snippet.isEmpty ? "Document" : snippet))
+        if searched {
+            // The desktop's text search, in its own order.
+            for hit in model.docHits where !hits.contains(where: { $0.id == "doc-\(hit.id)" }) {
+                let title = list.first(where: { $0.id == hit.id })?.title ?? hit.title
+                hits.append(documentHit(hit.id, title: title, detail: hit.snippet.isEmpty ? "Document" : hit.snippet))
             }
         }
         section.hits = hits
@@ -593,17 +884,18 @@ struct SearchLiveView: View {
 
     private var chatFileSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Chat files")
-        guard docsLive else { section.waiting = true; return section }
-        switch docs.filesLoad {
-        case .idle, .loading: section.waiting = docs.groups.isEmpty
-        case .loaded: break
-        case .failed(let why): if docs.groups.isEmpty { section.problems = [why] }
+        let list: [ChatDocsGroup]
+        if !SearchLiveModel.unread(.chatFiles) {
+            list = docs.groups
+        } else {
+            apply(model.ask(.chatFiles), to: &section)
+            list = model.ask(.chatFiles) == .answered ? model.groups : []
         }
         var hits: [SearchLiveHit] = []
-        for group in docs.groups {
+        for group in list {
             for file in group.files {
                 hits.append(SearchLiveHit(id: "cf-\(file.id)", title: file.name, detail: "In \(group.title)", symbol: "paperclip", keywords: "file", stays: true) {
-                    openChat(group.id)
+                    openConversation(group.id, title: group.title)
                 })
             }
         }
@@ -613,9 +905,21 @@ struct SearchLiveView: View {
 
     private var driveSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Google Drive")
-        if model.asked.lowercased() == needle {
+        guard needle.count >= SearchLiveModel.minimum, !driveStore.isSample, driveStore.liveAccount == DriveStore.accountKey else {
+            if model.ask(.drive) == .asking && needle.count >= SearchLiveModel.minimum { section.waiting = true }
+            return section
+        }
+        switch driveStore.accountsLoad {
+        case .idle: if model.ask(.drive) == .asking { section.waiting = true }
+        case .loading: section.waiting = true
+        case .failed(let why): section.problems.append(why)
+        case .loaded: break
+        }
+        guard driveStore.accountsLoad == .loaded, let account = driveStore.currentAccountID else { return section }
+        if searched {
+            // Only files of the Google account Drive is browsing, so a tap opens Drive on that same account.
             section.hits = model.drive.compactMap { id -> SearchLiveHit? in
-                guard let file = driveStore.file(id) else { return nil }
+                guard let file = driveStore.file(id), file.account == account else { return nil }
                 return SearchLiveHit(id: "g-\(id)", title: file.name, detail: "Drive · " + SearchLiveText.day(file.modified),
                                      symbol: file.isFolder ? "folder" : "doc", stays: true) {
                     cover = .drive(id)
@@ -623,32 +927,33 @@ struct SearchLiveView: View {
             }
         }
         apply(model.driveWait, to: &section)
-        if model.driveWait == .ready && needle.count >= SearchLiveModel.minimum && !driveStore.isSample {
-            switch driveStore.accountsLoad {
-            case .idle, .loading: section.waiting = true
-            case .failed(let why): section.problems.append(why)
-            case .loaded: break
-            }
-        }
         return section
     }
 
     private var taskSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Tasks")
-        guard tasks.isLive, tasks.liveAccount == TasksStore.accountKey else { section.waiting = true; return section }
-        switch tasks.boardLoad {
-        case .idle, .loading: section.waiting = tasks.cards.isEmpty && tasks.jobs.isEmpty
-        case .loaded: break
-        case .failed(let why): if tasks.cards.isEmpty && tasks.jobs.isEmpty { section.problems = [why] }
-        }
-        var hits = tasks.cards.map { card -> SearchLiveHit in
-            SearchLiveHit(id: "tc-\(card.id)", title: card.name, detail: "Card · " + card.column.title, symbol: "rectangle.on.rectangle", keywords: "card task") {
-                router.open(.tasks)
+        var hits: [SearchLiveHit] = []
+        // A tap opens Tasks: this phone cannot open one card or task from outside it yet.
+        if !SearchLiveModel.unread(.tasks) {
+            hits = tasks.cards.map { card -> SearchLiveHit in
+                SearchLiveHit(id: "tc-\(card.id)", title: card.name, detail: "Card · " + card.column.title, symbol: "rectangle.on.rectangle", keywords: "card task") {
+                    router.open(.tasks)
+                }
             }
-        }
-        hits += tasks.jobs.map { job -> SearchLiveHit in
-            SearchLiveHit(id: "tj-\(job.id)", title: job.name, detail: "Scheduled task", symbol: "clock", keywords: "scheduled task") {
-                router.open(.tasks)
+            hits += tasks.jobs.map { job -> SearchLiveHit in
+                SearchLiveHit(id: "tj-\(job.id)", title: job.name, detail: "Scheduled task", symbol: "clock", keywords: "scheduled task") {
+                    router.open(.tasks)
+                }
+            }
+        } else {
+            apply(model.ask(.tasks), to: &section)
+            if model.ask(.tasks) == .answered {
+                hits = model.tasks.map { row -> SearchLiveHit in
+                    SearchLiveHit(id: "t\(row.id)", title: row.title, detail: row.detail,
+                                  symbol: row.id.hasPrefix("c-") ? "rectangle.on.rectangle" : "clock", keywords: "task card") {
+                        router.open(.tasks)
+                    }
+                }
             }
         }
         section.hits = picked(hits)
@@ -657,14 +962,15 @@ struct SearchLiveView: View {
 
     private var calendarSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Calendar")
-        guard !calendar.isSample, calendar.liveAccount == CalStore.accountKey else { section.waiting = true; return section }
-        switch calendar.liveLoad {
-        case .idle, .loading: section.waiting = calendar.events.isEmpty
-        case .loaded: break
-        case .failed(let why): if calendar.events.isEmpty { section.problems = [why] }
+        let list: [CalEvent]
+        if !SearchLiveModel.unread(.calendar) {
+            list = calendar.events
+        } else {
+            apply(model.ask(.calendar), to: &section)
+            list = model.ask(.calendar) == .answered ? model.events : []
         }
-        let events = calendar.events.sorted { $0.start < $1.start }
-        section.hits = picked(events.map { event -> SearchLiveHit in
+        // A tap opens the Calendar: this phone cannot open one event from outside it yet.
+        section.hits = picked(list.sorted { $0.start < $1.start }.map { event -> SearchLiveHit in
             let when = event.allDay ? SearchLiveText.day(event.start)
                 : SearchLiveText.day(event.start) + ", " + event.start.formatted(date: .omitted, time: .shortened)
             return SearchLiveHit(id: "e-\(event.id)", title: event.title, detail: when, symbol: "calendar", keywords: "event") {
@@ -676,23 +982,23 @@ struct SearchLiveView: View {
 
     private var mailSection: SearchLiveSection {
         var section = SearchLiveSection(name: "Mail")
-        guard !mail.isSample, mail.liveAccount == MailStore.accountKey else { section.waiting = true; return section }
-        switch mail.liveLoad {
-        case .idle, .loading: section.waiting = true
-        case .loaded: break
-        case .failed(let why): section.problems = [why]
-        }
-        guard mail.liveLoad == .loaded else { return section }
-        // Only what the Mail screen shows in its list: sender, subject and when. Never a message's text.
+        // Only what the Mail list shows: sender, subject and when. Never a message's text. A tap opens Mail: this
+        // phone cannot open one message from outside it yet.
         let needle = self.needle
-        section.hits = Array(mail.items.filter { item in
-            item.sender.lowercased().contains(needle) || item.subjectLine.lowercased().contains(needle)
-        }.prefix(8).map { item -> SearchLiveHit in
-            SearchLiveHit(id: "m-\(item.id)", title: item.subjectLine,
-                          detail: [item.sender, item.time].filter { !$0.isEmpty }.joined(separator: " · "), symbol: "envelope") {
-                router.open(.mail)
-            }
-        })
+        var rows: [SearchLiveRow] = []
+        if !SearchLiveModel.unread(.mail) {
+            rows = mail.items.map { SearchLiveRow(id: $0.id, title: $0.subjectLine,
+                                                  detail: [$0.sender, $0.time].filter { !$0.isEmpty }.joined(separator: " · ")) }
+        } else {
+            apply(model.ask(.mail), to: &section)
+            if model.ask(.mail) == .answered { rows = model.mail }
+        }
+        section.hits = Array(rows.filter { $0.title.lowercased().contains(needle) || $0.detail.lowercased().contains(needle) }
+            .prefix(8).map { row -> SearchLiveHit in
+                SearchLiveHit(id: "m-\(row.id)", title: row.title, detail: row.detail, symbol: "envelope") {
+                    router.open(.mail)
+                }
+            })
         return section
     }
 
@@ -714,18 +1020,6 @@ struct SearchLiveView: View {
         }
     }
 
-    private func split(_ wait: (waiting: Bool, problem: String?)) -> (Bool, [String]) {
-        (wait.waiting, wait.problem.map { [$0] } ?? [])
-    }
-
-    private func apply(_ wait: SearchLiveWait, to section: inout SearchLiveSection) {
-        switch wait {
-        case .ready: break
-        case .waiting: section.waiting = true
-        case .failed(let why): section.problems.append(why)
-        }
-    }
-
     /// What to show: the actions, bots, chats and areas before a query; every match while typing.
     private var sections: [SearchLiveSection] {
         let needle = self.needle
@@ -743,7 +1037,7 @@ struct SearchLiveView: View {
         if !botSection.hits.isEmpty { botSection.waiting = false }
         var chatSection = SearchLiveSection(name: "Chats", hits: picked(chatHits) + botChatHits, waiting: home.waiting)
         apply(model.chatsWait, to: &chatSection)
-        let all = [
+        var all = [
             SearchLiveSection(name: "Actions", hits: picked(actions)),
             botSection,
             chatSection,
@@ -760,6 +1054,10 @@ struct SearchLiveView: View {
             SearchLiveSection(name: "Settings", hits: picked(settingHits)),
             SearchLiveSection(name: "Areas", hits: picked(areaHits)),
         ]
+        if unreachable != nil {
+            // One line for the whole sheet says the desktop is not answering.
+            for index in all.indices { all[index].problems = [] }
+        }
         return all.filter { !$0.hits.isEmpty || $0.waiting || !$0.problems.isEmpty }
     }
 
@@ -801,6 +1099,12 @@ struct SearchLiveView: View {
                     if needle.isEmpty {
                         HintLine(text: "Type to search your desktop", symbol: "desktopcomputer")
                             .padding(.top, 12)
+                    } else if let unreachable {
+                        HintLine(text: "Your desktop could not be searched. " + unreachable, symbol: "exclamationmark.circle")
+                            .padding(.top, 12)
+                    } else if Connection.shared.state == .connecting {
+                        HintLine(text: "Connecting to your desktop. Search asks it as soon as it answers.", symbol: "desktopcomputer")
+                            .padding(.top, 12)
                     }
                     ForEach(shown, id: \.name) { section in
                         HStack(spacing: 8) {
@@ -821,7 +1125,9 @@ struct SearchLiveView: View {
                             row(hit)
                         }
                     }
-                    if !needle.isEmpty && !shown.contains(where: { !$0.hits.isEmpty || $0.waiting }) {
+                    // Never while anything is still being asked, and never under a line saying something failed.
+                    if !needle.isEmpty && unreachable == nil
+                        && !shown.contains(where: { !$0.hits.isEmpty || $0.waiting || !$0.problems.isEmpty }) {
                         Text("Nothing found")
                             .font(KFont.ui(15.5, relativeTo: .subheadline))
                             .foregroundStyle(Palette.inkFaint)
@@ -845,20 +1151,33 @@ struct SearchLiveView: View {
             NotesDetailsSheet(store: .shared, item: item)
                 .environment(chrome)
         }
-        .onChange(of: query) {
+        // A trailing space or a change of case alone does not ask the desktop again.
+        .onChange(of: trimmed) {
             notice = nil
-            if !needle.isEmpty { model.warmUp() }
-            model.search(query)
+            if !trimmed.isEmpty { model.warmUp() }
+            model.search(trimmed)
+        }
+        // Something opened a screen behind this sheet (the Vault's "Ask Kairos", a notification): Search gets out of
+        // the way so that screen is seen.
+        .onChange(of: router.paths) {
+            if cover == nil && noteSheet == nil { dismiss() }
         }
         .onAppear {
             SearchLiveModel.followStores()
-            if !startQuery.isEmpty { query = startQuery }
-            if startQuery.isEmpty { typing = true }
+            if !started {
+                started = true
+                if !startQuery.isEmpty { query = startQuery } else { typing = true }
+            } else if !trimmed.isEmpty {
+                // Back on screen after everything was stopped: ask again for what is typed.
+                model.warmUp()
+                model.search(trimmed)
+            }
         }
         .onDisappear {
             model.stop()
             opening?.cancel()
             opening = nil
+            openingChat = false
         }
     }
 
@@ -867,7 +1186,7 @@ struct SearchLiveView: View {
         switch which {
         case .vault(let id): VaultScreen(start: .note(id))
         case .document(let id): LibraryDocumentEditor(documentID: id)
-        case .drive(let id): SearchLiveDriveCover(fileID: id)
+        case .drive(let id): DriveScreen(startFile: id)
         case .team(let id):
             NavigationStack { TeamScreen(teamID: id).botsDestinations() }
                 .tint(Palette.gold)
@@ -913,116 +1232,57 @@ struct SearchLiveView: View {
         }
     }
 
-    /// A chat file's chat: one Home already lists opens at once; any other is checked on the desktop first, as
-    /// Chat documents does, so no screen opens for a chat the desktop does not have.
-    private func openChat(_ sessionID: String) {
-        if let conversation = chats.conversations.first(where: { $0.id == sessionID }) {
+    /// A desktop conversation (a chat file's chat, or a bot chat match). A model chat Home lists opens at once. Any
+    /// other is asked about first, so nothing opens for a conversation the desktop does not have, and a bot's
+    /// conversation never opens as a model chat: a seat in a room opens the room; a bot's own conversation opens
+    /// the bot's chat and says where the match is.
+    private func openConversation(_ sessionID: String, title: String) {
+        guard !openingChat else { return }
+        if let known = chats.conversations.first(where: { $0.id == sessionID }), known.kind == .model {
             dismiss()
-            router.open(conversation)
+            router.push(.chat(sessionID), on: .home)
             return
         }
-        guard !openingChat else { return }
         openingChat = true
-        notice = "Opening the chat…"
+        notice = "Opening the conversation…"
         opening = Task {
-            let problem = await DocsLiveStore.shared.chatProblem(sessionID)
+            let place = await model.place(of: sessionID)
             openingChat = false
             guard !Task.isCancelled else { return }
-            if let problem {
-                notice = problem
-                return
+            switch place {
+            case .gone:
+                notice = "This conversation is no longer on your desktop."
+            case .failed(let why):
+                notice = "This conversation could not be opened. " + why
+            case .model:
+                notice = nil
+                dismiss()
+                router.push(.chat(sessionID), on: .home)
+            case .room(let roomID):
+                notice = nil
+                cover = .room(roomID)
+            case .bot(let botID):
+                guard let bot = chats.bots.first(where: { $0.id == botID }) else {
+                    notice = "This conversation belongs to a bot this iPhone does not list."
+                    return
+                }
+                notice = nil
+                dismiss()
+                router.push(.bot(bot.id), on: .home)
+                let match = title.isEmpty ? "one of \(bot.name)'s conversations" : "\u{201C}\(title)\u{201D}"
+                chrome.say("\(bot.name)'s chat is open. The match is in \(match), which may be another conversation.")
             }
-            notice = nil
-            dismiss()
-            router.paths[.home] = []
-            router.push(.chat(sessionID), on: .home)
         }
     }
 }
 
-/// Google Drive opened at one file from Search: the Drive cover with that file's preview (or folder) on top,
-/// so Back leads into the paired desktop's Drive. The same screens and sheets as `DriveScreen`.
-struct SearchLiveDriveCover: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var toaster: FilesToaster
-    @State private var ui: DriveUI
-
-    init(fileID: String) {
-        let toaster = FilesToaster()
-        let ui = DriveUI(store: DriveStore.shared, toaster: toaster, debug: .none)
-        if let file = DriveStore.shared.file(fileID) {
-            ui.path = [ui.route(for: file)]
-        }
-        _toaster = State(initialValue: toaster)
-        _ui = State(initialValue: ui)
-    }
-
-    var body: some View {
-        NavigationStack(path: $ui.path) {
-            DriveBrowser(folderID: nil, close: { dismiss() })
-                .navigationDestination(for: DriveRoute.self) { route in
-                    destination(route)
-                }
-        }
-        .environment(ui)
-        .task(id: DriveStore.connectionKey) {
-            let store = ui.store
-            let wasSample = store.isSample
-            let wasAccount = store.liveAccount
-            store.followConnection()
-            // Another desktop or Kairos account: nothing from the one before stays open.
-            if wasSample != store.isSample || (!store.isSample && wasAccount != store.liveAccount) {
-                ui.path = []
-                ui.selected = []
-                ui.selecting = false
-            }
-            guard !store.isSample else { return }
-            switch store.accountsLoad {
-            case .idle, .failed: await store.loadAccountsLive()
-            case .loading, .loaded: break
-            }
-        }
-        .onChange(of: ui.query) { ui.dropSelectionLive() }
-        .onChange(of: ui.filter) { ui.dropSelectionLive() }
-        .onChange(of: ui.section) { ui.dropSelectionLive() }
-        .onChange(of: ui.grid) { ui.dropSelectionLive() }
-        .onChange(of: ui.path) { ui.dropSelectionLive() }
-        .onChange(of: ui.store.currentAccountID) { ui.dropSelectionLive() }
-        .filesToasts(toaster)
-        .sheet(item: $ui.sheet, onDismiss: { ui.runPending() }) { sheet in
-            sheetContent(sheet)
-                .environment(ui)
-                .environment(toaster)
-        }
-        .alert(ui.prompt.title, isPresented: $ui.promptShown) {
-            TextField(ui.prompt.placeholder, text: $ui.promptText)
-            Button("Save") { ui.savePrompt() }
-            Button("Cancel", role: .cancel) {}
-        }
-        .fileImporter(isPresented: $ui.importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            ui.receive(result)
-        }
-    }
-
-    @ViewBuilder
-    private func destination(_ route: DriveRoute) -> some View {
-        switch route {
-        case .folder(let id): DriveBrowser(folderID: id, close: {})
-        case .details(let id): DriveDetailsView(fileID: id, openSharing: false)
-        case .sharing(let id): DriveDetailsView(fileID: id, openSharing: true)
-        case .preview(let id): DrivePreviewView(fileID: id)
-        case .sheetEditor(let id): DriveSheetEditor(fileID: id)
-        case .formEditor(let id): DriveFormEditor(fileID: id)
-        }
-    }
-
-    @ViewBuilder
-    private func sheetContent(_ sheet: DriveSheet) -> some View {
-        switch sheet {
-        case .accounts: DriveAccountsSheet()
-        case .newMenu: DriveNewSheet()
-        case .move(let ids): DriveMoveSheet(ids: ids)
-        case .confirm(let ask): ConfirmSheet(title: ask.title, detail: ask.detail, confirm: ask.confirm, danger: ask.danger, action: ask.action)
-        }
+extension SearchLiveModel {
+    /// The stores Search lists from or opens move to the paired desktop and account now, before anything of theirs
+    /// is listed. A store only drops what it holds when the paired account changed, as its own screen would.
+    static func followStores() {
+        guard !Connection.shared.usesSampleData else { return }
+        VaultStore.shared.followConnection()
+        DriveStore.shared.followConnection()
+        BotsStore.shared.followConnection()
     }
 }

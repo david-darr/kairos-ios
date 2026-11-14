@@ -1,7 +1,9 @@
 import Foundation
 
-// The one desktop route Search needs that no other area's client covers: the text search over bot
-// conversations (routes/bot_chat_routes.py GET /api/bot-chat/search over services/bot_chat_service.py search).
+// The desktop routes Search needs that no other area's client covers, both reads: the text search over bot
+// conversations (routes/bot_chat_routes.py GET /api/bot-chat/search over services/bot_chat_service.py search),
+// and what one conversation is (routes/session_routes.py GET /api/sessions/{id}, with
+// services/bot_attention.py target_for), so a bot's conversation never opens as a model chat.
 //
 // - The answer is {"query": text, "hits": [hit]}. A hit is one matching message: session_id, bot_id, title
 //   (the conversation's), message_id, leaf_id, role ("user" or "assistant"), ts, active, other_version and a
@@ -58,14 +60,64 @@ nonisolated struct SearchBotChatsDTO: Decodable, Sendable {
     }
 }
 
+/// Where a bot conversation opens, from GET /api/sessions/{id} (session_routes.py get_session with
+/// bot_attention.target_for): {"tab": "botsRoom", "roomId"} for a bot's seat in a room, else
+/// {"tab": "botsShell", "agentId", "sessionId"}.
+nonisolated struct SearchBotsTargetDTO: Decodable, Sendable {
+    var tab: String?
+    var roomId: String?
+    var agentId: String?
+    var sessionId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case tab, roomId, agentId, sessionId
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        tab = try? box.decodeIfPresent(String.self, forKey: .tab)
+        roomId = try? box.decodeIfPresent(String.self, forKey: .roomId)
+        agentId = try? box.decodeIfPresent(String.self, forKey: .agentId)
+        sessionId = try? box.decodeIfPresent(String.self, forKey: .sessionId)
+    }
+}
+
+/// GET /api/sessions/{id}: only what says what the conversation is. `agent_id` is set for a bot's conversation
+/// (its own, or its seat in a room), and then `bots_target` says where it opens. The rest of the session is not read.
+nonisolated struct SearchSessionDTO: Decodable, Sendable {
+    var id: String?
+    var agentId: String?
+    var botsTarget: SearchBotsTargetDTO?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, agentId, botsTarget
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        id = try? box.decodeIfPresent(String.self, forKey: .id)
+        agentId = try? box.decodeIfPresent(String.self, forKey: .agentId)
+        botsTarget = try? box.decodeIfPresent(SearchBotsTargetDTO.self, forKey: .botsTarget)
+    }
+}
+
 // MARK: - Calls
 
 extension APIClient {
 
-    /// GET /api/bot-chat/search?q=&limit= . The desktop takes 1 to 200 characters.
+    /// GET /api/bot-chat/search?q=&limit= . The desktop takes 1 to 200 characters, counted as Python counts them
+    /// (code points), so the cap counts Unicode scalars.
     func searchBotChats(_ query: String, limit: Int = 30) async throws -> SearchBotChatsDTO {
-        let words = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: trimmed.unicodeScalars.prefix(200))
+        let words = String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
         return try await get("/api/bot-chat/search", query: ["q": words, "limit": String(max(1, min(limit, 100)))])
+    }
+
+    /// GET /api/sessions/{id}: what one conversation is, to open it in the right place. A read.
+    func searchSession(_ id: String) async throws -> SearchSessionDTO {
+        try await get("/api/sessions/" + (try DocsWire.pathID(id)))
     }
 }
 
@@ -91,7 +143,31 @@ nonisolated enum SearchSamples {
 
     static let busy = #"{"detail": "Search is busy. Try again in a moment."}"#
 
+    static let botSession = #"""
+    {"id": "s-3f2a9c1b", "title": "Spring stock", "agent_id": "a-scout", "messages": [{"role": "user", "content": "hi"}],
+     "permission_mode": "base", "bots_target": {"tab": "botsShell", "agentId": "a-scout", "sessionId": "s-3f2a9c1b"}}
+    """#
+
+    static let seatSession = #"""
+    {"id": "s-8e41b0c2", "agent_id": "a-quill", "bots_target": {"tab": "botsRoom", "roomId": "r-51c0"}}
+    """#
+
+    static let modelSession = #"{"id": "s-c07d5e3a", "title": "Shop hours", "agent_id": null, "messages": []}"#
+
     static let checks: [DecodeCheck] = [
+        DecodeCheck("search.session") {
+            let bot = try KJSON.decode(SearchSessionDTO.self, from: SearchSamples.botSession)
+            let seat = try KJSON.decode(SearchSessionDTO.self, from: SearchSamples.seatSession)
+            let model = try KJSON.decode(SearchSessionDTO.self, from: SearchSamples.modelSession)
+            let odd = try KJSON.decode(SearchSessionDTO.self, from: #"{"id": 7, "agent_id": 3, "bots_target": "x"}"#)
+            guard bot.agentId == "a-scout", bot.botsTarget?.tab == "botsShell", bot.botsTarget?.sessionId == "s-3f2a9c1b",
+                  seat.botsTarget?.tab == "botsRoom", seat.botsTarget?.roomId == "r-51c0",
+                  model.agentId == nil, model.botsTarget == nil, model.id == "s-c07d5e3a",
+                  odd.id == nil, odd.agentId == nil, odd.botsTarget == nil else {
+                throw SampleMismatch("session place")
+            }
+            return "bot, room seat, model chat, odd fields"
+        },
         DecodeCheck("search.botchats") {
             let read = try KJSON.decode(SearchBotChatsDTO.self, from: SearchSamples.botChats)
             guard read.query == "tyre", read.hits.count == 3, read.skipped == 1,
