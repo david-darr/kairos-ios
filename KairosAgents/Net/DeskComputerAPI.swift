@@ -303,29 +303,44 @@ nonisolated enum DeskComputerWire {
         return String((String(rest[..<cut]) + path).prefix(80))
     }
 
-    /// A path with each code-like part hidden: 20 or more letters, digits, `_`, `-`, `.` or `=` (a reset or sign-in
-    /// code, a signed token), or 8 or more digits (a one-time code).
+    /// A path with each code-like part hidden: 20 or more letters, digits, `_` or `-` (a reset or sign-in code);
+    /// 20 or more of those with two or more dots or an `=` (a signed token; a long file name with one dot is
+    /// kept); or 8 or more digits (a one-time code).
     private static func hidingTokens(_ path: String) -> String {
         path.split(separator: "/", omittingEmptySubsequences: false).map { part -> String in
             let scalars = part.unicodeScalars
             let digits = part.count >= 8 && scalars.allSatisfy { $0.value >= 48 && $0.value <= 57 }
-            let token = part.count >= 20 && scalars.allSatisfy {
+            let plain = part.count >= 20 && scalars.allSatisfy {
+                ($0.value < 128 && CharacterSet.alphanumerics.contains($0)) || $0 == "_" || $0 == "-"
+            }
+            let dots = part.filter { $0 == "." }.count
+            let signed = part.count >= 20 && (dots >= 2 || part.contains("=")) && scalars.allSatisfy {
                 ($0.value < 128 && CharacterSet.alphanumerics.contains($0)) || $0 == "_" || $0 == "-" || $0 == "." || $0 == "="
             }
-            return token || digits ? "..." : String(part)
+            return plain || signed || digits ? "..." : String(part)
         }.joined(separator: "/")
     }
 
     /// An address in text: after `URL:`, with a scheme, or a host (in any script, with or without a sign-in before
-    /// it) followed by a path, query or fragment.
+    /// it) followed by a path, query or fragment. The sign-in part is bounded so a long line stays quick to search.
     private static let addressInText = try? NSRegularExpression(
-        pattern: #"(?<=URL: )\S+|[A-Za-z][A-Za-z0-9+.\-]*://\S+|\b(?:[^\s@/]+@)?[\p{L}0-9\-]+(?:\.[\p{L}0-9\-]+)*\.\p{L}{2,}(?::\d+)?[/?#]\S*"#,
+        pattern: #"(?<=URL: )\S+|[A-Za-z][A-Za-z0-9+.\-]*://\S+|\b(?:[^\s@/]{1,256}@)?[\p{L}\p{M}\p{N}\-]+(?:\.[\p{L}\p{M}\p{N}\-]+)*\.[\p{L}\p{M}]{2,}(?::\d+)?[/?#]\S*"#,
         options: [.caseInsensitive])
+
+    /// Only an address with a scheme: used on typed text, so ordinary typed words such as a file name stay as typed.
+    private static let schemeAddress = try? NSRegularExpression(
+        pattern: #"[A-Za-z][A-Za-z0-9+.\-]*://\S+"#, options: [.caseInsensitive])
 
     /// Text from the desktop as shown: every address in it goes through `shownAddress`, so no query, fragment,
     /// sign-in or long code is shown from a result line, a title or any other text.
-    static func cleanText(_ text: String) -> String {
-        guard let regex = addressInText else {
+    static func cleanText(_ text: String) -> String { cleaned(text, addressInText) }
+
+    /// Text Kairos typed, as shown: as typed, except that a full address in it loses its query, fragment, sign-in
+    /// and long codes.
+    static func cleanTyped(_ text: String) -> String { cleaned(text, schemeAddress) }
+
+    private static func cleaned(_ text: String, _ pattern: NSRegularExpression?) -> String {
+        guard let regex = pattern else {
             // Never shown as it came: cut at the first `?`.
             return String(text.prefix { $0 != "?" })
         }
@@ -351,14 +366,14 @@ nonisolated enum DeskComputerWire {
     }
 
     static func computer(_ row: DeskComputerRunningDTO) -> DeskComputer {
-        DeskComputer(owner: row.owner, isBot: isBot(row.owner), title: cleanText((row.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)),
+        DeskComputer(owner: row.owner, isBot: isBot(row.owner), title: cleanText(String((row.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))),
                      address: shownAddress(row.url), lastAction: date(row.lastAction), takenOver: row.takenOver ?? false,
                      waitingModel: row.waitingModel ?? false, recording: row.recording ?? false, desktop: row.desktop ?? false,
                      startedAt: row.startedAt)
     }
 
     static func computer(_ frame: DeskComputerFrameDTO, owner: String) -> DeskComputer {
-        DeskComputer(owner: owner, isBot: isBot(owner), title: cleanText((frame.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)),
+        DeskComputer(owner: owner, isBot: isBot(owner), title: cleanText(String((frame.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))),
                      address: shownAddress(frame.url), lastAction: date(frame.lastAction), takenOver: frame.takenOver ?? false,
                      waitingModel: frame.waitingModel ?? false, recording: frame.recording ?? false, desktop: frame.desktop ?? false,
                      startedAt: nil)
@@ -422,11 +437,12 @@ nonisolated enum DeskComputerWire {
         }
         // The step's result and title go through cleanText before they are clipped: an address in them loses its
         // query, fragment, sign-in and long codes, wherever the desktop wrote it. Typed text is shown as it was
-        // typed (the desktop already keeps private fields out of it, and the screen says steps can include it).
+        // typed (the desktop already keeps private fields out of it, and the screen says steps can include it),
+        // except that a full address typed into the address bar is cleaned the same way.
         let result = cleanText((dto.result ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         let names = (dto.images?.items ?? []).filter { imageNames.contains($0) }
         return DeskComputerStep(number: dto.step, title: clip(cleanText(title), 120), result: clip(result, 300), failed: dto.ok == false,
-                                typed: typed.map { clip($0, 400) }, address: shownAddress(dto.url ?? args?["url"]?.string),
+                                typed: typed.map { clip(cleanTyped($0), 400) }, address: shownAddress(dto.url ?? args?["url"]?.string),
                                 isClick: action == "click", kept: Set(names), reasons: dto.notKept ?? [:], time: date(dto.time))
     }
 
@@ -675,6 +691,13 @@ nonisolated enum DeskComputerSamples {
             let five = DeskComputerWire.cleanText("Opened me:secret@shop.example/x and shop.example/verify/48291375")
             guard five == "Opened shop.example/x and shop.example/verify/..." else {
                 throw SampleMismatch("sign-in without a scheme: " + five)
+            }
+            // A long file name is kept; typed words stay as typed, but a typed full address loses its query.
+            let six = DeskComputerWire.cleanText("Saved files.example/docs/quarterly-report-2026.pdf")
+            let seven = DeskComputerWire.cleanTyped("notes.md#part then https://site.example/reset?token=zzz")
+            guard six == "Saved files.example/docs/quarterly-report-2026.pdf",
+                  seven == "notes.md#part then site.example/reset" else {
+                throw SampleMismatch("file name or typed text: " + six + " | " + seven)
             }
             // An address that cannot be read keeps nothing from a `?`, a `#` or before an `@` in its host part.
             let odd = DeskComputerWire.shownAddress("https://us er@shop example/a?token=zzz")

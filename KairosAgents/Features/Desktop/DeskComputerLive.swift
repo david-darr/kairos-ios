@@ -437,6 +437,12 @@ final class DeskComputerLive {
             noteMap[key] = gone
             return .refused(gone)
         }
+        // Without an opening time the phone cannot tell this computer from one that replaced it: nothing is sent.
+        guard expected.startedAt != nil else {
+            let line = "This phone has not read which computer this is yet. Pull to refresh, then stop it."
+            noteMap[key] = line
+            return .refused(line)
+        }
         stopMap[key] = .sending
         noteMap[key] = nil
         // Owner ids are reused and the desktop's stop route knows only the owner. So the list is read once first,
@@ -770,10 +776,11 @@ struct DeskComputerScreen: View {
         .task(id: DeskForgeLive.connectionKey) { await keepList() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                if live.phase == .paused, let owner = live.selected {
-                    live.startWatching(owner)
-                } else if live.selected == nil {
-                    Task { await live.loadList() }
+                // The list is read first, so a computer that was replaced while the app was away is shown as
+                // closed before its picture could reopen on the new one.
+                Task {
+                    await live.loadList()
+                    if live.phase == .paused, let owner = live.selected { live.startWatching(owner) }
                 }
             } else {
                 live.pause()
