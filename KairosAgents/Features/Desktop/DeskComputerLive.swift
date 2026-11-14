@@ -77,6 +77,8 @@ final class DeskComputerLive {
     private var eventAt: Date?
     private var closedTime: Date?
     private var watchedState: DeskComputer?
+    /// When the watched computer was opened, from the list. Owner ids are reused, so this tells it from a new one.
+    private var watchedOpened: Double?
     private var runMap: [String: DeskComputerRunsState] = [:]
     private var stepMap: [String: DeskComputerStepsState] = [:]
     private var stepPictures: [String: UIImage] = [:]
@@ -141,6 +143,7 @@ final class DeskComputerLive {
         eventAt = nil
         closedTime = nil
         watchedState = nil
+        watchedOpened = nil
         runMap = [:]
         stepMap = [:]
         stepPictures = [:]
@@ -242,6 +245,21 @@ final class DeskComputerLive {
             skippedRows = list.skipped
             listLoad = .loaded
             resumeStops(account)
+            // The watched computer was replaced by a new one for the same chat or bot: the picture stops and Stop
+            // is no longer offered, so nothing said about the old one is ever applied to the new one.
+            if let chosen, let now = rows.first(where: { $0.owner == chosen })?.startedAt {
+                if let was = watchedOpened {
+                    if was != now {
+                        streamSerial += 1
+                        streamTask?.cancel()
+                        streamTask = nil
+                        watchPhase = .closed
+                        if closedTime == nil { closedTime = Date() }
+                    }
+                } else {
+                    watchedOpened = now
+                }
+            }
             return true
         }
     }
@@ -264,6 +282,7 @@ final class DeskComputerLive {
             watchedState = nil
         }
         chosen = owner
+        watchedOpened = rows.first { $0.owner == owner }?.startedAt
         watchPhase = .connecting
         streamTask = Task { [weak self] in
             await self?.runStream(owner, account, serial)
@@ -282,6 +301,13 @@ final class DeskComputerLive {
         eventAt = nil
         closedTime = nil
         watchedState = nil
+        watchedOpened = nil
+    }
+
+    /// What the Stop confirm is about to describe, taken at the moment it opens.
+    func seenNow() -> DeskComputerSeen {
+        let state = watched
+        return DeskComputerSeen(startedAt: watchedOpened, recording: state?.recording ?? false, takenOver: state?.takenOver ?? false)
     }
 
     /// The app left the foreground: the stream closes and the picture is dropped.
@@ -396,7 +422,9 @@ final class DeskComputerLive {
 
     /// Stop a computer. No request id exists, so it is sent once. The unsettled state is set before the request
     /// leaves and stays until the desktop's list shows what happened.
-    func stop(_ owner: String) async -> DeskForgeOutcome {
+    /// `expected` is what the confirm described when it opened: the stop is sent only to that same computer, in that
+    /// same state.
+    func stop(_ owner: String, expected: DeskComputerSeen) async -> DeskForgeOutcome {
         guard on, (try? DeskComputerWire.ownerPath(owner)) != nil else {
             return .refused("This computer could not be read, so nothing was stopped.")
         }
@@ -404,32 +432,47 @@ final class DeskComputerLive {
         let account = self.account
         let key = stopKey(owner)
         guard stopMap[key] == nil else { return .busy }
+        let gone = "This computer had already closed. Nothing was sent."
+        if chosen == owner, watchPhase == .closed {
+            noteMap[key] = gone
+            return .refused(gone)
+        }
         stopMap[key] = .sending
         noteMap[key] = nil
-        // What the confirm was drawn from. Owner ids are reused, so the computer's opening time tells it from a
-        // new one. One read of the list first makes sure this is still that computer: if it was replaced, or is
-        // already gone, nothing is sent.
-        var opened = rows.first { $0.owner == owner }?.startedAt
-        if let client = Connection.shared.client, let list = try? await client.deskComputerList() {
-            guard stillLive(account) else {
-                stopMap[key] = nil
-                return .refused(Self.desktopChanged)
-            }
-            let now = DeskComputerWire.computers(list).first { $0.owner == owner }
-            guard let now else {
-                stopMap[key] = nil
-                await settle(owner, account, opened: nil)
-                return .done
-            }
-            if let before = opened, let after = now.startedAt, before != after {
-                stopMap[key] = nil
-                let line = "Nothing was stopped. This \(now.isBot ? "bot's" : "chat's") computer was replaced by a new one. Choose it again from the list."
-                noteMap[key] = line
-                await loadList()
-                return .refused(line)
-            }
-            opened = now.startedAt ?? opened
+        // Owner ids are reused and the desktop's stop route knows only the owner. So the list is read once first,
+        // and the stop leaves only when it still shows the computer the confirm described: opened at the same
+        // time, and not recording or taken over where the confirm did not say so. A read that fails sends nothing.
+        guard let client = Connection.shared.client, let list = try? await client.deskComputerList() else {
+            stopMap[key] = nil
+            let line = "Your desktop could not be read, so nothing was stopped. Try again."
+            if stillLive(account) { noteMap[key] = line }
+            return .refused(line)
         }
+        guard stillLive(account) else {
+            stopMap[key] = nil
+            return .refused(Self.desktopChanged)
+        }
+        guard let now = DeskComputerWire.computers(list).first(where: { $0.owner == owner }) else {
+            stopMap[key] = nil
+            noteMap[key] = gone
+            await loadList()
+            return .refused(gone)
+        }
+        if let before = expected.startedAt, let after = now.startedAt, before != after {
+            stopMap[key] = nil
+            let line = "Nothing was stopped. This \(now.isBot ? "bot's" : "chat's") computer was replaced by a new one. Choose it again from the list."
+            noteMap[key] = line
+            await loadList()
+            return .refused(line)
+        }
+        if (now.recording && !expected.recording) || (now.takenOver && !expected.takenOver) {
+            stopMap[key] = nil
+            let line = "This computer changed since you asked. Nothing was stopped. Look again and stop it if you still want to."
+            noteMap[key] = line
+            await loadList()
+            return .refused(line)
+        }
+        let opened = now.startedAt ?? expected.startedAt
         guard stillLive(account) else {
             stopMap[key] = nil
             return .refused(Self.desktopChanged)
@@ -657,6 +700,13 @@ final class DeskComputerLive {
 
 // MARK: - The screen
 
+/// What the Stop confirm described when it opened: which computer (by its opening time) and what it said would be lost.
+nonisolated struct DeskComputerSeen: Hashable, Sendable {
+    var startedAt: Double?
+    var recording: Bool
+    var takenOver: Bool
+}
+
 /// The Computer screen while paired: the running computers, one computer's live screen and its steps. Watch and
 /// Stop only.
 struct DeskComputerScreen: View {
@@ -664,6 +714,7 @@ struct DeskComputerScreen: View {
 
     @State private var live = DeskComputerLive.shared
     @State private var askStop = false
+    @State private var stopSeen = DeskComputerSeen(startedAt: nil, recording: false, takenOver: false)
     @State private var showSteps = false
     @State private var toast: String?
     @State private var picked = false
@@ -707,7 +758,7 @@ struct DeskComputerScreen: View {
                              detail: stopDetail,
                              confirm: "Stop computer") {
                     Task {
-                        let outcome = await live.stop(owner)
+                        let outcome = await live.stop(owner, expected: stopSeen)
                         if outcome == .done {
                             Haptics.success()
                             toast = "The computer was stopped"
@@ -910,6 +961,7 @@ struct DeskComputerScreen: View {
             } else {
                 let stopping = live.isStopping(owner)
                 DeskPillButton(title: stopping ? "Stopping" : "Stop this computer", symbol: "stop.circle", tint: Palette.danger) {
+                    stopSeen = live.seenNow()
                     askStop = true
                 }
                 .disabled(stopping)

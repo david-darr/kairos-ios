@@ -296,24 +296,30 @@ nonisolated enum DeskComputerWire {
         if let scheme = rest.range(of: "://") { rest = rest[scheme.upperBound...] }
         let slash = rest.firstIndex(of: "/") ?? rest.endIndex
         if let at = rest[..<slash].lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
-        var path = hidingTokens(String(rest))
+        // The host part is kept as it is; only the path behind it is searched for codes.
+        let cut = rest.firstIndex(of: "/") ?? rest.endIndex
+        var path = hidingTokens(String(rest[cut...]))
         if path == "/" { path = "" }
-        return String(path.prefix(80))
+        return String((String(rest[..<cut]) + path).prefix(80))
     }
 
-    /// A path with each long token-like part (20 or more letters, digits, `_` or `-`: a reset or sign-in code) hidden.
+    /// A path with each code-like part hidden: 20 or more letters, digits, `_`, `-`, `.` or `=` (a reset or sign-in
+    /// code, a signed token), or 8 or more digits (a one-time code).
     private static func hidingTokens(_ path: String) -> String {
         path.split(separator: "/", omittingEmptySubsequences: false).map { part -> String in
-            let token = part.count >= 20 && part.unicodeScalars.allSatisfy {
-                ($0.value < 128 && CharacterSet.alphanumerics.contains($0)) || $0 == "_" || $0 == "-"
+            let scalars = part.unicodeScalars
+            let digits = part.count >= 8 && scalars.allSatisfy { $0.value >= 48 && $0.value <= 57 }
+            let token = part.count >= 20 && scalars.allSatisfy {
+                ($0.value < 128 && CharacterSet.alphanumerics.contains($0)) || $0 == "_" || $0 == "-" || $0 == "." || $0 == "="
             }
-            return token ? "..." : String(part)
+            return token || digits ? "..." : String(part)
         }.joined(separator: "/")
     }
 
-    /// An address in text: after `URL:`, with a scheme, or a host with a path, query or fragment.
+    /// An address in text: after `URL:`, with a scheme, or a host (in any script, with or without a sign-in before
+    /// it) followed by a path, query or fragment.
     private static let addressInText = try? NSRegularExpression(
-        pattern: #"(?<=URL: )\S+|[A-Za-z][A-Za-z0-9+.\-]*://\S+|\b[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}(?::\d+)?[/?#]\S*"#,
+        pattern: #"(?<=URL: )\S+|[A-Za-z][A-Za-z0-9+.\-]*://\S+|\b(?:[^\s@/]+@)?[\p{L}0-9\-]+(?:\.[\p{L}0-9\-]+)*\.\p{L}{2,}(?::\d+)?[/?#]\S*"#,
         options: [.caseInsensitive])
 
     /// Text from the desktop as shown: every address in it goes through `shownAddress`, so no query, fragment,
@@ -414,12 +420,13 @@ nonisolated enum DeskComputerWire {
         case "": title = "A step"
         default: title = action.prefix(1).uppercased() + String(action.dropFirst())
         }
-        // Every text of the step goes through cleanText before it is clipped: an address in it loses its query,
-        // fragment, sign-in and long codes, wherever the desktop wrote it.
+        // The step's result and title go through cleanText before they are clipped: an address in them loses its
+        // query, fragment, sign-in and long codes, wherever the desktop wrote it. Typed text is shown as it was
+        // typed (the desktop already keeps private fields out of it, and the screen says steps can include it).
         let result = cleanText((dto.result ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         let names = (dto.images?.items ?? []).filter { imageNames.contains($0) }
         return DeskComputerStep(number: dto.step, title: clip(cleanText(title), 120), result: clip(result, 300), failed: dto.ok == false,
-                                typed: typed.map { clip(cleanText($0), 400) }, address: shownAddress(dto.url ?? args?["url"]?.string),
+                                typed: typed.map { clip($0, 400) }, address: shownAddress(dto.url ?? args?["url"]?.string),
                                 isClick: action == "click", kept: Set(names), reasons: dto.notKept ?? [:], time: date(dto.time))
     }
 
@@ -663,6 +670,11 @@ nonisolated enum DeskComputerSamples {
                   DeskComputerWire.cleanText("Plain words, no address.") == "Plain words, no address.",
                   DeskComputerWire.cleanText("Node.js and file.txt") == "Node.js and file.txt" else {
                 throw SampleMismatch("text")
+            }
+            // A sign-in with no scheme before it, and a short one-time code in the path, are hidden too.
+            let five = DeskComputerWire.cleanText("Opened me:secret@shop.example/x and shop.example/verify/48291375")
+            guard five == "Opened shop.example/x and shop.example/verify/..." else {
+                throw SampleMismatch("sign-in without a scheme: " + five)
             }
             // An address that cannot be read keeps nothing from a `?`, a `#` or before an `@` in its host part.
             let odd = DeskComputerWire.shownAddress("https://us er@shop example/a?token=zzz")
