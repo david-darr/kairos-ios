@@ -336,6 +336,9 @@ struct MakeView: View {
             if let problem = live.videosProblem {
                 MakeHomeLine(text: problem, action: "Try again") { Task { await live.loadLive() } }
             }
+            if let problem = live.designsProblem {
+                MakeHomeLine(text: problem, action: "Try again") { Task { await live.loadLive() } }
+            }
 
             liveStudioCard.arrives(1)
 
@@ -502,22 +505,31 @@ struct MakeView: View {
     @ViewBuilder
     private func liveShelf(_ kind: MadeKind, index: Int) -> some View {
         let items = live.items(kind)
-        if !items.isEmpty {
+        // Designs and videos always draw their way into the full list, also with none yet.
+        let always = kind == .design || kind == .video
+        if !items.isEmpty || always {
+            let shown = kind == .design ? Array(items.prefix(MakeHomeLive.designShelfLimit)) : items
             VStack(spacing: 10) {
                 sectionHead("\(MakeHomeLive.shelfTitle(kind))  \(items.count)", trailing: "All") {
                     cover = kind == .design ? .designs : .made(kind)
                 }
-                ScrollView(.horizontal) {
-                    HStack(spacing: 10) {
-                        ForEach(items) { item in
-                            Button { openLive(item) } label: { MadeCard(item: item) }
-                                .buttonStyle(PressStyle(scale: 0.97))
-                                .disabled(live.opens[item.id] == nil)
+                if items.isEmpty {
+                    if (kind == .design) ? live.designsRead : live.videosRead {
+                        HintLine(text: kind == .design ? "No designs yet" : "No videos yet")
+                    }
+                } else {
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 10) {
+                            ForEach(shown) { item in
+                                Button { openLive(item) } label: { MadeCard(item: item) }
+                                    .buttonStyle(PressStyle(scale: 0.97))
+                                    .disabled(live.opens[item.id] == nil)
+                            }
                         }
                     }
+                    .scrollIndicators(.hidden)
+                    .scrollClipDisabled()
                 }
-                .scrollIndicators(.hidden)
-                .scrollClipDisabled()
             }
             .arrives(index)
         }
@@ -537,7 +549,7 @@ struct MadeCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MadeArt(item: item)
+            MakeThumbArt(item: item)
                 .frame(width: width - 20, height: 108)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(alignment: .topTrailing) { if item.fresh { JustMadeMark().padding(7) } }

@@ -188,7 +188,7 @@ struct MadeListScreen: View {
 
     private func liveRowBody(_ item: MakeItem, linked: Bool) -> some View {
         HStack(spacing: 14) {
-            MadeArt(item: item)
+            MakeThumbArt(item: item, compact: true)
                 .frame(width: 72, height: 54)
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
