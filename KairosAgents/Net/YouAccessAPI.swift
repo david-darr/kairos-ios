@@ -568,6 +568,7 @@ nonisolated enum YouAccessSamples {
                 ("use secret=madeup", "use secret=••••"),
                 ("send abcdefghij0123456789ABCDEFGHIJ ok", "send •••• ok"),
                 ("aaaaaaaaaabbbbbbbbbbcccccccccc", "aaaaaaaaaabbbbbbbbbbcccccccccc"),
+                ("Edit(projects/bike-shop-2/Sources/Checkout.swift)", "Edit(projects/bike-shop-2/Sources/Checkout.swift)"),
             ]
             for (text, wanted) in cases where youAccessMasked(text) != wanted {
                 throw SampleMismatch("mask: " + wanted)

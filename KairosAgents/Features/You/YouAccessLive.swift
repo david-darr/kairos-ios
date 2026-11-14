@@ -78,7 +78,8 @@ nonisolated struct YouAccessDocker: Hashable, Sendable {
 /// Rule and decision text with what looks secret replaced by "••••", for display only. It is never sent back to the
 /// desktop (a rule is revoked by its id). Masked: the user and password of an address (`scheme://user:pass@host`
 /// shows as `scheme://host`), query values, what follows `Bearer ` or `token=`, `key=`, `secret=`, `password=`,
-/// and any run of 24 or more of letters, digits, `-`, `_`, `+`, `/`, `=` holding both a letter and a digit.
+/// and any run of 24 or more of letters, digits, `-`, `_`, `+`, `=` holding both a letter and a digit. A slash
+/// ends a run, so a folder path stays readable.
 nonisolated func youAccessMasked(_ text: String) -> String {
     let dots = "••••"
     var out = text
@@ -90,7 +91,7 @@ nonisolated func youAccessMasked(_ text: String) -> String {
     replace(#"(bearer\s+)[^\s'"]+"#, "$1" + dots)
     replace(#"((?:token|key|secret|password)\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s&#'"]+)"#, "$1" + dots)
     replace(#"([?&][^\s=&#?]+=)[^\s&#]+"#, "$1" + dots)
-    guard let long = try? NSRegularExpression(pattern: #"[A-Za-z0-9\-_+/=]{24,}"#) else { return out }
+    guard let long = try? NSRegularExpression(pattern: #"[A-Za-z0-9\-_+=]{24,}"#) else { return out }
     let whole = out as NSString
     var result = ""
     var at = 0
