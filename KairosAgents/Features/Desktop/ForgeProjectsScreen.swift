@@ -15,49 +15,26 @@ struct ForgeProjectsScreen: View {
     @State private var showAdd = false
     @State private var removing: ForgeProject?
     @State private var toast: String?
+    @State private var desk = DeskForgeLive.shared
+    /// Paired: the project waiting for its confirm before it leaves the desktop's list.
+    @State private var deskRemoving: ForgeProject?
+    @State private var problem: String?
+
+    /// Paired with a desktop: its projects, never the sample ones.
+    private var paired: Bool { desk.on }
+    private var all: [ForgeProject] { paired ? desk.projects.map(\.row) : store.projects }
 
     private var shown: [ForgeProject] {
-        search.isEmpty ? store.projects : store.projects.filter { $0.name.localizedCaseInsensitiveContains(search) || $0.path.localizedCaseInsensitiveContains(search) }
+        search.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(search) || $0.path.localizedCaseInsensitiveContains(search) }
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                MachineSearchField(prompt: "Search projects", text: $search)
-                if store.projects.isEmpty {
-                    DeskEmptyNote(symbol: "folder.badge.plus", title: "No projects yet", text: "Open a folder to begin.", action: "Add project") { showAdd = true }
-                } else if shown.isEmpty {
-                    NoteLine(text: "No project matches that.").padding(.top, 8)
+                if paired && (!desk.isAdmin || desk.load != .loaded) {
+                    DeskForgeGate(load: desk.load) { Task { await desk.loadHome() } }
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
-                            HStack(spacing: 0) {
-                                NavigationLink(value: DesktopRoute.project(item.id)) {
-                                    projectRow(item)
-                                }
-                                .buttonStyle(PressStyle(scale: 0.98))
-                                Menu {
-                                    Button { store.repoProjectID = item.id; toast = "Shown on Forge Home" } label: { Label("Open on Home", systemImage: "house") }
-                                    Button { UIPasteboard.general.string = item.path; toast = "Path copied" } label: { Label("Copy path", systemImage: "doc.on.doc") }
-                                    Button(role: .destructive) { removing = item } label: { Label("Remove from list", systemImage: "minus.circle") }
-                                } label: {
-                                    Image(systemName: "ellipsis")
-                                        .font(.system(size: 16, weight: .semibold))
-                                        .foregroundStyle(Palette.inkDim)
-                                        .frame(width: 48, height: 52)
-                                        .contentShape(Rectangle())
-                                }
-                                .accessibilityLabel("\(item.name) options")
-                            }
-                            .overlay(alignment: .bottom) { if index < shown.count - 1 { Palette.line.frame(height: 1).padding(.leading, 66) } }
-                            .contextMenu {
-                                Button { UIPasteboard.general.string = item.path; toast = "Path copied" } label: { Label("Copy path", systemImage: "doc.on.doc") }
-                                Button(role: .destructive) { removing = item } label: { Label("Remove from list", systemImage: "minus.circle") }
-                            }
-                            .arrives(index)
-                        }
-                    }
-                    .kCard(radius: 22)
+                    list
                 }
             }
             .padding(.horizontal, 16)
@@ -66,8 +43,11 @@ struct ForgeProjectsScreen: View {
         }
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) {
-            ScreenHeader(title: "Projects", subtitle: "\(store.projects.count) on \(store.pc.name)") {
-                GlassIconButton(symbol: "plus", label: "Add project") { showAdd = true }
+            ScreenHeader(title: "Projects", subtitle: paired ? "\(all.count) on your desktop" : "\(store.projects.count) on \(store.pc.name)") {
+                // Adding, creating and cloning a project stay on the desktop while paired.
+                if !paired {
+                    GlassIconButton(symbol: "plus", label: "Add project") { showAdd = true }
+                }
             }
         }
         .kScreen()
@@ -86,16 +66,98 @@ struct ForgeProjectsScreen: View {
         } message: {
             Text("The folder and its files stay on your PC.")
         }
+        .sheet(item: $deskRemoving) { item in
+            ConfirmSheet(title: "Remove \(item.name) from the list?",
+                         detail: "Only its entry in Forge on your desktop is removed. The folder and its files stay where they are.",
+                         confirm: "Remove from list") {
+                removeLive(item)
+            }
+        }
         .machineToast($toast)
-        .onAppear { if start == .add { showAdd = true } }
+        .onAppear { if start == .add && !paired { showAdd = true } }
+        .task(id: DeskForgeLive.connectionKey) {
+            if desk.on { await desk.loadHome() }
+        }
+    }
+
+    private func removeLive(_ item: ForgeProject) {
+        problem = nil
+        Task {
+            let outcome = await desk.removeProject(item.id)
+            if outcome == .done { toast = "Removed. Its files are kept." }
+            if let line = outcome.line { problem = line }
+        }
+    }
+
+    private func askRemove(_ item: ForgeProject) {
+        if paired { deskRemoving = item } else { removing = item }
+    }
+
+    @ViewBuilder
+    private var list: some View {
+                MachineSearchField(prompt: "Search projects", text: $search)
+                if paired, let problem {
+                    DeskForgeLine(text: problem, action: "OK") { self.problem = nil }
+                }
+                if all.isEmpty && paired {
+                    DeskEmptyNote(symbol: "folder.badge.plus", title: "No projects yet", text: "Add projects in Kairos on your desktop.")
+                } else if store.projects.isEmpty && !paired {
+                    DeskEmptyNote(symbol: "folder.badge.plus", title: "No projects yet", text: "Open a folder to begin.", action: "Add project") { showAdd = true }
+                } else if shown.isEmpty {
+                    NoteLine(text: "No project matches that.").padding(.top, 8)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                            HStack(spacing: 0) {
+                                NavigationLink(value: DesktopRoute.project(item.id)) {
+                                    projectRow(item)
+                                }
+                                .buttonStyle(PressStyle(scale: 0.98))
+                                Menu {
+                                    Button {
+                                        if paired { desk.repoProjectID = item.id } else { store.repoProjectID = item.id }
+                                        toast = "Shown on Forge Home"
+                                    } label: { Label("Open on Home", systemImage: "house") }
+                                    Button { UIPasteboard.general.string = item.path; toast = "Path copied" } label: { Label("Copy path", systemImage: "doc.on.doc") }
+                                    Button(role: .destructive) { askRemove(item) } label: { Label("Remove from list", systemImage: "minus.circle") }
+                                } label: {
+                                    Image(systemName: "ellipsis")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(Palette.inkDim)
+                                        .frame(width: 48, height: 52)
+                                        .contentShape(Rectangle())
+                                }
+                                .accessibilityLabel("\(item.name) options")
+                            }
+                            .overlay(alignment: .bottom) { if index < shown.count - 1 { Palette.line.frame(height: 1).padding(.leading, 66) } }
+                            .contextMenu {
+                                Button { UIPasteboard.general.string = item.path; toast = "Path copied" } label: { Label("Copy path", systemImage: "doc.on.doc") }
+                                Button(role: .destructive) { askRemove(item) } label: { Label("Remove from list", systemImage: "minus.circle") }
+                            }
+                            .arrives(index)
+                        }
+                    }
+                    .kCard(radius: 22)
+                }
+                if paired {
+                    HintLine(text: "Add projects in Kairos on your desktop.")
+                    if desk.skipped > 0 {
+                        HintLine(text: "\(desk.skipped) could not be read and are not shown.")
+                    }
+                }
     }
 
     private func projectRow(_ item: ForgeProject) -> some View {
         let live = store.sessions(in: item.id)
         let added = live.reduce(0) { $0 + $1.added }
         let removed = live.reduce(0) { $0 + $1.removed }
-        let busy = live.contains { $0.state == .working }
-        let appRunning = store.apps.contains { app in live.contains { $0.id == app.sessionID } }
+        // Paired: the desktop's sessions and apps for this project (the sample store has none under its id).
+        let busy = paired
+            ? desk.sessions(in: item.id).contains { !$0.ended && desk.state(of: $0.id) == .working }
+            : live.contains { $0.state == .working }
+        let appRunning = paired
+            ? desk.apps.contains { $0.projectID == item.id }
+            : store.apps.contains { app in live.contains { $0.id == app.sessionID } }
         return HStack(spacing: 12) {
             Text(String(item.name.prefix(1)).uppercased())
                 .font(KFont.ui(17, .semibold))
@@ -272,11 +334,20 @@ struct ForgeProjectScreen: View {
     @State private var renaming: ForgeSessionInfo?
     @State private var deleting: ForgeSessionInfo?
     @State private var toast: String?
+    @State private var desk = DeskForgeLive.shared
+    /// Paired: the session waiting for its confirm before its worktree is removed.
+    @State private var deskEnding: ForgeSessionInfo?
+    @State private var problem: String?
 
-    private var project: ForgeProject? { store.project(projectID) }
+    /// Paired with a desktop: its sessions, never the sample ones.
+    private var paired: Bool { desk.on }
+    private var project: ForgeProject? { paired ? desk.project(projectID)?.row : store.project(projectID) }
+    private var sessions: [ForgeSessionInfo] {
+        paired ? desk.sessions(in: projectID).map { desk.info($0) } : store.sessions(in: projectID)
+    }
 
     private var shown: [ForgeSessionInfo] {
-        store.sessions(in: projectID).filter { session in
+        sessions.filter { session in
             (search.isEmpty || session.title.localizedCaseInsensitiveContains(search)) &&
             (!workingOnly || session.state == .working || session.state == .needsYou)
         }
@@ -285,7 +356,88 @@ struct ForgeProjectScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if paired && (!desk.isAdmin || desk.load != .loaded) {
+                    DeskForgeGate(load: desk.load) { Task { await desk.loadHome() } }
+                } else {
+                    page
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 40)
+        }
+        .scrollIndicators(.hidden)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ScreenHeader(title: project?.name ?? "Project", subtitle: project.map { "\($0.branch) · \($0.path)" }) {
+                NavigationLink(value: DesktopRoute.forgeHome) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Palette.ink)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                }
+                .simultaneousGesture(TapGesture().onEnded {
+                    if paired {
+                        desk.composeProjectID = projectID
+                    } else if let project {
+                        store.repoProjectID = project.id
+                    }
+                    store.composeRequested = true
+                })
+                .buttonStyle(PressStyle(scale: 0.9))
+                .kGlass(Circle(), interactive: true)
+                .accessibilityLabel("New session")
+            }
+        }
+        .kScreen()
+        .sheet(item: $renaming) { session in
+            if paired {
+                DeskForgeRenameSheet(sessionID: session.id, title: session.title)
+            } else {
+                ForgeRenameSheet(title: session.title) { name in store.update(session.id) { $0.title = name } }
+            }
+        }
+        .confirmationDialog("Delete \(deleting?.title ?? "this session")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+            Button("Delete session", role: .destructive) {
+                if let deleting { withAnimation(Motion.snappy) { store.sessions.removeAll { $0.id == deleting.id } } }
+                deleting = nil
+                toast = "Session deleted"
+            }
+        } message: {
+            Text("The conversation is deleted. Files on your PC stay as they are.")
+        }
+        .sheet(item: $deskEnding) { session in
+            ConfirmSheet(title: "End \(session.title)?",
+                         detail: session.branch == nil
+                            ? "It works in your project folder, which stays as it is. Its app stops and the conversation is kept."
+                            : "Its worktree is removed from your desktop. The branch \(session.branch ?? "") and the conversation are kept. Your desktop refuses if the worktree has uncommitted changes.",
+                         confirm: "End session") {
+                endLive(session)
+            }
+        }
+        .machineToast($toast)
+        .task(id: DeskForgeLive.connectionKey) {
+            if desk.on { await desk.loadHome() }
+        }
+    }
+
+    /// Paired: the Forge route only. It removes the worktree and ends the session; the chat's own delete
+    /// would leave the worktree behind, so it is never used here.
+    private func endLive(_ session: ForgeSessionInfo) {
+        problem = nil
+        Task {
+            let outcome = await desk.removeWorktree(session.id)
+            if outcome == .done { toast = "Session ended" }
+            if let line = outcome.line { problem = line }
+        }
+    }
+
+    @ViewBuilder
+    private var page: some View {
                 MachineSearchField(prompt: "Search sessions", text: $search)
+                if paired, let problem {
+                    DeskForgeLine(text: problem, action: "OK") { self.problem = nil }
+                }
                 HStack(spacing: 8) {
                     Button {
                         Haptics.select()
@@ -299,7 +451,30 @@ struct ForgeProjectScreen: View {
                     }
                     .buttonStyle(PressStyle())
                 }
-                let apps = store.apps.filter { app in store.sessions(in: projectID).contains { $0.id == app.sessionID } }
+                if paired {
+                    let running = desk.apps.filter { $0.projectID == projectID }
+                    if !running.isEmpty {
+                        // The app's page opens on the desktop only, so these do not open.
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 8) {
+                                ForEach(running) { app in
+                                    HStack(spacing: 7) {
+                                        PulsingDot(color: Palette.success, size: 6)
+                                        Text(":\(String(app.port)) \(desk.session(app.sessionID)?.title ?? "App")")
+                                            .font(KFont.ui(13.5, .medium)).foregroundStyle(Palette.ink).lineLimit(1)
+                                    }
+                                    .padding(.horizontal, 13)
+                                    .frame(height: 38)
+                                    .kGlass(Capsule())
+                                    .accessibilityElement(children: .combine)
+                                }
+                            }
+                        }
+                        .scrollIndicators(.hidden)
+                        .scrollClipDisabled()
+                    }
+                }
+                let apps = paired ? [] : store.apps.filter { app in store.sessions(in: projectID).contains { $0.id == app.sessionID } }
                 if !apps.isEmpty {
                     ScrollView(.horizontal) {
                         HStack(spacing: 8) {
@@ -320,49 +495,24 @@ struct ForgeProjectScreen: View {
                     .scrollIndicators(.hidden)
                     .scrollClipDisabled()
                 }
-                group("Today", shown.filter(\.today))
-                group("Earlier", shown.filter { !$0.today })
+                group("Today", shown.filter { $0.today && !$0.ended })
+                group("Earlier", shown.filter { !$0.today && !$0.ended })
+                group("Ended", shown.filter(\.ended))
                 if shown.isEmpty {
                     DeskEmptyNote(symbol: "bubble.left.and.text.bubble.right", title: search.isEmpty ? "No sessions" : "No matching sessions", text: search.isEmpty ? "Start a session with New session." : "Try another word.")
                 }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 40)
+    }
+
+    /// The row's menu. Paired, a session is ended through Forge (its worktree goes, the conversation stays);
+    /// the desktop has no way to delete a Forge conversation and keep things tidy, so none is offered.
+    @ViewBuilder
+    private func rowActions(_ session: ForgeSessionInfo) -> some View {
+        Button { renaming = session } label: { Label("Rename", systemImage: "pencil") }
+        if !paired {
+            Button(role: .destructive) { deleting = session } label: { Label("Delete", systemImage: "trash") }
+        } else if !session.ended {
+            Button(role: .destructive) { deskEnding = session } label: { Label("End session", systemImage: "xmark.circle") }
         }
-        .scrollIndicators(.hidden)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            ScreenHeader(title: project?.name ?? "Project", subtitle: project.map { "\($0.branch) · \($0.path)" }) {
-                NavigationLink(value: DesktopRoute.forgeHome) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(Palette.ink)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Circle())
-                }
-                .simultaneousGesture(TapGesture().onEnded {
-                    if let project { store.repoProjectID = project.id }
-                    store.composeRequested = true
-                })
-                .buttonStyle(PressStyle(scale: 0.9))
-                .kGlass(Circle(), interactive: true)
-                .accessibilityLabel("New session")
-            }
-        }
-        .kScreen()
-        .sheet(item: $renaming) { session in
-            ForgeRenameSheet(title: session.title) { name in store.update(session.id) { $0.title = name } }
-        }
-        .confirmationDialog("Delete \(deleting?.title ?? "this session")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-            Button("Delete session", role: .destructive) {
-                if let deleting { withAnimation(Motion.snappy) { store.sessions.removeAll { $0.id == deleting.id } } }
-                deleting = nil
-                toast = "Session deleted"
-            }
-        } message: {
-            Text("The conversation is deleted. Files on your PC stay as they are.")
-        }
-        .machineToast($toast)
     }
 
     @ViewBuilder
@@ -374,12 +524,11 @@ struct ForgeProjectScreen: View {
                     ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
                         HStack(spacing: 0) {
                             NavigationLink(value: DesktopRoute.session(session.id)) {
-                                ForgeSessionRow(session: session, project: session.agent, last: true)
+                                ForgeSessionRow(session: session, project: session.agent, last: true, counts: !paired)
                             }
                             .buttonStyle(PressStyle(scale: 0.98))
                             Menu {
-                                Button { renaming = session } label: { Label("Rename", systemImage: "pencil") }
-                                Button(role: .destructive) { deleting = session } label: { Label("Delete", systemImage: "trash") }
+                                rowActions(session)
                             } label: {
                                 Image(systemName: "ellipsis")
                                     .font(.system(size: 16, weight: .semibold))
@@ -391,8 +540,7 @@ struct ForgeProjectScreen: View {
                         }
                         .overlay(alignment: .bottom) { if index < sessions.count - 1 { Palette.line.frame(height: 1).padding(.leading, 16) } }
                         .contextMenu {
-                            Button { renaming = session } label: { Label("Rename", systemImage: "pencil") }
-                            Button(role: .destructive) { deleting = session } label: { Label("Delete", systemImage: "trash") }
+                            rowActions(session)
                         }
                     }
                 }
@@ -407,9 +555,42 @@ struct ForgeRepoScreen: View {
     let projectID: String
     @State private var store = ForgeStore.shared
     @State private var selected: Int?
+    @State private var desk = DeskForgeLive.shared
 
     var body: some View {
-        let repo = ForgeSample.repo
+        if desk.on {
+            livePage
+        } else {
+            page(ForgeSample.repo, name: store.project(projectID)?.name ?? "")
+        }
+    }
+
+    /// Paired: this project's history as the desktop summarises it.
+    @ViewBuilder
+    private var livePage: some View {
+        let chosen = desk.project(projectID)
+        if desk.isAdmin, desk.load == .loaded, let chosen, let repo = DeskForgeLive.repo(chosen.git) {
+            page(repo, name: chosen.name)
+                .task(id: DeskForgeLive.connectionKey + "|" + projectID) { await desk.loadSummary(projectID) }
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                if desk.isAdmin, desk.load == .loaded {
+                    DeskForgeLine(text: chosen == nil ? "This project is not on your desktop's list any more."
+                                  : (chosen?.gitProblem ?? "No history was read for this project."))
+                } else {
+                    DeskForgeGate(load: desk.load) { Task { await desk.loadHome() } }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .safeAreaInset(edge: .top, spacing: 0) { ScreenHeader(title: "Repo lifespan", subtitle: chosen?.name) }
+            .kScreen()
+            .task(id: DeskForgeLive.connectionKey) { await desk.loadHome() }
+        }
+    }
+
+    private func page(_ repo: RepoStats, name: String) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
@@ -429,7 +610,7 @@ struct ForgeRepoScreen: View {
                     HStack {
                         Text("Commits over time").font(KFont.ui(17, .semibold)).foregroundStyle(Palette.ink)
                         Spacer()
-                        Text(selected.map { "\(repo.history[$0]) commits" } ?? repo.historyLabel)
+                        Text(selected.flatMap { repo.history.indices.contains($0) ? "\(repo.history[$0]) commits" : nil } ?? repo.historyLabel)
                             .font(KFont.ui(13.5)).foregroundStyle(selected == nil ? Palette.inkFaint : Palette.goldText)
                     }
                     HistoryBars(values: repo.history, selected: $selected).frame(height: 110)
@@ -460,7 +641,7 @@ struct ForgeRepoScreen: View {
         }
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) {
-            ScreenHeader(title: "Repo lifespan", subtitle: "\(store.project(projectID)?.name ?? "") · \(repo.ageDays) days old")
+            ScreenHeader(title: "Repo lifespan", subtitle: "\(name) · \(repo.ageDays) days old")
         }
         .kScreen()
     }
