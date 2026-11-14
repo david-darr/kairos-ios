@@ -279,23 +279,44 @@ final class MakeVideoWatch {
 
 // MARK: - Watching a finished render
 
+extension MakeVideoLive {
+    /// A new read of the render listing starts: only the newest read may fill the list.
+    func nextRendersRead() -> Int {
+        rendersSerial += 1
+        return rendersSerial
+    }
+
+    /// A read's answer. Taken only when no newer read has started since.
+    func takeRenders(_ resources: MakeVideoResourcesDTO, serial: Int) {
+        guard serial == rendersSerial else { return }
+        renders = resources.latestRenders()
+        rendersLine = nil
+    }
+}
+
 extension EditorModel {
 
     /// The desktop's newest finished MP4 for each aspect, read from its folder listing. Starts nothing.
     func refreshRenders() async {
         guard let live, stillLive(live) else { return }
+        let serial = live.nextRendersRead()
         do {
             let read = try await liveClient().makeVideoResources(projectID)
             guard stillLive(live) else { return }
-            live.renders = read.latestRenders()
+            live.takeRenders(read, serial: serial)
         } catch {
-            // The list stays as it was: this read is only a convenience, and Studio may be off.
+            // The list stays as it was: this read is only a convenience. When Studio is off the desktop says so, and so do we.
+            guard stillLive(live), serial == live.rendersSerial else { return }
+            if case .server(let status, _)? = error as? APIError, status == 409 || status == 403 || status == 404 {
+                live.rendersLine = "Turn on Studio on your desktop to watch finished renders here."
+            }
         }
     }
 
     /// A render finished while the editor was open: it is offered at once, then the desktop's listing confirms it.
     func noteRenderReady(_ job: MakeVideoJobDTO) {
         guard let live, stillLive(live), let item = MakeVideoRenderFile(job: job) else { return }
+        live.rendersSerial += 1
         if let old = live.renders.first(where: { $0.aspect == item.aspect }) {
             if old.number > item.number { return }
             live.renders.removeAll { $0.aspect == item.aspect }
@@ -391,11 +412,32 @@ extension EditorModel {
 
 // MARK: - The system player
 
+/// The app's audio session while the player is open: the category it had is put back when the player closes, and a
+/// session already set up for a call (play and record) is left alone.
+@MainActor
+final class MakeVideoPlayerAudio {
+    private var saved: (category: AVAudioSession.Category, mode: AVAudioSession.Mode, options: AVAudioSession.CategoryOptions)?
+
+    func take() {
+        let session = AVAudioSession.sharedInstance()
+        guard saved == nil, session.category != .playAndRecord, session.category != .playback else { return }
+        saved = (session.category, session.mode, session.categoryOptions)
+        try? session.setCategory(.playback)
+    }
+
+    func give() {
+        guard let saved else { return }
+        self.saved = nil
+        try? AVAudioSession.sharedInstance().setCategory(saved.category, mode: saved.mode, options: saved.options)
+    }
+}
+
 /// A finished render, played by the system player, with the system share sheet for the file.
 struct MakeVideoPlayerScreen: View {
     let file: MakeVideoLocalFile
     let onClose: () -> Void
     @State private var player: AVPlayer
+    @State private var audio = MakeVideoPlayerAudio()
 
     init(file: MakeVideoLocalFile, onClose: @escaping () -> Void) {
         self.file = file
@@ -434,18 +476,20 @@ struct MakeVideoPlayerScreen: View {
         }
         .background(Palette.ground.ignoresSafeArea())
         .onAppear {
-            try? AVAudioSession.sharedInstance().setCategory(.playback)
+            audio.take()
             player.play()
         }
         .onDisappear {
             player.pause()
             player.replaceCurrentItem(with: nil)
+            audio.give()
         }
     }
 
     private func close() {
         player.pause()
         player.replaceCurrentItem(with: nil)
+        audio.give()
         onClose()
     }
 }
@@ -496,6 +540,12 @@ final class MakeVideoSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private func serve(_ task: any WKURLSchemeTask, key: ObjectIdentifier) async {
+        // Reading only: any other method is refused here, before anything is asked of the desktop.
+        let method = (task.request.httpMethod ?? "GET").uppercased()
+        guard method == "GET" || method == "HEAD" else {
+            finish(task, key, status: 405, type: "text/plain", body: Data(), extra: ["Allow": "GET, HEAD"])
+            return
+        }
         guard let url = task.request.url, url.scheme == Self.scheme,
               let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), parts.host == Self.host,
               MakeVideoWebPaths.allowed(parts.path, video: videoID) else {
@@ -512,33 +562,46 @@ final class MakeVideoSchemeHandler: NSObject, WKURLSchemeHandler {
         do {
             let query: [String: String?] = isPage ? ["aspect": aspect, "v": String(version)] : [:]
             let target = try client.makeVideoDesktopURL(path: path, query: query)
-            let data = try await client.makeVideoWebFetch(target)
+            let answer = try await client.makeVideoWebFetch(target)
+            let data = answer.data
             guard jobs[key] != nil else { return }
             guard MakeVideoLive.accountKey == account else {
                 finish(task, key, status: 404, type: "text/plain", body: Data())
                 return
             }
-            finish(task, key, status: 200, type: MakeVideoWebPaths.mime(path, body: data, video: videoID), body: data)
+            // The page may load only from this private address: the desktop's own policy, rewritten to it.
+            let extra: [String: String] = isPage ? ["Content-Security-Policy": MakeVideoWebPaths.policy(fromDesktop: answer.policy, video: videoID)] : [:]
+            finish(task, key, status: 200, type: MakeVideoWebPaths.mime(path, body: data, video: videoID), body: data,
+                   extra: extra, head: method == "HEAD")
         } catch {
             if error is CancellationError || Task.isCancelled { return }
             guard jobs[key] != nil else { return }
-            if isPage { onPageError?("The preview could not load. " + error.plainWords) }
+            if isPage {
+                // The desktop's own refusal is not the phone being unpaired, and the words must not say so.
+                if case .unauthorized? = error as? APIError {
+                    onPageError?("The preview could not load. Your desktop did not allow the preview. Try again in a moment.")
+                } else {
+                    onPageError?("The preview could not load. " + error.plainWords)
+                }
+            }
             finish(task, key, status: 404, type: "text/plain", body: Data())
         }
     }
 
     /// Answers once, and only a task the web view has not stopped (answering a stopped task is a crash).
-    private func finish(_ task: any WKURLSchemeTask, _ key: ObjectIdentifier, status: Int, type: String, body: Data) {
+    private func finish(_ task: any WKURLSchemeTask, _ key: ObjectIdentifier, status: Int, type: String, body: Data,
+                        extra: [String: String] = [:], head: Bool = false) {
         guard jobs.removeValue(forKey: key) != nil else { return }
-        let headers = ["Content-Type": type, "Content-Length": String(body.count), "Cache-Control": "no-store",
+        var headers = ["Content-Type": type, "Content-Length": String(body.count), "Cache-Control": "no-store",
                        "Access-Control-Allow-Origin": "*"]
+        for (name, value) in extra { headers[name] = value }
         guard let url = task.request.url,
               let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) else {
             task.didFailWithError(URLError(.badServerResponse))
             return
         }
         task.didReceive(response)
-        if !body.isEmpty { task.didReceive(body) }
+        if !body.isEmpty, !head { task.didReceive(body) }
         task.didFinish()
     }
 }
@@ -575,14 +638,10 @@ struct MakeVideoPlayerWebView: UIViewRepresentable {
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.isUserInteractionEnabled = false
         view.navigationDelegate = coordinator
-        coordinator.attach(view, handler: handler)
+        coordinator.attach(view, handler: handler, controller: configuration.userContentController)
         coordinator.draw(time)
-        if let start = URL(string: "\(MakeVideoSchemeHandler.scheme)://\(MakeVideoSchemeHandler.host)/api/videos/\(videoID)/player") {
-            view.load(URLRequest(url: start))
-            coordinator.startTimeout()
-        } else {
-            coordinator.fail("The preview could not load.")
-        }
+        // The page loads only after the rule that blocks every other address is in place.
+        coordinator.begin(URL(string: "\(MakeVideoSchemeHandler.scheme)://\(MakeVideoSchemeHandler.host)/api/videos/\(videoID)/player"))
         return view
     }
 
@@ -610,9 +669,38 @@ struct MakeVideoPlayerWebView: UIViewRepresentable {
 
         init(onStatus: @escaping (MakeVideoPreviewStatus) -> Void) { self.onStatus = onStatus }
 
-        func attach(_ view: WKWebView, handler: MakeVideoSchemeHandler) {
+        private var controller: WKUserContentController?
+
+        func attach(_ view: WKWebView, handler: MakeVideoSchemeHandler, controller: WKUserContentController) {
             self.view = view
             self.handler = handler
+            self.controller = controller
+        }
+
+        /// Compile the rule list that blocks every address but the private scheme, add it, and only then load the page.
+        /// If it cannot be compiled the page is not loaded.
+        func begin(_ start: URL?) {
+            guard let start else {
+                fail("The preview could not load.")
+                return
+            }
+            startTimeout()
+            Task { @MainActor [weak self] in
+                let compiled: WKContentRuleList?
+                do {
+                    compiled = try await WKContentRuleListStore.default().compileContentRuleList(
+                        forIdentifier: "KairosVideoPreviewBlock", encodedContentRuleList: MakeVideoWebPaths.blockRules)
+                } catch {
+                    compiled = nil
+                }
+                guard let self, !self.finished, let view = self.view, let controller = self.controller else { return }
+                guard let compiled else {
+                    self.fail("The preview could not be started safely. Try again.")
+                    return
+                }
+                controller.add(compiled)
+                view.load(URLRequest(url: start))
+            }
         }
 
         /// A page that never becomes ready is a failure, not a black box.
@@ -661,6 +749,12 @@ struct MakeVideoPlayerWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
             fail("The preview could not load.")
+        }
+
+        /// iOS ended the web content process (memory, or the app was in the background): the picture is gone.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            ready = false
+            fail("The preview stopped. Try again.")
         }
 
         private func waitReady() async {
@@ -714,9 +808,12 @@ struct EditorLivePreview: View {
             VStack(spacing: 10) {
                 picture(live: live, doc: doc, aspect: aspect)
                     .onChange(of: key) { status = .loading }
-                HintLine(text: note(doc),
-                         symbol: model.isDirty ? "exclamationmark.circle" : "info.circle",
-                         color: model.isDirty ? Palette.goldText : Palette.inkFaint)
+                // Only said while the saved version is really on screen.
+                if status == .ready {
+                    HintLine(text: note(doc),
+                             symbol: model.isDirty ? "exclamationmark.circle" : "info.circle",
+                             color: model.isDirty ? Palette.goldText : Palette.inkFaint)
+                }
             }
         }
     }
@@ -778,11 +875,17 @@ struct EditorLivePreview: View {
                     .font(KFont.ui(14.5, relativeTo: .subheadline))
                     .foregroundStyle(Color.white)
                     .multilineTextAlignment(.center)
-                MakePillButton(title: "Try again", symbol: "arrow.clockwise") { attempt += 1 }
-                Text("A finished render shows the real video. Tap Render, then Watch.")
-                    .font(KFont.ui(13, relativeTo: .footnote))
-                    .foregroundStyle(Color.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
+                VStack(spacing: 10) {
+                    MakePillButton(title: "Try again", symbol: "arrow.clockwise") { attempt += 1 }
+                    // A finished render for this aspect is the real video, so it is offered beside Try again.
+                    if let live = model.live, let doc = live.doc,
+                       let item = live.renders.first(where: { $0.aspect == (doc.aspects.first ?? "16:9") }) {
+                        MakePillButton(title: "Watch the latest render", symbol: "play.fill", filled: true) {
+                            model.watchRender(item)
+                        }
+                        .editorEnabled(!live.watch.busy)
+                    }
+                }
             }
             .padding(20)
         }

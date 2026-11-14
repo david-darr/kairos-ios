@@ -717,6 +717,8 @@ final class MakeVideoLive {
     var jobsKnown = false
     /// The newest finished MP4 for each aspect, as the desktop's own folder listing names them.
     var renders: [MakeVideoRenderFile] = []
+    /// Why finished renders are not listed (Studio is off on the desktop), in one plain sentence.
+    var rendersLine: String?
     /// Downloading a finished render to watch it, and the player.
     let watch = MakeVideoWatch()
 
@@ -739,6 +741,8 @@ final class MakeVideoLive {
 
     @ObservationIgnored var readSerial = 0
     @ObservationIgnored var writeSerial = 0
+    /// Counts reads of the render listing: an older read never replaces a newer one.
+    @ObservationIgnored var rendersSerial = 0
     @ObservationIgnored var watchTask: Task<Void, Never>?
     @ObservationIgnored var pendingDraft: MakeVideoDraft?
     @ObservationIgnored var pendingSent: (state: EditorState, version: Int)?
@@ -1272,6 +1276,7 @@ extension EditorModel {
     var showsRenderCard: Bool {
         guard let live else { return render != .idle }
         return live.job != nil || live.renderLine != nil || live.renderBusy || live.renderUnchecked || !live.renders.isEmpty
+            || live.rendersLine != nil
     }
 
     /// First step: can the desktop render at all, and is this video already rendering? Then a confirm.
@@ -1287,11 +1292,12 @@ extension EditorModel {
                 live.renderLine = "Your desktop cannot render yet. " + (check.message.isEmpty ? "FFmpeg was not found." : check.message)
                 return
             }
+            let serial = live.nextRendersRead()
             let resources = try await liveClient().makeVideoResources(projectID)
             guard stillLive(live) else { return }
             live.knownJobs = Set(resources.jobs.map(\.id))
             live.jobsKnown = true
-            live.renders = resources.latestRenders()
+            live.takeRenders(resources, serial: serial)
             if let running = resources.jobs.last(where: { $0.videoID == projectID && !$0.isExport && $0.isActive }) {
                 live.job = running
                 live.renderLine = "This video is already rendering on your desktop."
@@ -1344,10 +1350,11 @@ extension EditorModel {
     /// The start's answer never arrived: look at the desktop's jobs for one that was not there before.
     private func settleRender(live: MakeVideoLive, aspect: String, known: Set<String>, because: String) async {
         do {
+            let serial = live.nextRendersRead()
             let resources = try await liveClient().makeVideoResources(projectID)
             guard stillLive(live) else { return }
             live.renderUnchecked = false
-            live.renders = resources.latestRenders()
+            live.takeRenders(resources, serial: serial)
             live.knownJobs = Set(resources.jobs.map(\.id))
             if let started = resources.jobs.last(where: {
                 $0.videoID == projectID && !$0.isExport && $0.aspect == aspect && !known.contains($0.id)
@@ -1377,11 +1384,12 @@ extension EditorModel {
     /// A render already running for this video (started here earlier or on the desktop) is shown, not started again.
     func adoptRunningJob() async {
         guard let live, stillLive(live) else { return }
+        let serial = live.nextRendersRead()
         guard let resources = try? await liveClient().makeVideoResources(projectID), stillLive(live) else { return }
         live.jobsKnown = true
         live.knownJobs = Set(resources.jobs.map(\.id))
         // The newest finished render of each aspect, so Watch is there the moment the editor opens.
-        live.renders = resources.latestRenders()
+        live.takeRenders(resources, serial: serial)
         if live.job == nil, let running = resources.jobs.last(where: { $0.videoID == projectID && !$0.isExport && $0.isActive }) {
             live.job = running
             watchJob()
@@ -1956,6 +1964,9 @@ struct EditorLiveRenderCard: View {
                 }
                 if !live.renders.isEmpty {
                     rendersList(live)
+                }
+                if let line = live.rendersLine {
+                    HintLine(text: line, symbol: "info.circle")
                 }
                 if let line = live.renderLine {
                     HintLine(text: line, symbol: "info.circle")

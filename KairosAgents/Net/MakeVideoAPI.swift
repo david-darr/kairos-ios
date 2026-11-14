@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // The desktop's video routes (routes/video_routes.py over core/video_store.py, video_render.py, video_agent.py
 // and video_narration.py), as the phone's editor reads and writes them.
@@ -136,6 +137,25 @@ nonisolated struct MakeVideoRenderFile: Equatable, Identifiable, Sendable {
     }
 }
 
+/// The session for the preview's own fetches. It answers every redirect with "do not follow", so the signed header
+/// never travels anywhere the request did not name, and a 3xx reaches the caller as a failure.
+nonisolated final class MakeVideoWebSession: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 180
+        configuration.waitsForConnectivity = false
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        return URLSession(configuration: configuration, delegate: MakeVideoWebSession(), delegateQueue: nil)
+    }()
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 /// Which pages and files the editor's preview web view may ask the desktop for, and how each is typed.
 nonisolated enum MakeVideoWebPaths {
     private static func plain(_ text: Substring, extra: String = "") -> Bool {
@@ -147,7 +167,8 @@ nonisolated enum MakeVideoWebPaths {
     /// The desktop's own player page for this video, its pictures, the look's fonts and the player's scripts, and
     /// nothing else on the desktop.
     static func allowed(_ path: String, video: String) -> Bool {
-        guard path.hasPrefix("/"), !path.contains("//"), !path.split(separator: "/").contains("..") else { return false }
+        // A trailing slash is refused too: the desktop would answer it with a redirect, and nothing here follows one.
+        guard path.hasPrefix("/"), !path.hasSuffix("/"), !path.contains("//"), !path.split(separator: "/").contains("..") else { return false }
         let own = "/api/videos/\(video)/"
         if path == own + "player" { return true }
         if path.hasPrefix(own + "assets/") { return plain(path.dropFirst((own + "assets/").count), extra: "/") }
@@ -158,6 +179,30 @@ nonisolated enum MakeVideoWebPaths {
     }
 
     static func isPlayer(_ path: String, video: String) -> Bool { path == "/api/videos/\(video)/player" }
+
+    /// The private address every page, script, font and picture of the preview has.
+    static let origin = "kairosvideo://player"
+
+    /// The Content-Security-Policy for the player page: the desktop's own, with the desktop's address replaced by the
+    /// private one, so the page may load only from this scheme. When the desktop sent none, the same directives built here.
+    static func policy(fromDesktop header: String?, video: String) -> String {
+        if let header, !header.trimmingCharacters(in: .whitespaces).isEmpty,
+           let regex = try? NSRegularExpression(pattern: #"https?://[^/\s;'"]+"#) {
+            let range = NSRange(header.startIndex..., in: header)
+            return regex.stringByReplacingMatches(in: header, range: range, withTemplate: NSRegularExpression.escapedTemplate(for: origin))
+        }
+        let map = #"{"imports":{"three":"/static/vendor/three/three.module.js"}}"#
+        let hash = Data(SHA256.hash(data: Data(map.utf8))).base64EncodedString()
+        return "default-src 'none'; script-src \(origin)/static/motion/ \(origin)/static/vendor/three/ 'sha256-\(hash)'; "
+            + "style-src 'unsafe-inline'; img-src \(origin)/api/videos/\(video)/assets/; font-src \(origin)/api/design-fonts/; "
+            + "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+    }
+
+    /// Blocks every address that is not the private scheme. Compiled before the page loads.
+    static let blockRules = #"""
+    [{"trigger": {"url-filter": ".*"}, "action": {"type": "block"}},
+     {"trigger": {"url-filter": "^kairosvideo://player/"}, "action": {"type": "ignore-previous-rules"}}]
+    """#
 
     /// The type to answer with: by the file's ending, else by its first bytes.
     static func mime(_ path: String, body: Data, video: String) -> String {
@@ -536,13 +581,28 @@ extension APIClient {
     }
 
     /// One page or file for the preview's web view, through the same signed client. The web page never sees the token.
-    func makeVideoWebFetch(_ target: URL) async throws -> Data {
+    /// A redirect is never followed (it would carry the signed header to wherever it points): it is a failure.
+    /// Answers the body and the desktop's Content-Security-Policy header, if it sent one.
+    func makeVideoWebFetch(_ target: URL) async throws -> (data: Data, policy: String?) {
         guard target.scheme == base.scheme, target.host == base.host, target.port == base.port else { throw APIError.badAddress }
         var request = try urlRequest("GET", "/")
         request.url = target
         request.setValue("*/*", forHTTPHeaderField: "Accept")
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        return try await send(request)
+        request.timeoutInterval = 30
+        let answer: (Data, URLResponse)
+        do {
+            answer = try await MakeVideoWebSession.shared.data(for: request)
+        } catch let error as URLError {
+            if error.code == .cancelled { throw CancellationError() }
+            throw APIError.from(error)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw APIError.offline("Your desktop could not be reached. Try again in a moment.")
+        }
+        try APIClient.check(answer.1, body: answer.0)
+        return (answer.0, (answer.1 as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Security-Policy"))
     }
 
     /// GET /api/video-jobs/{id}.
