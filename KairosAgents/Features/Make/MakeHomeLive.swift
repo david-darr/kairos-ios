@@ -356,6 +356,11 @@ final class MakeHomeLive {
         let key = account
         jobSerial += 1
         let mine = jobSerial
+        var finished = false
+        defer {
+            // A task that just finished made something: read the list again so its item is there to open.
+            if finished, stillLive(key) { Task { [weak self] in await self?.loadLive() } }
+        }
         for job in tracked where job.state.isOpen || job.state == .other {
             guard !againBusy.contains(job.id) else { continue }
             let writes = writeSerial
@@ -363,6 +368,7 @@ final class MakeHomeLive {
                 let dto = try await client().makeHomeTask(job.id)
                 guard stillLive(key), mine == jobSerial else { return }
                 guard writes == writeSerial, !againBusy.contains(job.id) else { continue }
+                if job.state.isOpen && !MakeHomeJobState.from(dto.state).isOpen { finished = true }
                 update(dto)
             } catch {
                 if error is CancellationError || Task.isCancelled { return }
@@ -448,7 +454,8 @@ final class MakeHomeLive {
         defer { writeSerial += 1 }
         do {
             let dto = try await client().makeHomeStart(text: sent.text, kind: sent.kind, sendID: sent.sendID)
-            guard stillLive(key), send?.sendID == sent.sendID else { return .started }
+            // Another desktop or account is showing now: nothing from this answer is drawn or cleared.
+            guard stillLive(key), send?.sendID == sent.sendID else { return .busy }
             send = nil
             refusedSend = nil
             var job = Self.job(dto)
