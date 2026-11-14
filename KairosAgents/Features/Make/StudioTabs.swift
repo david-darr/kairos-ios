@@ -43,21 +43,28 @@ struct OverviewDashboard: View {
             }
             MakeTile(title: "Analytics", symbol: "chart.bar", link: "Open analytics", linkAction: { studio.open(.analytics) }) {
                 HStack(spacing: 8) {
-                    StatBox(value: "\(studio.posts.filter { $0.publish == .posted }.count)", label: "Posts posted")
-                    StatBox(value: "\(studio.posts.filter { $0.numbers != nil }.count)", label: "With 7-day numbers")
+                    StatBox(value: studio.isLive ? "\(studio.livePostsPosted)" : "\(studio.posts.filter { $0.publish == .posted }.count)", label: "Posts posted")
+                    StatBox(value: studio.isLive ? "\(studio.livePostsScored)" : "\(studio.posts.filter { $0.numbers != nil }.count)", label: "With 7-day numbers")
                     StatBox(value: studio.niches.compactMap(\.score).max().map { String(format: "%.1f", $0) } ?? "None yet", label: "Best niche score")
                 }
             }
             MakeTile(title: "Weekly report", symbol: "doc.plaintext", link: "Open report", linkAction: { studio.open(.report) }) {
                 VStack(alignment: .leading, spacing: 5) {
-                    ForEach(SampleStudio.report.prefix(4), id: \.self) { line in
-                        Text(line).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                    if studio.isLive {
+                        if studio.liveReport.isEmpty { EmptyLine(text: "No report yet.") }
+                        ForEach(Array(studio.liveReport.prefix(4).enumerated()), id: \.offset) { _, line in
+                            Text(line).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                        }
+                    } else {
+                        ForEach(SampleStudio.report.prefix(4), id: \.self) { line in
+                            Text(line).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                        }
                     }
                 }
             }
             ComingUpTile()
             PipelineTile()
-            MakeTile(title: "Your channels", symbol: "person.crop.square", link: "Add a channel", linkAction: { studio.sheet = .addChannel }) {
+            MakeTile(title: "Your channels", symbol: "person.crop.square", link: studio.isLive ? nil : "Add a channel", linkAction: { studio.sheet = .addChannel }) {
                 if studio.channels.isEmpty { EmptyLine(text: "No channels yet.") }
                 ForEach(studio.channels) { channel in
                     Button { studio.go(.channel(channel.id)) } label: {
@@ -73,6 +80,7 @@ struct OverviewDashboard: View {
                     .buttonStyle(PressStyle(scale: 0.98))
                 }
             }
+            if studio.isLive { MakeStudioCycleTile() }
         }
     }
 }
@@ -114,8 +122,8 @@ struct ComingUpTile: View {
             ForEach(studio.upcoming) { post in
                 Button { studio.sheet = post.publish == .prepared || post.publish == .waitingForYou ? .checklist(post.id) : .post(post.id) } label: {
                     HStack(spacing: 10) {
-                        Text("\(weekDayNames[post.scheduledDay ?? 0]) \(post.scheduledTime)")
-                            .font(KFont.ui(13, .medium, relativeTo: .footnote)).foregroundStyle(Palette.goldText).frame(width: 78, alignment: .leading)
+                        Text(post.scheduleText ?? "")
+                            .font(KFont.ui(13, .medium, relativeTo: .footnote)).foregroundStyle(Palette.goldText).frame(width: studio.isLive ? 120 : 78, alignment: .leading)
                         Text(post.title).font(KFont.ui(15)).foregroundStyle(Palette.ink).lineLimit(1)
                         Spacer(minLength: 0)
                     }
@@ -173,7 +181,10 @@ struct ChannelDashboard: View {
                     }
                 }
                 MakeTile(title: "Channel numbers", symbol: "number") {
-                    if channel.posts == 0 {
+                    if studio.isLive {
+                        StatBox(value: "\(studio.posts.filter { $0.channelID == channelID && $0.publish == .posted }.count)", label: "Posts posted")
+                        HintLine(text: "Each post's numbers are in Analytics.")
+                    } else if channel.posts == 0 {
                         EmptyLine(text: "No numbers read yet.")
                     } else {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
@@ -226,12 +237,16 @@ struct ApprovalsView: View {
         let showLibrary = studio.currentChannelID == nil
         let empty = posts.isEmpty && plans.isEmpty && (!showLibrary || (studio.sheetsWaiting.isEmpty && studio.packsWaiting.isEmpty))
         VStack(alignment: .leading, spacing: 12) {
-            Text("Approving marks a post approved. Nothing is posted by approving: the Publisher prepares it, and you post it from Publishing.")
+            Text(studio.isLive
+                 ? "Approving marks a post approved. Nothing is posted by approving: the Publisher prepares it, and you post it on your desktop."
+                 : "Approving marks a post approved. Nothing is posted by approving: the Publisher prepares it, and you post it from Publishing.")
                 .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
             if studio.batchApproval && posts.count > 1 {
                 MakePillButton(title: "Approve all \(posts.count)", symbol: "checkmark.circle", filled: true, expand: true) { studio.sheet = .approveAll }
+                    .disabled(studio.isLive && MakeStudioLive.shared.isBusy("approveAll"))
             }
+            if studio.isLive { MakeStudioPendingLine(key: "approveAll") }
             if empty {
                 EmptyLine(text: studio.currentChannelID == nil ? "Nothing is waiting for you. Posts appear here when the Producer brings them for approval." : "Nothing from this channel is waiting for you.")
                     .padding(.vertical, 20)
@@ -239,8 +254,13 @@ struct ApprovalsView: View {
             ForEach(posts) { post in ApprovalPostCard(post: post) }
             ForEach(plans) { plan in PlanCard(plan: plan) }
             if showLibrary {
-                ForEach(Array(studio.sheetsWaiting.enumerated()), id: \.offset) { _, pair in SheetApprovalCard(character: pair.0, version: pair.1) }
-                ForEach(Array(studio.packsWaiting.enumerated()), id: \.offset) { _, pair in PackApprovalCard(pack: pair.0, version: pair.1) }
+                if studio.isLive {
+                    ForEach(studio.liveSheetRows) { row in SheetApprovalCard(character: row.character, version: row.version) }
+                    ForEach(studio.livePackRows) { row in PackApprovalCard(pack: row.pack, version: row.version) }
+                } else {
+                    ForEach(Array(studio.sheetsWaiting.enumerated()), id: \.offset) { _, pair in SheetApprovalCard(character: pair.0, version: pair.1) }
+                    ForEach(Array(studio.packsWaiting.enumerated()), id: \.offset) { _, pair in PackApprovalCard(pack: pair.0, version: pair.1) }
+                }
             }
         }
     }
@@ -278,20 +298,26 @@ struct ApprovalPostCard: View {
             if !post.why.isEmpty {
                 Text(post.why).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
             }
-            HStack(spacing: 8) {
-                MakePillButton(title: "Approve", filled: true, expand: true) { studio.sheet = .approvePost(post.id) }
-                MakePillButton(title: "Edit") { studio.sheet = .editPost(post.id) }
-                Menu {
-                    Button("Reject", systemImage: "xmark") { studio.sheet = .rejectPost(post.id) }
-                    Button("Redraft", systemImage: "arrow.uturn.backward") { studio.sheet = .redraftPost(post.id) }
-                    Button("Details", systemImage: "info.circle") { studio.sheet = .post(post.id) }
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 16, weight: .bold)).foregroundStyle(Palette.ink)
-                        .frame(width: 44, height: 44).background(Palette.ink.opacity(0.1), in: Circle())
+            if studio.isLive {
+                MakeStudioApprovalButtons(post: post)
+            } else {
+                HStack(spacing: 8) {
+                    MakePillButton(title: "Approve", filled: true, expand: true) { studio.sheet = .approvePost(post.id) }
+                    MakePillButton(title: "Edit") { studio.sheet = .editPost(post.id) }
+                    Menu {
+                        Button("Reject", systemImage: "xmark") { studio.sheet = .rejectPost(post.id) }
+                        Button("Redraft", systemImage: "arrow.uturn.backward") { studio.sheet = .redraftPost(post.id) }
+                        Button("Details", systemImage: "info.circle") { studio.sheet = .post(post.id) }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 16, weight: .bold)).foregroundStyle(Palette.ink)
+                            .frame(width: 44, height: 44).background(Palette.ink.opacity(0.1), in: Circle())
+                    }
+                    .accessibilityLabel("More actions")
                 }
-                .accessibilityLabel("More actions")
             }
-            Text("After you approve, Publishing prepares it and opens the upload page; you press Post yourself.")
+            Text(studio.isLive
+                 ? "After you approve, Publishing prepares it. Posting it is done in Kairos on your desktop."
+                 : "After you approve, Publishing prepares it and opens the upload page; you press Post yourself.")
                 .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -312,7 +338,9 @@ struct PlanCard: View {
         VStack(alignment: .leading, spacing: 10) {
             StatePill(text: "Long video plan", tone: .gold)
             Text(plan.title).font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
-            Text("For \(studio.channel(plan.channelID)?.handle ?? "")").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+            if !studio.isLive || studio.channel(plan.channelID) != nil {
+                Text("For \(studio.channel(plan.channelID)?.handle ?? "")").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(plan.chapters, id: \.self) { Text($0).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim) }
             }
@@ -326,14 +354,18 @@ struct PlanCard: View {
             .font(KFont.ui(15, .medium))
             .foregroundStyle(Palette.ink)
             .tint(Palette.goldText)
-            HStack(spacing: 8) {
-                MakePillButton(title: "Approve plan", filled: true, expand: true) {
-                    if let index = studio.plans.firstIndex(where: { $0.id == plan.id }) {
-                        withAnimation(Motion.snappy) { studio.plans[index].approved = true }
+            if studio.isLive {
+                MakeStudioPlanButtons(plan: plan)
+            } else {
+                HStack(spacing: 8) {
+                    MakePillButton(title: "Approve plan", filled: true, expand: true) {
+                        if let index = studio.plans.firstIndex(where: { $0.id == plan.id }) {
+                            withAnimation(Motion.snappy) { studio.plans[index].approved = true }
+                        }
+                        toast.say("Plan approved. The team can render it now.")
                     }
-                    toast.say("Plan approved. The team can render it now.")
+                    MakePillButton(title: "Reject") { studio.sheet = .planReject(plan.id) }
                 }
-                MakePillButton(title: "Reject") { studio.sheet = .planReject(plan.id) }
             }
         }
         .padding(14)
@@ -352,14 +384,18 @@ struct SheetApprovalCard: View {
         VStack(alignment: .leading, spacing: 10) {
             StatePill(text: "Character sheet", tone: .gold)
             Text("\(character.name), version \(version.number)").font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
-            CharacterSheetArt(version: version, family: character.family).frame(height: 120)
+            if !studio.isLive { CharacterSheetArt(version: version, family: character.family).frame(height: 120) }
             Text(version.note).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-            HStack(spacing: 8) {
-                MakePillButton(title: "Approve", filled: true, expand: true) {
-                    studio.setCharacter(character.id, version: version.number, status: .approved)
-                    toast.say("\(character.name) version \(version.number) approved.")
+            if studio.isLive {
+                MakeStudioSheetButtons(rowID: "\(character.id)#\(version.number)")
+            } else {
+                HStack(spacing: 8) {
+                    MakePillButton(title: "Approve", filled: true, expand: true) {
+                        studio.setCharacter(character.id, version: version.number, status: .approved)
+                        toast.say("\(character.name) version \(version.number) approved.")
+                    }
+                    MakePillButton(title: "Reject") { studio.sheet = .sheetReject("\(character.id)#\(version.number)") }
                 }
-                MakePillButton(title: "Reject") { studio.sheet = .sheetReject("\(character.id)#\(version.number)") }
             }
         }
         .padding(14)
@@ -378,24 +414,30 @@ struct PackApprovalCard: View {
         VStack(alignment: .leading, spacing: 10) {
             StatePill(text: "Style pack", tone: .gold)
             Text("\(pack.name), version \(version.number)").font(KFont.ui(18, .semibold)).foregroundStyle(Palette.ink)
-            HStack(spacing: 8) {
-                PackSampleArt(name: pack.name).frame(height: 110)
-                ContactSheetArt().frame(width: 110, height: 110)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                if version.sampleNotes.isEmpty {
-                    Text("The sample passed its checks.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.success)
+            if studio.isLive {
+                if !version.note.isEmpty { Text(version.note).font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim) }
+                HintLine(text: "Its sample video is on your desktop.")
+                MakeStudioPackButtons(rowID: "\(pack.id)#\(version.number)")
+            } else {
+                HStack(spacing: 8) {
+                    PackSampleArt(name: pack.name).frame(height: 110)
+                    ContactSheetArt().frame(width: 110, height: 110)
                 }
-                ForEach(version.sampleNotes.prefix(6), id: \.self) { note in
-                    Text("· \(note)").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                VStack(alignment: .leading, spacing: 4) {
+                    if version.sampleNotes.isEmpty {
+                        Text("The sample passed its checks.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.success)
+                    }
+                    ForEach(version.sampleNotes.prefix(6), id: \.self) { note in
+                        Text("· \(note)").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                    }
                 }
-            }
-            HStack(spacing: 8) {
-                MakePillButton(title: "Approve", filled: true, expand: true) {
-                    studio.setPack(pack.id, version: version.number, status: .approved)
-                    toast.say("\(pack.name) version \(version.number) approved.")
+                HStack(spacing: 8) {
+                    MakePillButton(title: "Approve", filled: true, expand: true) {
+                        studio.setPack(pack.id, version: version.number, status: .approved)
+                        toast.say("\(pack.name) version \(version.number) approved.")
+                    }
+                    MakePillButton(title: "Reject") { studio.sheet = .packReject("\(pack.id)#\(version.number)") }
                 }
-                MakePillButton(title: "Reject") { studio.sheet = .packReject("\(pack.id)#\(version.number)") }
             }
         }
         .padding(14)
@@ -482,9 +524,13 @@ struct StudioCalendarView: View {
     @Environment(MakeStore.self) private var make
 
     var body: some View {
+        if make.studio.isLive { MakeStudioCalendar() } else { sampleBody }
+    }
+
+    private var sampleBody: some View {
         let studio = make.studio
         let list = studio.scoped(studio.posts)
-        VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 GlassIconButton(symbol: "chevron.left", label: "Previous week", size: 40) { withAnimation(Motion.snappy) { studio.weekOffset -= 1 } }
                 Text(weekLabel(studio.weekOffset)).font(KFont.ui(16, .semibold)).foregroundStyle(Palette.ink).frame(maxWidth: .infinity)
@@ -559,7 +605,11 @@ struct PublishingView: View {
             }
         }
         VStack(alignment: .leading, spacing: 12) {
-            if let id = studio.currentChannelID, let channel = studio.channel(id) { RoutesPanel(channel: channel) }
+            if studio.isLive {
+                HintLine(text: MakeStudioWords.posting)
+            } else if let id = studio.currentChannelID, let channel = studio.channel(id) {
+                RoutesPanel(channel: channel)
+            }
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(filters, id: \.self) { filter in
@@ -622,6 +672,7 @@ struct PublishRow: View {
 
     private var whenText: String {
         if let posted = post.posted { return "Posted \(posted)" }
+        if let at = post.scheduledAt { return "Scheduled for \(at.studioDayTime)" }
         if let day = post.scheduledDay { return "Scheduled for \(weekDayNames[day]) \(10 + day) Nov, \(post.scheduledTime)" }
         if post.publish == .approved || post.publish == .prepared { return "Approved, not scheduled" }
         return "Made \(post.ageText) ago"
@@ -635,9 +686,13 @@ struct PostActions: View {
     @Environment(MakeToast.self) private var toast
 
     var body: some View {
+        if make.studio.isLive { MakeStudioPostActions(post: post) } else { sampleBody }
+    }
+
+    private var sampleBody: some View {
         let studio = make.studio
         let platform = studio.channel(post.channelID)?.platform ?? .youtube
-        ScrollView(.horizontal) {
+        return ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 switch post.publish {
                 case .awaiting:
@@ -726,8 +781,12 @@ struct ScoreboardView: View {
     @State private var weightText = ["50", "30", "20"]
 
     var body: some View {
+        if make.studio.isLive { MakeStudioScoreboard() } else { sampleBody }
+    }
+
+    private var sampleBody: some View {
         @Bindable var studio = make.studio
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Score out of 100: views \(studio.weights[0]), watch time \(studio.weights[1]), follows and engagement \(studio.weights[2]). Each part is ranked within its platform.")
                 .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -859,10 +918,14 @@ struct ChannelAnalyticsView: View {
     @Environment(MakeToast.self) private var toast
 
     var body: some View {
+        if make.studio.isLive { MakeStudioChannelAnalytics(channelID: channelID) } else { sampleBody }
+    }
+
+    private var sampleBody: some View {
         let studio = make.studio
         let posts = studio.posts.filter { $0.channelID == channelID && $0.publish == .posted }
         let channel = studio.channel(channelID)
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             MakeTile(title: "Newest 12 posts", symbol: "chart.bar") {
                 let numbers = posts.compactMap(\.numbers)
                 if numbers.isEmpty {
@@ -937,8 +1000,12 @@ struct ReportView: View {
     @Environment(MakeToast.self) private var toast
 
     var body: some View {
+        if make.studio.isLive { MakeStudioReport() } else { sampleBody }
+    }
+
+    private var sampleBody: some View {
         let studio = make.studio
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             MakeTile(title: "Latest report", symbol: "doc.plaintext") {
                 Text("3 to 9 Nov").font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                 VStack(alignment: .leading, spacing: 6) {
@@ -973,6 +1040,11 @@ struct ChannelSettingsView: View {
     @State private var longText = "0"
 
     var body: some View {
+        if make.studio.isLive { MakeStudioChannelSettings(channelID: channelID) } else { sampleBody }
+    }
+
+    @ViewBuilder
+    private var sampleBody: some View {
         let studio = make.studio
         if let channel = studio.channel(channelID) {
             VStack(alignment: .leading, spacing: 12) {

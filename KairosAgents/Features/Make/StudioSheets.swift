@@ -9,6 +9,12 @@ struct StudioSheetView: View {
 
     var body: some View {
         let studio = make.studio
+        if studio.isLive, let content = liveContent(studio) { content } else { sampleBody }
+    }
+
+    @ViewBuilder
+    private var sampleBody: some View {
+        let studio = make.studio
         switch sheet {
         case .picker: StudioPickerSheet()
         case .setup: SetupSheet()
@@ -145,6 +151,110 @@ struct StudioSheetView: View {
         case .accountChooser(let id): AccountChooserSheet(channelID: id)
         case .socialApp(let platform): SocialAppSheet(platform: platform)
         case .teamReport: TeamReportSheet()
+        case .planApprove, .sheetApprove, .packApprove, .decisionReject, .reportSend: EmptyView()
+        }
+    }
+
+    /// The sheets while paired. Each change asks the desktop and says what it answered. A sheet that is not
+    /// listed here (the libraries') is drawn as it always was.
+    private func liveContent(_ studio: StudioStore) -> AnyView? {
+        let live = MakeStudioLive.shared
+        func held(_ text: String) -> AnyView { AnyView(MakeStudioHeldSheet(text: text)) }
+        func say(_ work: @escaping () async -> MakeStudioOutcome) {
+            Task { toast.say(await work().line) }
+        }
+        switch sheet {
+        case .setup: return held(MakeStudioWords.setup)
+        case .addChannel: return held(MakeStudioWords.addChannel)
+        case .editPost: return held(MakeStudioWords.editPost)
+        case .teamReport: return held(MakeStudioWords.teamReport)
+        case .importNumbers: return held(MakeStudioWords.importNumbers)
+        case .youtube, .tiktok, .instagram, .schedule, .markPosted: return held(MakeStudioWords.posting)
+        case .handsOff: return held(MakeStudioWords.handsOffOn)
+        case .accountChooser, .socialApp: return held(MakeStudioWords.accounts)
+        case .post(let id): return AnyView(MakeStudioPostDetails(postID: id))
+        case .checklist(let id): return AnyView(MakeStudioChecklist(postID: id))
+        case .rejectPost(let id):
+            return AnyView(NoteSheet(title: "Reject post", detail: studio.post(id)?.title, label: "Reason", limit: 500, button: "Reject post") { text in
+                say { await live.reject(id, reason: text) }
+                return true
+            })
+        case .redraftPost(let id):
+            return AnyView(MakeConfirmSheet(title: "Send back for redraft?", detail: studio.post(id)?.title ?? "", button: "Send back for redraft") {
+                say { await live.redraft(id) }
+            })
+        case .approvePost(let id):
+            let post = studio.post(id)
+            return AnyView(MakeSwipeUpConfirm(
+                title: "Approve this post?",
+                detail: "\(post?.title ?? "") for \(studio.channel(post?.channelID ?? "")?.handle ?? "").",
+                points: ["It moves to Publishing, ready to prepare.", "Nothing is posted by approving. Posting is done in Kairos on your desktop."],
+                confirmLabel: "Swipe up to approve"
+            ) {
+                say { await live.approve(id) }
+            })
+        case .approveAll:
+            let count = studio.scoped(studio.posts).filter { $0.publish == .awaiting }.count
+            return AnyView(MakeSwipeUpConfirm(title: "Approve all \(count) posts?", detail: "Each post is approved as it is. Nothing is posted.", confirmLabel: "Swipe up to approve all") {
+                say { await live.approveAll() }
+            })
+        case .runCycle:
+            return AnyView(MakeStudioCycleSheet())
+        case .resolve(let id):
+            let channel = studio.channel(id)
+            return AnyView(MakeConfirmSheet(title: "Resume \(channel?.handle ?? "this channel")?", detail: channel?.warning ?? "It starts making posts again.", button: "Resume") {
+                say { await live.resumeChannel(id) }
+            })
+        case .archive(let id):
+            return AnyView(MakeConfirmSheet(title: "Archive \(studio.channel(id)?.handle ?? "this channel")?", detail: "Its history is kept. Nothing is posted from it. Restoring it is done in Kairos on your desktop.", button: "Archive", danger: true) {
+                say { await live.archiveChannel(id) }
+            })
+        case .decision(let id):
+            let decision = studio.decisions.first { $0.id == id }
+            return AnyView(MakeConfirmSheet(title: "\(decision?.title ?? "Confirm this decision")?", detail: "Your desktop goes ahead with this. A retirement archives its channels, which keep their history.", button: "Confirm") {
+                say { await live.decide(id, confirm: true) }
+            })
+        case .decisionReject(let id):
+            let decision = studio.decisions.first { $0.id == id }
+            return AnyView(MakeConfirmSheet(title: "Reject \(decision?.title ?? "this decision")?", detail: "Nothing changes. The Producer is told it was turned down.", button: "Reject", danger: true) {
+                say { await live.decide(id, confirm: false) }
+            })
+        case .planApprove(let id):
+            let plan = studio.plans.first { $0.id == id }
+            return AnyView(MakeConfirmSheet(title: "Approve the plan for \(plan?.title ?? "this video")?", detail: "Your desktop approves the plan exactly as it reads now, and renders the long video, which takes many minutes of its machine.", button: "Approve plan") {
+                say { await live.decidePlan(id, approve: true) }
+            })
+        case .planReject(let id):
+            return AnyView(NoteSheet(title: "Reject plan", detail: studio.plans.first { $0.id == id }?.title, label: "Note", limit: 500, button: "Reject plan") { text in
+                say { await live.decidePlan(id, approve: false, reason: text) }
+                return true
+            })
+        case .sheetApprove(let key):
+            let row = studio.liveSheetRows.first { $0.id == key }
+            return AnyView(MakeConfirmSheet(title: "Approve \(row?.character.name ?? "this sheet"), version \(row?.version.number ?? 0)?", detail: "Videos may cast this version. Its sheet is not shown on this phone: approve it only if you have looked at it on your desktop.", button: "Approve sheet") {
+                say { await live.decideSheet(key, approve: true) }
+            })
+        case .sheetReject(let key):
+            return AnyView(NoteSheet(title: "Reject sheet", detail: nil, label: "Note", limit: 500, button: "Reject sheet") { text in
+                say { await live.decideSheet(key, approve: false, reason: text) }
+                return true
+            })
+        case .packApprove(let key):
+            let row = studio.livePackRows.first { $0.id == key }
+            return AnyView(MakeConfirmSheet(title: "Approve \(row?.pack.name ?? "this style pack"), version \(row?.version.number ?? 0)?", detail: "Channels and videos may use this version. Its sample is not shown on this phone: approve it only if you have watched it on your desktop.", button: "Approve pack") {
+                say { await live.decidePack(key, approve: true) }
+            })
+        case .packReject(let key):
+            return AnyView(NoteSheet(title: "Reject pack", detail: nil, label: "Note", limit: 500, button: "Reject pack") { text in
+                say { await live.decidePack(key, approve: false, reason: text) }
+                return true
+            })
+        case .reportSend:
+            return AnyView(MakeConfirmSheet(title: "Send the report to your Inbox?", detail: "This puts a message in your Inbox on your desktop. With hands-off posting on, it also reaches you through Reach me. It cannot be taken back.", button: "Send report") {
+                say { await live.sendReport() }
+            })
+        default:
+            return nil
         }
     }
 }
