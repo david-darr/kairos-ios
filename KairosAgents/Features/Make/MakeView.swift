@@ -60,7 +60,10 @@ struct MakeView: View {
         .shrinksBar(chrome)
         .safeAreaInset(edge: .top, spacing: 0) {
             TabHeader(title: "Make") {
-                GlassIconButton(symbol: "film.stack", label: "Studio") { cover = .studio }
+                // Studio does not read the desktop yet. Until it does, a paired phone never opens the sample one.
+                if !live.isLive {
+                    GlassIconButton(symbol: "film.stack", label: "Studio") { cover = .studio }
+                }
                 GlassIconButton(symbol: "magnifyingglass", label: "Search") { router.sheet = .search }
             }
         }
@@ -468,31 +471,9 @@ struct MakeView: View {
         }
     }
 
+    /// Studio does not read the desktop yet. Until it does, a paired phone gets one line, never the sample Studio.
     private var liveStudioCard: some View {
-        VStack(spacing: 10) {
-            sectionHead("Studio", trailing: "Content dashboard") { cover = .studio }
-            Button { cover = .studio } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "film.stack")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Palette.goldText)
-                        .frame(width: 42, height: 42)
-                        .background(Palette.ink.opacity(0.08), in: Circle())
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Your content channels").font(KFont.ui(16.5, .medium)).foregroundStyle(Palette.ink)
-                        Text("Approvals, posts and numbers in one place")
-                            .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.inkFaint)
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .kCard(radius: 22)
-            }
-            .buttonStyle(PressStyle(scale: 0.98))
-            .accessibilityLabel("Studio")
-        }
+        HintLine(text: "Studio is not on this iPhone yet. Open it in Kairos on your desktop.")
     }
 
     @ViewBuilder

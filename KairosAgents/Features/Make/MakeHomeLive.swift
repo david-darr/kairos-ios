@@ -463,7 +463,8 @@ final class MakeHomeLive {
             // Another desktop or account is showing now: nothing from this answer is drawn or cleared.
             guard stillLive(key), send?.sendID == sent.sendID else { return .busy }
             send = nil
-            refusedSend = nil
+            // Only this tap's own kept id is done with. A kept id for other words stays, so those words cannot start twice.
+            if refusedSend?.sendID == sent.sendID { refusedSend = nil }
             var job = Self.job(dto)
             if job.ask == nil { job.ask = sent.text }
             if job.kind == nil { job.kind = sent.kind }
@@ -485,13 +486,15 @@ final class MakeHomeLive {
                 switch api {
                 case .some(.server(status: 404, let detail)) where detail == "Task or suggestion not found":
                     // The desktop says this for a member account, and also when a start broke part way after
-                    // it saved the task. Keep the id, and only an account with no task of its own gets the member line.
+                    // it saved the task. Keep the id. Only a second refusal of this same id, on an account with
+                    // no task of its own, gets the member line.
+                    let again = refusedSend?.sendID == sent.sendID
                     refusedSend = sent
-                    if tracked.isEmpty && making.isEmpty {
+                    if again && tracked.isEmpty && making.isEmpty {
                         notYours = true
                         line = Self.notYoursLine
                     } else {
-                        line = "Your desktop could not start this. What it is making shows below."
+                        line = "Your desktop did not start this. Tap Make to try once more."
                     }
                 case .some(.server(status: 404, _)):
                     line = "Your desktop cannot start this yet. It may need a newer Kairos."
