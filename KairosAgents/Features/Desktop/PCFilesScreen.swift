@@ -19,6 +19,15 @@ struct PCFilesScreen: View {
     }
 
     var body: some View {
+        // Paired with a desktop: the folders it lists for an admin account, never the sample places and files.
+        if DeskForgeLive.shared.on {
+            DeskFilesFolderScreen(path: path)
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if path.isEmpty {

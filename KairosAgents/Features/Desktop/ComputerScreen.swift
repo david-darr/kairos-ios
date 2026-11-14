@@ -25,6 +25,16 @@ struct ComputerScreen: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // Paired with a desktop: the running computers to watch and stop, never the sample screen. Taking over,
+        // typing and recording stay in Kairos on the desktop (DeskComputerLive.swift).
+        if DeskForgeLive.shared.on {
+            DeskComputerScreen(start: start)
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         VStack(spacing: 14) {
             statusLine
             screenView
