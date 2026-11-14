@@ -126,9 +126,32 @@ nonisolated struct PostNumbers: Hashable, Sendable {
 
 nonisolated struct ChecklistLine: Identifiable, Hashable, Sendable {
     enum Who: String, Hashable, Sendable { case you = "You", filled = "Filled", missing = "Not found, do it yourself", kairos = "Kairos" }
-    let id = UUID()
+    /// Sample lines get a new id each time they are built. Lines from the desktop pass a steady one (post and key).
+    let id: String
     var text: String
     var who: Who
+
+    init(id: String = UUID().uuidString, text: String, who: Who) {
+        self.id = id
+        self.text = text
+        self.who = who
+    }
+}
+
+nonisolated extension Date {
+    /// "Wed 12 Nov, 18:00", for a post's real schedule while paired.
+    var studioDayTime: String {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM HH:mm")
+        return formatter.string(from: self)
+    }
+
+    /// "Wed 12 Nov".
+    var studioDay: String {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+        return formatter.string(from: self)
+    }
 }
 
 nonisolated struct StudioPost: Identifiable, Hashable, Sendable {
@@ -160,8 +183,32 @@ nonisolated struct StudioPost: Identifiable, Hashable, Sendable {
     var fillNote: String?
     var rejectReason: String?
     var checklist: [ChecklistLine] = []
+    // Set only for a post read from the desktop.
+    var scheduledAt: Date?
+    var postedAt: Date?
+    var videoID: String?
+    var ageMinutes: Int?
+    var plainNextWho = ""
+    var problems: [String] = []
+    var errorText = ""
+    /// What the desktop says about being past its step window, so the phone never works it out a second way.
+    var desktopOverdue: Bool?
 
-    var overdue: Bool { ageHours > expectedHours && stage != .posted && stage != .rejected }
+    /// The day a post sits on in the calendar: when it went up, else when it is scheduled.
+    var calendarDate: Date? { postedAt ?? scheduledAt }
+
+    /// When the post is scheduled, in words: the sample's weekday and time, or the desktop's real date.
+    var scheduleText: String? {
+        if let scheduledAt { return scheduledAt.studioDayTime }
+        guard let day = scheduledDay, (0..<7).contains(day) else { return nil }
+        return "\(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][day]) \(scheduledTime)"
+    }
+
+    var overdue: Bool {
+        guard stage != .posted && stage != .rejected else { return false }
+        if let desktopOverdue { return desktopOverdue }
+        return ageHours > expectedHours
+    }
 
     var flags: [String] {
         var out: [String] = []
@@ -172,7 +219,7 @@ nonisolated struct StudioPost: Identifiable, Hashable, Sendable {
     }
 
     var ageText: String {
-        if ageHours < 1 { return "40m" }
+        if ageHours < 1 { return ageMinutes.map { "\(max(1, $0))m" } ?? "40m" }
         if ageHours < 48 { return "\(ageHours)h" }
         return "\(ageHours / 24)d"
     }
@@ -429,6 +476,16 @@ nonisolated enum StudioSheet: Identifiable, Hashable, Sendable {
     case accountChooser(String)
     case socialApp(StudioPlatform)
     case teamReport
+    // Paired only: each one asks before it changes something on the desktop.
+    /// The plan's id and the version of the plan the person was reading when the sheet opened.
+    case planApprove(String, Int?)
+    /// The ids of the posts that were waiting when the sheet opened: exactly these are approved.
+    case approveBatch([String])
+    case resumeTeam
+    case sheetApprove(String)
+    case packApprove(String)
+    case decisionReject(String)
+    case reportSend
 
     var id: String { String(describing: self) }
 }
@@ -481,10 +538,119 @@ final class StudioStore {
     var pageReads: [StudioPlatform: Bool] = [.tiktok: true, .instagram: false]
     var reportSent = false
 
+    // Paired: the desktop's own data, set only by MakeStudioLive. While `isLive` no sample item is in this store.
+    var isLive = false
+    var liveSheets: [(StudioCharacter, CharacterVersion)] = []
+    var livePacks: [(StudioPack, PackVersion)] = []
+    var liveScoreNiches: [StudioScore] = []
+    var liveScoreFormats: [StudioScore] = []
+    var liveScorePacks: [StudioScore] = []
+    var liveTopPosts: [String] = []
+    var liveReport: [String] = []
+    var liveReportRange = ""
+    var livePostsPosted = 0
+    var livePostsScored = 0
+    var liveTaps = 0
+    /// The desktop id of the video the editor opens. Nil while the phone is not paired.
+    var editorVideoID: String?
+
     init(provider: StudioProviding = SampleStudio()) {
         niches = provider.niches()
         channels = provider.channels()
         posts = provider.posts()
+    }
+
+    /// Paired: empty every sample list. MakeStudioLive fills it with what the desktop has.
+    func beginLive() {
+        isLive = true
+        niches = []
+        channels = []
+        posts = []
+        packs = []
+        characters = []
+        plans = []
+        formats = []
+        decisions = []
+        templates = []
+        liveSheets = []
+        livePacks = []
+        liveScoreNiches = []
+        liveScoreFormats = []
+        liveScorePacks = []
+        liveTopPosts = []
+        liveReport = []
+        liveReportRange = ""
+        livePostsPosted = 0
+        livePostsScored = 0
+        liveTaps = 0
+        scope = .all
+        tab = .dashboard
+        publishFilter = "All"
+        weekOffset = 0
+        sheet = nil
+        pushEditor = false
+        editorVideoID = nil
+        hasTeam = false
+        handsOff = false
+        teamPaused = false
+        batchApproval = false
+        cycleRunning = false
+        setupHidden = true
+        spendCap = 0
+        weights = [40, 40, 20]
+        reportSent = false
+    }
+
+    /// Unpaired: the sample Studio exactly as it starts.
+    func restoreSample() {
+        let fresh = StudioStore()
+        isLive = false
+        niches = fresh.niches
+        channels = fresh.channels
+        posts = fresh.posts
+        packs = fresh.packs
+        characters = fresh.characters
+        plans = fresh.plans
+        formats = fresh.formats
+        decisions = fresh.decisions
+        templates = fresh.templates
+        liveSheets = []
+        livePacks = []
+        liveScoreNiches = []
+        liveScoreFormats = []
+        liveScorePacks = []
+        liveTopPosts = []
+        liveReport = []
+        liveReportRange = ""
+        livePostsPosted = 0
+        livePostsScored = 0
+        liveTaps = 0
+        scope = fresh.scope
+        tab = fresh.tab
+        publishFilter = fresh.publishFilter
+        weekOffset = fresh.weekOffset
+        sheet = nil
+        pushEditor = false
+        editorVideoID = nil
+        hasTeam = fresh.hasTeam
+        handsOff = fresh.handsOff
+        teamPaused = fresh.teamPaused
+        batchApproval = fresh.batchApproval
+        routinesOn = fresh.routinesOn
+        cycleRunning = fresh.cycleRunning
+        lastCycle = fresh.lastCycle
+        setupHidden = fresh.setupHidden
+        spendCap = fresh.spendCap
+        weights = fresh.weights
+        youtubeConfigured = fresh.youtubeConfigured
+        analyticsConnected = fresh.analyticsConnected
+        postingConnected = fresh.postingConnected
+        uploadPrivacy = fresh.uploadPrivacy
+        tiktokAppSaved = fresh.tiktokAppSaved
+        tiktokAudited = fresh.tiktokAudited
+        instagramAppSaved = fresh.instagramAppSaved
+        pageReads = fresh.pageReads
+        reportSent = fresh.reportSent
     }
 
     // MARK: Lookups
@@ -524,11 +690,13 @@ final class StudioStore {
     }
 
     var sheetsWaiting: [(StudioCharacter, CharacterVersion)] {
-        characters.flatMap { character in character.versions.filter { $0.status == .waiting }.map { (character, $0) } }
+        if isLive { return liveSheets }
+        return characters.flatMap { character in character.versions.filter { $0.status == .waiting }.map { (character, $0) } }
     }
 
     var packsWaiting: [(StudioPack, PackVersion)] {
-        packs.flatMap { pack in pack.versions.filter { $0.status == .waiting }.map { (pack, $0) } }
+        if isLive { return livePacks }
+        return packs.flatMap { pack in pack.versions.filter { $0.status == .waiting }.map { (pack, $0) } }
     }
 
     func needsYou(for channelID: String?) -> [NeedsRow] {
@@ -553,10 +721,18 @@ final class StudioStore {
         return rows
     }
 
-    var latestPosted: [StudioPost] { Array(scoped(posts).filter { $0.publish == .posted }.prefix(4)) }
+    var latestPosted: [StudioPost] {
+        let posted = scoped(posts).filter { $0.publish == .posted }
+        if isLive { return Array(posted.sorted { ($0.postedAt ?? .distantPast) > ($1.postedAt ?? .distantPast) }.prefix(4)) }
+        return Array(posted.prefix(4))
+    }
 
     var upcoming: [StudioPost] {
-        Array(scoped(posts).filter { $0.scheduledDay != nil && $0.publish != .posted }.sorted { ($0.scheduledDay ?? 0) < ($1.scheduledDay ?? 0) }.prefix(5))
+        if isLive {
+            let soon = scoped(posts).filter { $0.scheduledAt != nil && $0.publish != .posted }
+            return Array(soon.sorted { ($0.scheduledAt ?? .distantFuture) < ($1.scheduledAt ?? .distantFuture) }.prefix(5))
+        }
+        return Array(scoped(posts).filter { $0.scheduledDay != nil && $0.publish != .posted }.sorted { ($0.scheduledDay ?? 0) < ($1.scheduledDay ?? 0) }.prefix(5))
     }
 
     var approvalLine: String {

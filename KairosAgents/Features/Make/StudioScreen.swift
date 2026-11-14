@@ -6,29 +6,46 @@ struct StudioScreen: View {
     @Environment(MakeStore.self) private var make
     @Environment(MakeToast.self) private var toast
     @Environment(\.dismiss) private var dismiss
+    private let live = MakeStudioLive.shared
+
+    /// Paired with a desktop: Studio shows the desktop's own data and never the sample.
+    private var paired: Bool { MakeStudioLive.paired }
 
     var body: some View {
         @Bindable var studio = make.studio
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                scopeButton.arrives(0)
-                StudioHead().arrives(1)
-                StudioAlerts()
-                if studio.hasTeam, studio.tabs.isEmpty == false { HandsOffStrip().arrives(2) }
-                if !studio.setupHidden, studio.setupLeft > 0, studio.tabs.isEmpty == false { SetupCard().arrives(3) }
-                if !studio.tabs.isEmpty {
-                    GlassSwitch(items: studio.tabs, selection: $studio.tab) { tab in
-                        if tab == .approvals {
-                            let count = studio.waiting(for: studio.currentChannelID)
-                            return count > 0 ? "Approvals \(count)" : "Approvals"
-                        }
-                        return tab.rawValue
+                if paired && !live.showing(studio) {
+                    // Paired: nothing of the sample shows while the desktop is read, or when it could not be.
+                    MakeStudioStatus(state: live.load) { Task { await live.loadLive() } }
+                } else if !paired && studio.isLive {
+                    // Just unpaired: the sample comes back in a moment.
+                    Color.clear.frame(height: 1)
+                } else {
+                    if paired, let problem = live.problem {
+                        MakeHomeLine(text: problem, action: "Refresh") { Task { await live.loadLive() } }
                     }
-                    .arrives(4)
+                    scopeButton.arrives(0)
+                    StudioHead().arrives(1)
+                    StudioAlerts()
+                    // Paired, the strip is also drawn while hands-off posting is on or could not be read, even when
+                    // the team's setup did not load: it holds the only way to turn hands-off posting off from here.
+                    if studio.hasTeam || (paired && live.postingHeld(studio)), studio.tabs.isEmpty == false { HandsOffStrip().arrives(2) }
+                    if !studio.setupHidden, studio.setupLeft > 0, studio.tabs.isEmpty == false { SetupCard().arrives(3) }
+                    if !studio.tabs.isEmpty {
+                        GlassSwitch(items: studio.tabs, selection: $studio.tab) { tab in
+                            if tab == .approvals {
+                                let count = studio.waiting(for: studio.currentChannelID)
+                                return count > 0 ? "Approvals \(count)" : "Approvals"
+                            }
+                            return tab.rawValue
+                        }
+                        .arrives(4)
+                    }
+                    content
+                        .id(contentKey)
+                        .transition(.opacity.combined(with: .offset(y: 8)))
                 }
-                content
-                    .id(contentKey)
-                    .transition(.opacity.combined(with: .offset(y: 8)))
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 40)
@@ -37,30 +54,36 @@ struct StudioScreen: View {
         .scrollIndicators(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) {
             MakeHeader(title: "Studio", subtitle: "Content", backSymbol: "chevron.down", backLabel: "Close Studio", back: { dismiss() }) {
-                Button {
-                    studio.sheet = .setup
-                } label: {
-                    Image(systemName: "checklist")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Palette.ink)
-                        .frame(width: 44, height: 44)
-                        .overlay(alignment: .topTrailing) {
-                            if studio.setupLeft > 0 {
-                                Text("\(studio.setupLeft)")
-                                    .font(KFont.ui(11, .semibold, relativeTo: .caption2))
-                                    .foregroundStyle(Palette.onGold)
-                                    .frame(minWidth: 18, minHeight: 18)
-                                    .background(Palette.gold, in: Circle())
+                if !paired {
+                    Button {
+                        studio.sheet = .setup
+                    } label: {
+                        Image(systemName: "checklist")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Palette.ink)
+                            .frame(width: 44, height: 44)
+                            .overlay(alignment: .topTrailing) {
+                                if studio.setupLeft > 0 {
+                                    Text("\(studio.setupLeft)")
+                                        .font(KFont.ui(11, .semibold, relativeTo: .caption2))
+                                        .foregroundStyle(Palette.onGold)
+                                        .frame(minWidth: 18, minHeight: 18)
+                                        .background(Palette.gold, in: Circle())
+                                }
                             }
-                        }
+                    }
+                    .buttonStyle(PressStyle(scale: 0.9))
+                    .kGlass(Circle(), interactive: true)
+                    .accessibilityLabel("Content setup, \(studio.setupLeft) steps left")
                 }
-                .buttonStyle(PressStyle(scale: 0.9))
-                .kGlass(Circle(), interactive: true)
-                .accessibilityLabel("Content setup, \(studio.setupLeft) steps left")
             }
         }
         .kScreen(glowAt: UnitPoint(x: 0.2, y: -0.05))
-        .navigationDestination(isPresented: $studio.pushEditor) { VideoEditorScreen(projectID: "sample") }
+        .task(id: MakeStudioLive.connectionKey) {
+            live.follow(make.studio)
+            if paired { await live.loadLiveIfNeeded() }
+        }
+        .navigationDestination(isPresented: $studio.pushEditor) { VideoEditorScreen(projectID: studio.editorVideoID ?? "sample") }
         .sheet(item: $studio.sheet) { sheet in
             StudioSheetView(sheet: sheet)
                 .environment(make)
@@ -78,7 +101,12 @@ struct StudioScreen: View {
         let studio = make.studio
         switch studio.scope {
         case .library(let library):
-            StudioLibraryView(library: library)
+            // Paired, the libraries are not on live data yet: they would show the sample's connection state.
+            if studio.isLive && !MakeStudioLive.librariesLive {
+                HintLine(text: MakeStudioWords.libraries)
+            } else {
+                StudioLibraryView(library: library)
+            }
         case .all, .channel:
             switch studio.tab {
             case .dashboard:
@@ -146,7 +174,7 @@ struct StudioHead: View {
         case .all:
             VStack(alignment: .leading, spacing: 3) {
                 Text("All channels").font(KFont.display(32)).foregroundStyle(Palette.ink)
-                Text("\(studio.liveChannels.filter { $0.state == .live }.count) live channels in \(studio.niches.filter { !$0.retired }.count) live niches. \(studio.approvalLine)")
+                Text("\(studio.liveChannels.filter { $0.state == .live }.count) live channels in \(studio.niches.filter { !$0.retired }.count) live niches. \(studio.isLive && !studio.handsOff && !MakeStudioLive.shared.handsOffKnown ? MakeStudioWords.handsOffUnreadLine : studio.approvalLine)")
                     .font(KFont.ui(14.5, relativeTo: .subheadline)).foregroundStyle(Palette.inkDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -191,7 +219,12 @@ struct StudioAlerts: View {
                             Text("Platform warning.").font(KFont.ui(15, .semibold, relativeTo: .subheadline)).foregroundStyle(Palette.ink)
                             Text(channel.warning ?? "\(channel.handle) is paused.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                                 .fixedSize(horizontal: false, vertical: true)
+                            // Paired, resuming a channel can restart automatic posting: off while hands-off is on or not known.
+                            let held = studio.isLive && MakeStudioLive.shared.postingHeld(studio)
                             MakePillButton(title: "Resolve warning") { studio.sheet = .resolve(channel.id) }
+                                .disabled(held)
+                                .opacity(held ? 0.5 : 1)
+                            if held { HintLine(text: MakeStudioLive.shared.heldLine(studio)) }
                         }
                         Spacer(minLength: 0)
                     }
@@ -210,8 +243,12 @@ struct HandsOffStrip: View {
     @Environment(MakeToast.self) private var toast
 
     var body: some View {
+        if make.studio.isLive { MakeStudioHandsOffStrip() } else { sampleBody }
+    }
+
+    private var sampleBody: some View {
         let studio = make.studio
-        VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: studio.teamPaused ? "pause.circle.fill" : (studio.handsOff ? "bolt.circle.fill" : "hand.raised.circle.fill"))
                     .font(.system(size: 18))
@@ -324,21 +361,32 @@ struct StudioPickerSheet: View {
                     }
                 }
 
+                // Paired, the libraries are left out until they are on live data (MakeStudioLive.librariesLive).
+                let showLibraries = !studio.isLive || MakeStudioLive.librariesLive
+                // Paired, the editor opens a real video by its desktop id, and the row is not drawn when there is none.
+                let editorPost: StudioPost? = studio.isLive ? studio.posts.first(where: { $0.videoID != nil }) : nil
+                let showEditor = !studio.isLive || editorPost != nil
+                if showLibraries || showEditor {
                 VStack(alignment: .leading, spacing: 8) {
-                    SectionLabel(text: "Libraries")
+                    SectionLabel(text: showLibraries ? "Libraries" : "Editor")
                     VStack(spacing: 0) {
+                        if showLibraries {
                         ForEach(StudioLibrary.allCases, id: \.self) { library in
                             pickRow(title: library.rawValue, detail: library.about, count: 0, selected: studio.scope == .library(library)) {
                                 Image(systemName: library.symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.goldText).frame(width: 36, height: 36)
                             } action: { go(.library(library)) }
                         }
-                        pickRow(title: "Editor", detail: "Open the video editor", count: 0, selected: false) {
-                            Image(systemName: "film").font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.goldText).frame(width: 36, height: 36)
-                        } action: {
-                            dismiss()
-                            studio.pushEditor = true
                         }
-                        if studio.hasTeam {
+                        if showEditor {
+                            pickRow(title: "Editor", detail: editorPost.map { "Open the video of \($0.title)" } ?? "Open the video editor", count: 0, selected: false) {
+                                Image(systemName: "film").font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.goldText).frame(width: 36, height: 36)
+                            } action: {
+                                dismiss()
+                                if studio.isLive { studio.editorVideoID = editorPost?.videoID }
+                                studio.pushEditor = true
+                            }
+                        }
+                        if studio.hasTeam && !studio.isLive {
                             pickRow(title: "Bot reports", detail: "The Content Studio team's report", count: 0, selected: false) {
                                 Image(systemName: "chart.bar.doc.horizontal").font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.goldText).frame(width: 36, height: 36)
                             } action: { studio.sheet = .teamReport }
@@ -346,10 +394,16 @@ struct StudioPickerSheet: View {
                     }
                     .kCard(radius: 20)
                 }
+                }
+                if studio.isLive && !MakeStudioLive.librariesLive { HintLine(text: MakeStudioWords.libraries) }
 
-                HStack(spacing: 10) {
-                    MakePillButton(title: "Add channel", symbol: "plus", expand: true) { studio.sheet = .addChannel }
-                    MakePillButton(title: "Set up", symbol: "checklist", expand: true) { studio.sheet = .setup }
+                if studio.isLive {
+                    HintLine(text: MakeStudioWords.addChannel + " " + MakeStudioWords.setup)
+                } else {
+                    HStack(spacing: 10) {
+                        MakePillButton(title: "Add channel", symbol: "plus", expand: true) { studio.sheet = .addChannel }
+                        MakePillButton(title: "Set up", symbol: "checklist", expand: true) { studio.sheet = .setup }
+                    }
                 }
             }
             .padding(.horizontal, 18)
