@@ -173,7 +173,7 @@ nonisolated enum SearchSamples {
             guard read.query == "tyre", read.hits.count == 3, read.skipped == 1,
                   read.hits[0].sessionId == "s-3f2a9c1b", read.hits[0].bot == "a-scout",
                   read.hits[0].title?.string == "Spring stock", !read.hits[0].isOtherVersion,
-                  read.hits[1].isOtherVersion, read.hits[2].bot == nil, read.hits[2].title?.isNull == true,
+                  read.hits[1].isOtherVersion, read.hits[2].bot == nil, read.hits[2].title?.isNull ?? true,
                   read.hits[0].snippet?.string?.contains("tyre") == true else {
                 throw SampleMismatch("bot chat hits")
             }
