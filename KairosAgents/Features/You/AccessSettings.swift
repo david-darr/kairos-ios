@@ -564,11 +564,19 @@ struct RemoteAccessScreen: View {
     private var previewAddress: String { "https://\(AccessSample.host):\(Int(portText) ?? savedPort)" }
     private var liveAddress: String { "https://\(AccessSample.host):\(savedPort)" }
 
+    /// Set after this phone unpairs itself here: the screen turns to sample data and the pair screen opens.
+    @State private var goPair = false
+
     var body: some View {
-        if YouAccessLive.isPaired {
-            YouAccessRemoteScreen()
-        } else {
-            sampleBody
+        Group {
+            if YouAccessLive.isPaired {
+                YouAccessRemoteScreen(goPair: $goPair)
+            } else {
+                sampleBody
+            }
+        }
+        .navigationDestination(isPresented: $goPair) {
+            ConnectionScreen()
         }
     }
 
@@ -1236,7 +1244,8 @@ struct YouAccessComputerUseScreen: View {
 struct YouAccessRemoteScreen: View {
     private let live = YouAccessLive.shared
     @State private var unpairing: YouAccessDevice?
-    @State private var goPair = false
+    /// On the parent, which stays on screen when this phone unpairs and the page turns to sample data.
+    @Binding var goPair: Bool
 
     var body: some View {
         SettingsPage("Remote access", subtitle: "Reach Kairos from your own devices, wherever you are.") {
@@ -1297,9 +1306,6 @@ struct YouAccessRemoteScreen: View {
                     Task { await live.unpairOther(device.id) }
                 }
             }
-        }
-        .navigationDestination(isPresented: $goPair) {
-            ConnectionScreen()
         }
     }
 }
