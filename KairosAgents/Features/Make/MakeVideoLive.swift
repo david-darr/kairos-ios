@@ -686,6 +686,8 @@ final class MakeVideoLive {
     @ObservationIgnored var knownJobs: Set<String> = []
     @ObservationIgnored var knownRuns: Set<String> = []
     @ObservationIgnored var restoreFrom: Int?
+    /// The person chose to leave without saving: nothing is kept for next time.
+    @ObservationIgnored var abandoned = false
 
     init(videoID: String) {
         self.videoID = videoID
@@ -1044,13 +1046,19 @@ extension EditorModel {
 
     /// Keep unsaved edits for the next time this video is opened.
     func stashDraft() {
-        guard let live, live.phase == .ready, isDirty else { return }
+        guard let live, live.phase == .ready, !live.abandoned, isDirty else { return }
         MakeVideoDrafts.put(MakeVideoDraft(state: state, filled: live.filled, ids: live.ids), account: live.account, video: projectID)
     }
 
     func discardDraft() {
         guard let live else { return }
         MakeVideoDrafts.drop(account: live.account, video: projectID)
+    }
+
+    /// Leave without saving: the edits are not kept for the next time.
+    func abandonEdits() {
+        live?.abandoned = true
+        discardDraft()
     }
 
     // MARK: History

@@ -132,7 +132,7 @@ struct VideoEditorScreen: View {
         case .leave:
             ConfirmSheet(title: "Leave without saving?", detail: "Your changes to this video are not saved on your desktop. They will be lost.",
                          confirm: "Leave without saving") {
-                model.discardDraft()
+                model.abandonEdits()
                 dismiss()
             }
         }
