@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftUI
 import UIKit
 
@@ -12,8 +13,10 @@ import UIKit
 /// Producer approves posts only). So hands-off posting does not gate these controls.
 ///
 /// A model run (a pack from a brief) and minutes of rendering (a sample, a sheet) take no request id on the desktop. Each
-/// is kept "unconfirmed" in this shared store by account and item before the request leaves, and a lost answer is only
-/// ever settled by reading the desktop again.
+/// is kept "unconfirmed" in this shared store by account and item before the request leaves, and also in UserDefaults
+/// (ids, numbers, statuses, times and one-way hashes only, never what the person wrote), so a relaunch keeps it. A lost
+/// answer is only ever settled by reading the desktop again. Only after a fixed wait longer than any run can the person
+/// allow a second send, behind a confirm that names the cost again.
 /// Unpaired, nothing here runs and the libraries are the sample screens.
 nonisolated enum MakeLibraryPart: Hashable, Sendable {
     case formats, packs, characters, connections, templates
@@ -46,9 +49,43 @@ nonisolated enum MakeLibraryVerdict: Sendable {
     case applied, notApplied, unknown
 }
 
+/// What a hold needs to recognise its own result on the desktop. Ids, version numbers, statuses, counts, times and
+/// one-way hashes only: never the brief's text, a name, a note or a path. Kept in UserDefaults while the hold lasts.
+nonisolated struct MakeLibraryHold: Codable, Hashable, Sendable {
+    /// brief, starter, sample, editpack, newcharacter, editchar or sheet.
+    var kind: String
+    var sentAt: Double
+    var briefHash: String?
+    var nameHash: String?
+    var starterID: String?
+    var family: String?
+    var packIDsBefore: [String]?
+    var characterIDsBefore: [String]?
+    var packID: String?
+    var characterID: String?
+    var version: Int?
+    var sampleAt: Double?
+    var cast: [String: String]?
+    var baseVersion: Int?
+    var statusBefore: String?
+    var noteHash: String?
+    /// A pack edit: the form field's name and a hash of the value that was sent.
+    var fieldHashes: [String: String]?
+
+    init(kind: String, sentAt: Double = Date().timeIntervalSince1970) {
+        self.kind = kind
+        self.sentAt = sentAt
+    }
+
+    static func hash(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 /// A change that left the phone and has no answer yet, or whose answer was lost.
 nonisolated struct MakeLibraryPending: Hashable, Sendable {
     var key: String
+    var hold: MakeLibraryHold
     var lost = false
     var note = ""
 }
@@ -83,6 +120,8 @@ final class MakeLibraryPackForm {
     private(set) var base: [MakeLibraryPackField: String] = [:]
     private(set) var touched: Set<MakeLibraryPackField> = []
     private(set) var baseVersion: Int
+    /// For a field the person edited that the desktop changed too since the form was filled: what the desktop has now.
+    private(set) var desktopNow: [MakeLibraryPackField: String] = [:]
 
     init?(_ pack: MakeLibraryPackDTO) {
         guard let values = Self.values(pack), let latest = pack.latest else { return nil }
@@ -99,35 +138,69 @@ final class MakeLibraryPackForm {
 
     func set(_ field: MakeLibraryPackField, _ value: String) {
         shown[field] = value
-        if value == base[field] { touched.remove(field) } else { touched.insert(field) }
-    }
-
-    /// A read came back: untouched fields follow the desktop, edited ones keep what the person typed.
-    func refill(_ pack: MakeLibraryPackDTO) {
-        guard let values = Self.values(pack), let latest = pack.latest else { return }
-        baseVersion = latest.number
-        for field in MakeLibraryPackField.allCases {
-            let now = values[field] ?? ""
-            base[field] = now
-            if touched.contains(field) {
-                if shown[field] == now { touched.remove(field) }
-            } else {
-                shown[field] = now
-            }
+        if value == base[field] {
+            touched.remove(field)
+            desktopNow[field] = nil
+        } else {
+            touched.insert(field)
         }
     }
 
-    /// The fields the person changed that still differ from the desktop.
+    /// The desktop strips spaces around a name, a summary and a director brief, so those are compared and sent stripped.
+    static func clean(_ field: MakeLibraryPackField, _ value: String) -> String {
+        switch field {
+        case .name, .summary, .brief: value.trimmingCharacters(in: .whitespacesAndNewlines)
+        default: value
+        }
+    }
+
+    /// A read came back: untouched fields follow the desktop, edited ones keep what the person typed. When the desktop
+    /// moved to a newer version and changed a field the person is editing, the form keeps the version it was filled from
+    /// (and that field's old desktop value), so the save finds the change and says so instead of writing over it.
+    /// `acknowledge` is the save's own check: the person has just been told, so the form moves on and keeps their edits.
+    func refill(_ pack: MakeLibraryPackDTO, acknowledge: Bool = false) {
+        guard let values = Self.values(pack), let latest = pack.latest else { return }
+        let moved = latest.number != baseVersion
+        var held = false
+        for field in MakeLibraryPackField.allCases {
+            let now = values[field] ?? ""
+            if touched.contains(field) {
+                if Self.clean(field, shown[field] ?? "") == now {
+                    touched.remove(field)
+                    desktopNow[field] = nil
+                    base[field] = now
+                } else if moved && now != base[field] {
+                    desktopNow[field] = now
+                    if acknowledge { base[field] = now } else { held = true }
+                } else {
+                    base[field] = now
+                }
+            } else {
+                base[field] = now
+                shown[field] = now
+                desktopNow[field] = nil
+            }
+        }
+        if !held { baseVersion = latest.number }
+    }
+
+    /// The fields the person changed that still differ from the desktop, as the desktop will keep them.
     var changes: [MakeLibraryPackField: String] {
         var out: [MakeLibraryPackField: String] = [:]
         for field in touched {
-            if let value = shown[field], value != base[field] { out[field] = value }
+            if let value = shown[field] {
+                let clean = Self.clean(field, value)
+                if clean != base[field] { out[field] = clean }
+            }
         }
         return out
     }
 
     func settle(_ sent: [MakeLibraryPackField: String]) {
-        for (field, value) in sent where shown[field] == value { touched.remove(field) }
+        for (field, value) in sent where Self.clean(field, shown[field] ?? "") == value {
+            touched.remove(field)
+            desktopNow[field] = nil
+        }
     }
 
     private static let voicePattern = try? NSRegularExpression(pattern: "^[a-z]{2}_[a-z0-9]{1,30}$")
@@ -152,9 +225,9 @@ final class MakeLibraryPackForm {
         var captions: [String: Any] = [:]
         for (field, value) in sent {
             switch field {
-            case .name: out["name"] = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            case .summary: out["summary"] = value
-            case .brief: out["director_brief"] = value
+            case .name: out["name"] = clean(.name, value)
+            case .summary: out["summary"] = clean(.summary, value)
+            case .brief: out["director_brief"] = clean(.brief, value)
             case .mood: out["music"] = ["mood": value]
             case .captions: captions["on"] = value == "on"
             case .captionCase: captions["case"] = value
@@ -280,7 +353,8 @@ final class MakeLibraryLive {
     private(set) var packForms: [String: MakeLibraryPackForm] = [:]
     private(set) var characterForms: [String: MakeLibraryCharacterForm] = [:]
 
-    @ObservationIgnored private var verifiers: [String: () -> MakeLibraryVerdict] = [:]
+    /// Holds whose own request is still in `perform`: only `perform` settles those.
+    @ObservationIgnored private var performing: Set<String> = []
     @ObservationIgnored private var serials: [MakeLibraryPart: Int] = [:]
 
     // MARK: Connection
@@ -310,6 +384,7 @@ final class MakeLibraryLive {
             reset()
             isLive = true
             account = key
+            restoreHolds()
         } else if isLive {
             reset()
             isLive = false
@@ -479,18 +554,29 @@ final class MakeLibraryLive {
     var needsWatching: Bool {
         let prefix = account + "|"
         if pendingMap.keys.contains(where: { $0.hasPrefix(prefix) }) { return true }
-        return packs.contains { pack in pack.versions.contains { MakeLibraryPackState.of($0) == .rendering } }
+        // A sample still "rendering" after an hour is not watched: the desktop may have restarted mid-render.
+        let now = Date()
+        return packs.contains { pack in
+            pack.versions.contains { version in
+                guard MakeLibraryPackState.of(version) == .rendering else { return false }
+                guard let started = MakeLibraryWire.time(version.sample?.at) else { return true }
+                return now.timeIntervalSince(started) <= MakeLibraryPackState.renderingHint
+            }
+        }
     }
 
     /// Read the desktop again every few seconds while something is rendering or not settled, so progress is the
-    /// desktop's own state. Ends when the screen goes away.
+    /// desktop's own state. After each good read, every lost change of this account is checked and settled when the
+    /// desktop now answers. Ends when the screen goes away.
     func watch() async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(6))
             guard !Task.isCancelled, isLive else { continue }
             if needsWatching {
-                await load(.packs, quiet: true)
-                await load(.characters, quiet: true)
+                let acct = account
+                let readPacks = await load(.packs, quiet: true)
+                let readCharacters = await load(.characters, quiet: true)
+                if readPacks && readCharacters { settleAllLost(acct) }
             }
         }
     }
@@ -522,48 +608,55 @@ final class MakeLibraryLive {
         }
     }
 
-    private func perform(_ key: String, done: String, notApplied: String, lostLine: String, reload: [MakeLibraryPart],
-                         verify: @escaping () -> MakeLibraryVerdict,
+    static let changedWords = "Your paired desktop changed. Nothing was sent."
+
+    /// The phone gives up on one call after a few minutes; a run on the desktop can take longer.
+    static let patience = "The phone stops waiting after a few minutes. Your desktop keeps working, and the result shows here when it is done."
+
+    private func perform(_ key: String, hold: MakeLibraryHold, done: String, notApplied: String, reload: [MakeLibraryPart],
                          send: (APIClient) async throws -> String?) async -> MakeLibraryOutcome {
-        guard isLive else { return .busy }
+        // Not paired, or another desktop: nothing is sent, and the person is told so (not "still on its way").
+        guard isLive else { return .refused(Self.changedWords) }
         let acct = account
-        guard stillLive(acct), pending(key) == nil else { return .busy }
+        guard stillLive(acct) else { return .refused(Self.changedWords) }
+        guard pending(key) == nil else { return .busy }
         let slot = Self.slot(acct, key)
-        // Set before the request leaves: nothing turns this back on until the desktop shows the result or says no.
-        pendingMap[slot] = MakeLibraryPending(key: key)
-        verifiers[slot] = verify
+        // Set (here and on the phone's storage) before the request leaves: nothing turns this back on until the desktop
+        // shows the result or says no, not even a relaunch.
+        pendingMap[slot] = MakeLibraryPending(key: key, hold: hold)
+        performing.insert(slot)
+        Self.saveHold(acct, key, hold)
+        defer { performing.remove(slot) }
         var outcome: MakeLibraryOutcome
         do {
             let message = try await send(try client())
-            pendingMap[slot] = nil
-            verifiers[slot] = nil
+            clearHold(acct, key)
             outcome = .done(message ?? done)
         } catch {
             Connection.shared.note(error)
             if Self.wasRefused(error) {
-                pendingMap[slot] = nil
-                verifiers[slot] = nil
+                clearHold(acct, key)
                 outcome = .refused((error as? MakeLibraryChanged)?.words ?? error.plainWords)
             } else {
+                let line = Self.lostLine(hold.kind)
                 pendingMap[slot]?.lost = true
-                pendingMap[slot]?.note = lostLine
-                outcome = .unconfirmed(lostLine)
+                pendingMap[slot]?.note = line
+                outcome = .unconfirmed(line)
             }
         }
         guard stillLive(acct) else { return outcome }
-        for part in reload { await load(part, quiet: true) }
-        if case .unconfirmed = outcome, stillLive(acct), let check = verifiers[slot] {
-            switch check() {
-            case .applied:
-                pendingMap[slot] = nil
-                verifiers[slot] = nil
-                return .done(done)
-            case .notApplied:
-                pendingMap[slot] = nil
-                verifiers[slot] = nil
-                return .refused(notApplied)
-            case .unknown:
-                break
+        // The check runs only when every read worked: after a lost answer the desktop is often still out of reach, and
+        // the old lists would wrongly say "it did not save".
+        var allRead = true
+        for part in reload {
+            let read = await load(part, quiet: true)
+            if !read { allRead = false }
+        }
+        if case .unconfirmed = outcome, allRead, stillLive(acct), pendingMap[slot] != nil {
+            switch settleLost(acct, key) {
+            case .applied: return .done(done)
+            case .notApplied: return .refused(notApplied)
+            case .unknown: break
             }
         }
         return outcome
@@ -579,22 +672,191 @@ final class MakeLibraryLive {
         let readCharacters = await load(.characters, quiet: true)
         guard stillLive(acct), pendingMap[slot]?.lost == true else { return "" }
         guard readPacks, readCharacters else { return "Your desktop did not answer. It is still not confirmed." }
-        switch verifiers[slot]?() ?? .unknown {
+        switch settleLost(acct, key) {
         case .applied:
-            pendingMap[slot] = nil
-            verifiers[slot] = nil
             return "Your desktop has it."
         case .notApplied:
-            pendingMap[slot] = nil
-            verifiers[slot] = nil
             return "Your desktop does not have it, so nothing was changed."
         case .unknown:
+            if let held = pending(key), waitedLongEnough(held) {
+                return "Your desktop still shows nothing. You can send it again."
+            }
             return "Your desktop shows nothing new yet. This stays off so it is not sent twice."
         }
     }
 
-    private func lostWords(_ what: String) -> String {
-        "Your desktop did not confirm \(what). It may already be doing it. Check again reads your desktop; nothing is sent twice."
+    /// After the fixed wait with nothing on the desktop, the person may allow a second send. This only turns the button
+    /// back on (the send itself asks again). It reads the desktop first and settles the hold instead when it can.
+    func releaseHold(_ key: String) async -> String {
+        guard isLive else { return "" }
+        let acct = account
+        let slot = Self.slot(acct, key)
+        guard let held = pendingMap[slot], held.lost, waitedLongEnough(held) else { return "" }
+        let readPacks = await load(.packs, quiet: true)
+        let readCharacters = await load(.characters, quiet: true)
+        guard stillLive(acct), let again = pendingMap[slot], again.lost, waitedLongEnough(again) else { return "" }
+        guard readPacks, readCharacters else { return "Your desktop did not answer, so nothing is turned back on. Try again in a moment." }
+        switch settleLost(acct, key) {
+        case .applied: return "Your desktop has it after all."
+        case .notApplied: return "Your desktop does not have it, so nothing was changed."
+        case .unknown:
+            clearHold(acct, key)
+            return "You can send it again now. You will be asked to confirm."
+        }
+    }
+
+    // MARK: Holds: checks, storage
+
+    func waitedLongEnough(_ held: MakeLibraryPending, now: Date = Date()) -> Bool {
+        now.timeIntervalSince1970 - held.hold.sentAt >= Self.waitLimit(held.hold.kind)
+    }
+
+    /// Longer than any run takes: 15 minutes for a pack from a brief, 10 for everything else.
+    static func waitLimit(_ kind: String) -> TimeInterval { kind == "brief" ? 15 * 60 : 10 * 60 }
+
+    static func lostLine(_ kind: String) -> String {
+        func plain(_ what: String) -> String {
+            "Your desktop did not confirm \(what). It may already be doing it, and it shows here when it is done. This stays off so it is not sent twice. Check again reads your desktop."
+        }
+        switch kind {
+        case "brief":
+            return "Your desktop did not confirm the pack. The model run may still be going, or it may be done. " + patience
+                + " This stays off so a second model run is not started. Check again reads your desktop."
+        case "sample":
+            return "Your desktop did not confirm the sample. It may still be rendering. " + patience
+                + " This stays off so it is not rendered twice. Check again reads your desktop."
+        case "sheet":
+            return "Your desktop did not confirm the sheet. It may still be rendering. " + patience
+                + " This stays off so it is not rendered twice. Check again reads your desktop."
+        case "starter": return plain("the starter pack")
+        case "newcharacter": return plain("the character")
+        case "editpack", "editchar": return plain("the new version")
+        default: return plain("this change")
+        }
+    }
+
+    /// What sending it again costs, for the confirm.
+    static func againPoints(_ kind: String) -> [String] {
+        switch kind {
+        case "brief":
+            return ["Sending again is another model run on your desktop's model connection, and it can cost money with that provider again.",
+                    "The first run may have cost money already, or may still finish."]
+        case "sample", "sheet":
+            return ["Sending again is another render on your desktop: a few minutes of your computer's rendering.",
+                    "The first one may still be running or may already be done."]
+        default:
+            return ["This sends it to your desktop again. The first one may have gone through, and then you would have two."]
+        }
+    }
+
+    /// Run a lost hold's check against what is read now, and settle it when the desktop answers either way.
+    @discardableResult
+    private func settleLost(_ acct: String, _ key: String) -> MakeLibraryVerdict {
+        guard stillLive(acct), let held = pendingMap[Self.slot(acct, key)], held.lost else { return .unknown }
+        let found = verdict(held.hold)
+        if found != .unknown { clearHold(acct, key) }
+        return found
+    }
+
+    /// After a good read of packs and characters: settle every lost change of this account the desktop now answers.
+    private func settleAllLost(_ acct: String) {
+        guard stillLive(acct) else { return }
+        let prefix = acct + "|"
+        for (slot, held) in pendingMap where slot.hasPrefix(prefix) && held.lost && !performing.contains(slot) {
+            settleLost(acct, held.key)
+        }
+    }
+
+    private func clearHold(_ acct: String, _ key: String) {
+        pendingMap[Self.slot(acct, key)] = nil
+        Self.saveHold(acct, key, nil)
+    }
+
+    /// What the desktop shows now, compared with what the hold remembers of the send. The desktop strips a name's spaces
+    /// and makes a clashing name unique with a number on the end, so a name is also compared without that ending.
+    private func verdict(_ hold: MakeLibraryHold) -> MakeLibraryVerdict {
+        func same(_ text: String, _ hashed: String?) -> Bool { MakeLibraryHold.hash(text) == hashed }
+        switch hold.kind {
+        case "brief":
+            let before = Set(hold.packIDsBefore ?? [])
+            let found = packs.contains { !before.contains($0.id) && $0.originKind == "brief"
+                && same($0.originBrief.trimmingCharacters(in: .whitespacesAndNewlines), hold.briefHash) }
+            return found ? .applied : .unknown
+        case "starter":
+            return packs.contains { $0.originKind == "starter" && $0.originFrom == hold.starterID } ? .applied : .unknown
+        case "sample":
+            guard let id = hold.packID, let number = hold.version, let now = pack(id),
+                  let current = now.versions.first(where: { $0.number == number }) else { return .unknown }
+            let changed = current.sample?.at != hold.sampleAt || current.status == "awaiting_approval"
+                || castStatuses(now) != (hold.cast ?? [:])
+            return changed ? .applied : .unknown
+        case "editpack":
+            guard let id = hold.packID, let base = hold.baseVersion, let now = pack(id), let latest = now.latest,
+                  let values = MakeLibraryPackForm.values(now) else { return .unknown }
+            guard latest.number > base else { return .notApplied }
+            let match = (hold.fieldHashes ?? [:]).allSatisfy { name, hashed in
+                guard let field = MakeLibraryPackField(rawValue: name) else { return false }
+                let value = values[field] ?? ""
+                if same(value, hashed) { return true }
+                guard field == .name, let space = value.lastIndex(of: " ") else { return false }
+                let tail = value[value.index(after: space)...]
+                return !tail.isEmpty && tail.allSatisfy(\.isNumber) && same(String(value[..<space]), hashed)
+            }
+            return match ? .applied : .unknown
+        case "newcharacter":
+            let before = Set(hold.characterIDsBefore ?? [])
+            let found = characters.contains { !before.contains($0.id) && $0.family == hold.family
+                && (hold.nameHash == nil || same($0.name.lowercased(), hold.nameHash)) }
+            return found ? .applied : .unknown
+        case "editchar":
+            guard let id = hold.characterID, let base = hold.baseVersion, let now = character(id), let latest = now.latest else { return .unknown }
+            guard latest.number > base else { return .notApplied }
+            return now.versions.contains { $0.number > base && same($0.note, hold.noteHash) } ? .applied : .unknown
+        case "sheet":
+            guard let id = hold.characterID, let number = hold.version,
+                  let status = character(id)?.versions.first(where: { $0.number == number })?.status else { return .unknown }
+            return status != hold.statusBefore ? .applied : .unknown
+        default:
+            return .unknown
+        }
+    }
+
+    private static let holdsKey = "MakeLibraryHolds"
+
+    private static func accountHash(_ account: String) -> String { MakeLibraryHold.hash(account) }
+
+    /// Every saved hold, one encoded hold per item, under a one-way hash of the desktop and account.
+    private static func savedHolds() -> [String: [String: Data]] {
+        UserDefaults.standard.dictionary(forKey: holdsKey) as? [String: [String: Data]] ?? [:]
+    }
+
+    /// Save (a hold) or clear (nil) one item's hold under one desktop and account.
+    private static func saveHold(_ account: String, _ key: String, _ hold: MakeLibraryHold?) {
+        guard account != "sample" else { return }
+        var all = savedHolds()
+        let slot = accountHash(account)
+        var items = all[slot] ?? [:]
+        if let hold, let data = try? JSONEncoder().encode(hold) { items[key] = data } else { items[key] = nil }
+        all[slot] = items.isEmpty ? nil : items
+        if all.isEmpty {
+            UserDefaults.standard.removeObject(forKey: holdsKey)
+        } else {
+            UserDefaults.standard.set(all, forKey: holdsKey)
+        }
+    }
+
+    /// This desktop's saved holds come back as lost ones (the answer, if one came, was never seen). A hold that cannot
+    /// be read is kept as one the desktop cannot confirm, so it still blocks and still has its way out.
+    private func restoreHolds() {
+        guard account != "sample" else { return }
+        let mine = Self.savedHolds()[Self.accountHash(account)] ?? [:]
+        for (key, data) in mine {
+            let slot = Self.slot(account, key)
+            guard pendingMap[slot] == nil else { continue }
+            let kind = String(key.split(separator: ":").first ?? "")
+            let hold = (try? JSONDecoder().decode(MakeLibraryHold.self, from: data)) ?? MakeLibraryHold(kind: kind)
+            pendingMap[slot] = MakeLibraryPending(key: key, hold: hold, lost: true, note: Self.lostLine(hold.kind))
+        }
     }
 
     // MARK: Looking things up
@@ -627,23 +889,20 @@ final class MakeLibraryLive {
 
     /// A pack from a written brief: a model run on the desktop's first model connection, which can cost money. Takes no
     /// request id, so a lost answer is settled only by finding the pack, made from this brief, on the desktop.
-    func createPackFromBrief(_ brief: String, name: String) async -> MakeLibraryOutcome {
+    /// `opened` is the desktop the brief sheet was opened for: when the paired desktop is another one now, nothing is sent.
+    func createPackFromBrief(_ brief: String, name: String, opened: String) async -> MakeLibraryOutcome {
+        guard isLive, account == opened, stillLive(opened) else { return .refused(Self.changedWords) }
         let text = brief.trimmingCharacters(in: .whitespacesAndNewlines)
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return .refused("Write the brief first.") }
         guard text.count <= MakeLibraryWire.briefLimit else { return .refused("Keep the brief under 12000 characters.") }
         guard title.count <= MakeLibraryWire.nameLimit else { return .refused("The name is up to 60 characters.") }
-        let before = Set(packs.map(\.id))
-        return await perform("brief", done: "Pack made as a draft. Make its sample to send it for your OK.",
+        var hold = MakeLibraryHold(kind: "brief")
+        hold.briefHash = MakeLibraryHold.hash(text)
+        hold.packIDsBefore = packs.map(\.id)
+        return await perform("brief", hold: hold, done: "Pack made as a draft. Make its sample to send it for your OK.",
                              notApplied: "Your desktop did not make the pack.",
-                             lostLine: "Your desktop did not confirm the pack. The model run may still be going, or it may be done. This stays off so a second model run is not started. Check again reads your desktop.",
                              reload: [.packs, .characters],
-                             verify: { [weak self] in
-                                 guard let self else { return .unknown }
-                                 let found = self.packs.contains { !before.contains($0.id) && $0.originKind == "brief"
-                                     && $0.originBrief.trimmingCharacters(in: .whitespacesAndNewlines) == text }
-                                 return found ? .applied : .unknown
-                             },
                              send: { client in
                                  try await client.makeLibraryCreateFromBrief(brief: text, name: title)
                                  return nil
@@ -653,13 +912,11 @@ final class MakeLibraryLive {
     /// A shipped starter pack, as a draft with its starter characters. No model run and no rendering.
     func installStarter(_ id: String) async -> MakeLibraryOutcome {
         guard starters.contains(where: { $0.id == id }) else { return .refused("That starter pack is not on your desktop.") }
-        return await perform("starter:" + id, done: "Starter pack added as a draft. Make its sample to send it for your OK.",
-                             notApplied: "Your desktop did not add the starter pack.", lostLine: lostWords("the starter pack"),
+        var hold = MakeLibraryHold(kind: "starter")
+        hold.starterID = id
+        return await perform("starter:" + id, hold: hold, done: "Starter pack added as a draft. Make its sample to send it for your OK.",
+                             notApplied: "Your desktop did not add the starter pack.",
                              reload: [.packs, .characters],
-                             verify: { [weak self] in
-                                 guard let self else { return .unknown }
-                                 return self.packs.contains { $0.originKind == "starter" && $0.originFrom == id } ? .applied : .unknown
-                             },
                              send: { client in
                                  try await client.makeLibraryInstallStarter(id)
                                  return nil
@@ -677,17 +934,14 @@ final class MakeLibraryLive {
             return .refused("This version cannot make a sample right now.")
         }
         let key = "sample:\(packID)#\(version)"
-        let sampleAt = found.sample?.at
-        let cast = castStatuses(pack)
-        return await perform(key, done: "Your desktop started the sample. It takes a few minutes.",
+        var hold = MakeLibraryHold(kind: "sample")
+        hold.packID = packID
+        hold.version = version
+        hold.sampleAt = found.sample?.at
+        hold.cast = castStatuses(pack)
+        return await perform(key, hold: hold, done: "Your desktop started the sample. It takes a few minutes.",
                              notApplied: "Your desktop did not start the sample.",
-                             lostLine: lostWords("the sample"), reload: [.packs, .characters],
-                             verify: { [weak self] in
-                                 guard let self, let now = self.pack(packID), let current = now.versions.first(where: { $0.number == version }) else { return .unknown }
-                                 let changed = current.sample?.at != sampleAt || current.status == "awaiting_approval"
-                                     || self.castStatuses(now) != cast
-                                 return changed ? .applied : .unknown
-                             },
+                             reload: [.packs, .characters],
                              send: { client in
                                  try await client.makeLibraryMakeSample(packID, version: version)
                                  return nil
@@ -712,25 +966,20 @@ final class MakeLibraryLive {
         if let problem = MakeLibraryPackForm.problem(sent) { return .refused(problem) }
         let baseVersion = form.baseVersion
         let words = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        let outcome = await perform("editpack:" + packID, done: "Saved as a new draft version. Make its sample to send it for your OK.",
+        var hold = MakeLibraryHold(kind: "editpack")
+        hold.packID = packID
+        hold.baseVersion = baseVersion
+        hold.fieldHashes = Dictionary(uniqueKeysWithValues: sent.map { ($0.key.rawValue, MakeLibraryHold.hash($0.value)) })
+        let outcome = await perform("editpack:" + packID, hold: hold, done: "Saved as a new draft version. Make its sample to send it for your OK.",
                                     notApplied: "Your desktop did not save these changes. What you typed is still here.",
-                                    lostLine: lostWords("the new version"), reload: [.packs],
-                                    verify: { [weak self] in
-                                        guard let self, let now = self.pack(packID), let latest = now.latest,
-                                              let values = MakeLibraryPackForm.values(now) else { return .unknown }
-                                        guard latest.number > baseVersion else { return .notApplied }
-                                        let same = sent.allSatisfy { field, value in
-                                            field == .name ? (values[field] ?? "").hasPrefix(value.trimmingCharacters(in: .whitespacesAndNewlines)) : values[field] == value
-                                        }
-                                        return same ? .applied : .unknown
-                                    },
+                                    reload: [.packs],
                                     send: { client in
                                         let answer = try await client.makeLibraryPack(packID)
                                         guard let row = MakeLibraryRow(answer), let current = MakeLibraryPackDTO(row), let latest = current.latest else {
                                             throw MakeLibraryChanged(words: "Your desktop sent this pack in a form this app could not read. Nothing was saved.")
                                         }
                                         if latest.number != baseVersion {
-                                            form.refill(current)
+                                            form.refill(current, acknowledge: true)
                                             throw MakeLibraryChanged(words: "This pack changed on your desktop since you opened it. It is shown again with your edits kept. Check it, then save again.")
                                         }
                                         try await client.makeLibraryNewPackVersion(packID, changes: MakeLibraryPackForm.body(sent),
@@ -743,7 +992,9 @@ final class MakeLibraryLive {
 
     // MARK: Changes: characters
 
-    func createCharacter(family: String, name: String) async -> MakeLibraryOutcome {
+    /// `opened` is the desktop the sheet was opened for: when the paired desktop is another one now, nothing is sent.
+    func createCharacter(family: String, name: String, opened: String) async -> MakeLibraryOutcome {
+        guard isLive, account == opened, stillLive(opened) else { return .refused(Self.changedWords) }
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let wire = family.lowercased()
         guard ["round", "square", "triangle"].contains(wire) else { return .refused("Choose round, square or triangle.") }
@@ -751,16 +1002,13 @@ final class MakeLibraryLive {
             let probe = MakeLibraryCharacterForm.problem([.name: title])
             if let probe { return .refused(probe) }
         }
-        let before = Set(characters.map(\.id))
-        return await perform("newcharacter", done: "Character made as a draft. Make its sheet to send it for your OK.",
-                             notApplied: "Your desktop did not make the character.", lostLine: lostWords("the character"),
+        var hold = MakeLibraryHold(kind: "newcharacter")
+        hold.family = wire
+        hold.characterIDsBefore = characters.map(\.id)
+        if !title.isEmpty { hold.nameHash = MakeLibraryHold.hash(title.lowercased()) }
+        return await perform("newcharacter", hold: hold, done: "Character made as a draft. Make its sheet to send it for your OK.",
+                             notApplied: "Your desktop did not make the character.",
                              reload: [.characters],
-                             verify: { [weak self] in
-                                 guard let self else { return .unknown }
-                                 let found = self.characters.contains { !before.contains($0.id) && $0.family == wire
-                                     && (title.isEmpty || $0.name.lowercased() == title.lowercased()) }
-                                 return found ? .applied : .unknown
-                             },
                              send: { client in
                                  try await client.makeLibraryCreateCharacter(family: wire, name: title)
                                  return nil
@@ -798,15 +1046,13 @@ final class MakeLibraryLive {
         let baseVersion = form.baseVersion
         let words = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let noteSent = words.isEmpty ? "Edited in the iPhone app." : words
-        let outcome = await perform("editchar:" + id, done: "Saved as a new draft version. Make its sheet to send it for your OK.",
+        var hold = MakeLibraryHold(kind: "editchar")
+        hold.characterID = id
+        hold.baseVersion = baseVersion
+        hold.noteHash = MakeLibraryHold.hash(noteSent)
+        let outcome = await perform("editchar:" + id, hold: hold, done: "Saved as a new draft version. Make its sheet to send it for your OK.",
                                     notApplied: "Your desktop did not save these changes. What you typed is still here.",
-                                    lostLine: lostWords("the new version"), reload: [.characters],
-                                    verify: { [weak self] in
-                                        guard let self, let now = self.character(id), let latest = now.latest else { return .unknown }
-                                        guard latest.number > baseVersion else { return .notApplied }
-                                        let mine = now.versions.contains { $0.number > baseVersion && $0.note == noteSent }
-                                        return mine ? .applied : .unknown
-                                    },
+                                    reload: [.characters],
                                     send: { client in
                                         let answer = try await client.makeLibraryCharacter(id)
                                         guard let row = MakeLibraryRow(answer), let current = MakeLibraryCharacterDTO(row), let latest = current.latest else {
@@ -829,14 +1075,13 @@ final class MakeLibraryLive {
             return .refused("That character is not on your desktop.")
         }
         guard current.status == "draft" || current.status == "rejected" else { return .refused("This version cannot make a sheet right now.") }
-        let before = current.status
-        return await perform("sheet:\(id)#\(version)", done: "Sheet made. It is waiting for your OK in Approvals.",
-                             notApplied: "Your desktop did not make the sheet.", lostLine: lostWords("the sheet"),
+        var hold = MakeLibraryHold(kind: "sheet")
+        hold.characterID = id
+        hold.version = version
+        hold.statusBefore = current.status
+        return await perform("sheet:\(id)#\(version)", hold: hold, done: "Sheet made. It is waiting for your OK in Approvals.",
+                             notApplied: "Your desktop did not make the sheet.",
                              reload: [.characters],
-                             verify: { [weak self] in
-                                 guard let status = self?.character(id)?.versions.first(where: { $0.number == version })?.status else { return .unknown }
-                                 return status != before ? .applied : .unknown
-                             },
                              send: { client in
                                  try await client.makeLibraryMakeSheet(id, version: version)
                                  return nil
@@ -894,9 +1139,15 @@ nonisolated enum MakeLibraryWords {
 /// What a style pack version is doing, in the desktop's own words.
 nonisolated enum MakeLibraryPackState: Hashable, Sendable {
     case draft, rendering, waitingSheets, failed, awaiting, approved, rejected
+    /// A status this app does not know: shown plainly, with no button.
+    case unknown
+
+    /// A sample "rendering" for longer than this (an hour) is no longer watched, and the card says to check the desktop.
+    static let renderingHint: TimeInterval = 3600
 
     var label: String {
         switch self {
+        case .unknown: "Not known to this app"
         case .draft: "Draft, no sample yet"
         case .rendering: "Rendering its sample"
         case .waitingSheets: "Waiting for character sheets"
@@ -909,7 +1160,7 @@ nonisolated enum MakeLibraryPackState: Hashable, Sendable {
 
     var tone: PillTone {
         switch self {
-        case .draft: .muted
+        case .draft, .unknown: .muted
         case .rendering, .waitingSheets: .working
         case .failed, .rejected: .error
         case .awaiting: .gold
@@ -918,6 +1169,7 @@ nonisolated enum MakeLibraryPackState: Hashable, Sendable {
     }
 
     static func of(_ version: MakeLibraryPackVersionDTO) -> MakeLibraryPackState {
+        guard ["draft", "awaiting_approval", "approved", "rejected"].contains(version.status) else { return .unknown }
         if version.status == "approved" { return .approved }
         let sample = version.sample?.status ?? ""
         if sample == "rendering" { return .rendering }
@@ -960,27 +1212,61 @@ struct MakeLibraryGate<Content: View>: View {
 struct MakeLibraryPendingLine: View {
     let key: String
     @Environment(MakeToast.self) private var toast
+    @State private var confirmAgain = false
     private let live = MakeLibraryLive.shared
 
     var body: some View {
         if let pending = live.pending(key) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    if !pending.lost { PulsingDot(color: Palette.working, size: 7) }
-                    Text(pending.lost ? pending.note : "Sending to your desktop.")
-                        .font(KFont.ui(13.5, relativeTo: .footnote))
-                        .foregroundStyle(Palette.inkDim)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if pending.lost {
-                    MakePillButton(title: "Check again") {
-                        Task {
-                            let line = await live.checkAgain(key)
-                            if !line.isEmpty { toast.say(line) }
+            // Re-read every half minute so the way out appears when the wait is over.
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                let expired = pending.lost && live.waitedLongEnough(pending, now: context.date)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        if !pending.lost { PulsingDot(color: Palette.working, size: 7) }
+                        Text(words(pending, expired: expired))
+                            .font(KFont.ui(13.5, relativeTo: .footnote))
+                            .foregroundStyle(Palette.inkDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if pending.lost {
+                        HStack(spacing: 8) {
+                            MakePillButton(title: "Check again") {
+                                Task {
+                                    let line = await live.checkAgain(key)
+                                    if !line.isEmpty { toast.say(line) }
+                                }
+                            }
+                            if expired {
+                                MakePillButton(title: "Send again") { confirmAgain = true }
+                            }
                         }
                     }
                 }
             }
+            .sheet(isPresented: $confirmAgain) {
+                MakeLibraryConfirmSheet(title: "Send this again?", detail: "Your desktop still shows nothing.",
+                                        points: MakeLibraryLive.againPoints(pending.hold.kind)
+                                            + ["This only turns the button back on. You confirm the send itself next."],
+                                        button: "Allow sending again") {
+                    Task {
+                        let line = await live.releaseHold(key)
+                        if !line.isEmpty { toast.say(line) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func words(_ pending: MakeLibraryPending, expired: Bool) -> String {
+        if pending.lost {
+            guard expired else { return pending.note }
+            let minutes = Int(MakeLibraryLive.waitLimit(pending.hold.kind) / 60)
+            return "After \(minutes) minutes your desktop still shows nothing. It may have failed, or it may still be working. "
+                + "Nothing was sent again. Check again reads your desktop, or you can send it again."
+        }
+        switch pending.hold.kind {
+        case "brief", "sample", "sheet": return "Sending to your desktop. " + MakeLibraryLive.patience
+        default: return "Sending to your desktop."
         }
     }
 }
@@ -1074,6 +1360,7 @@ struct MakeLibrarySheetView: View {
             let character = live.character(id)
             MakeLibraryConfirmSheet(title: "Make the sheet of version \(version)?", detail: character?.name,
                                     points: ["Your desktop renders this version's reference sheet. It takes a few minutes of your computer's rendering, and the Kairos desktop app has to stay open.",
+                                             MakeLibraryLive.patience,
                                              "The sheet then waits for your OK in Approvals. A video can only use an approved version."],
                                     button: "Make the sheet") {
                 Task { toast.say(await live.makeSheet(id, version: version).line) }
@@ -1094,6 +1381,7 @@ struct MakeLibrarySheetView: View {
         } else {
             points.append("If a character in this pack has no approved sheet yet, your desktop renders that sheet first.")
         }
+        points.append(MakeLibraryLive.patience)
         points.append("When it is ready it waits for your OK in Approvals. Nothing uses the pack until you approve it.")
         return points
     }
@@ -1109,6 +1397,8 @@ struct MakeLibraryBriefSheet: View {
     @State private var name = ""
     @State private var confirming = false
     @State private var message: String?
+    /// The desktop this sheet was opened for. A send is refused when the paired desktop is another one by then.
+    @State private var opened = MakeLibraryLive.accountKey
     private let live = MakeLibraryLive.shared
 
     var body: some View {
@@ -1119,7 +1409,8 @@ struct MakeLibraryBriefSheet: View {
                     MakeSheetTitle(title: "Make this pack?", detail: name.isEmpty ? "From your brief" : name)
                     MakeLibraryPoints(points: ["Your desktop sends your brief to a model: the first model connection it finds in Settings, Models. This is a model run and can cost money with that provider.",
                                                "The answer becomes a draft pack. Your desktop may also add starter characters as drafts for it.",
-                                               "It takes a short while. Nothing uses the pack until you make its sample and approve it."])
+                                               MakeLibraryLive.patience,
+                                               "Nothing uses the pack until you make its sample and approve it."])
                     if let message { Text(message).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.danger) }
                     GoldButton(title: busy ? "Sending" : "Make the pack") { send() }
                         .disabled(busy)
@@ -1152,7 +1443,7 @@ struct MakeLibraryBriefSheet: View {
     private func send() {
         message = nil
         Task {
-            let outcome = await live.createPackFromBrief(brief, name: name)
+            let outcome = await live.createPackFromBrief(brief, name: name, opened: opened)
             toast.say(outcome.line)
             switch outcome {
             case .done:
@@ -1199,6 +1490,17 @@ struct MakeLibraryEditPackSheet: View {
                     .kCard(radius: 18)
                     MakeField(label: "Narrator voice", text: text(form, .voice), prompt: "A voice id, like af_heart", limit: 40)
                     MakeField(label: "What changed", text: $note, limit: 300, lines: 1...3)
+                    if !form.desktopNow.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Your desktop changed these while you were editing. Saving keeps what you typed instead.")
+                                .font(KFont.ui(13.5, .medium, relativeTo: .footnote)).foregroundStyle(Palette.goldText)
+                            ForEach(form.desktopNow.keys.sorted { $0.rawValue < $1.rawValue }, id: \.self) { field in
+                                Text("\(MakeLibraryWords.capitalized(field.rawValue)) on your desktop now: " + String((form.desktopNow[field] ?? "").prefix(200)))
+                                    .font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
                     if let message { Text(message).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.danger) }
                     MakeLibraryPendingLine(key: key)
                     let edited = !form.changes.isEmpty
@@ -1264,6 +1566,8 @@ struct MakeLibraryNewCharacterSheet: View {
     @State private var family = "Round"
     @State private var name = ""
     @State private var message: String?
+    /// The desktop this sheet was opened for. A send is refused when the paired desktop is another one by then.
+    @State private var opened = MakeLibraryLive.accountKey
     private let live = MakeLibraryLive.shared
 
     var body: some View {
@@ -1290,7 +1594,7 @@ struct MakeLibraryNewCharacterSheet: View {
     private func send() {
         message = nil
         Task {
-            let outcome = await live.createCharacter(family: family, name: name)
+            let outcome = await live.createCharacter(family: family, name: name, opened: opened)
             toast.say(outcome.line)
             switch outcome {
             case .done:
@@ -1668,7 +1972,7 @@ struct MakeLibraryPackCard: View {
                 waitingRow(version, busy: busy)
             case .awaiting:
                 MakePillButton(title: "Review", filled: true) { make.studio.open(.approvals) }
-            case .approved:
+            case .approved, .unknown:
                 EmptyView()
             }
             MakeLibraryPendingLine(key: key)
@@ -1679,7 +1983,7 @@ struct MakeLibraryPackCard: View {
 
     private func renderingRow(_ version: MakeLibraryPackVersionDTO) -> some View {
         let started = MakeLibraryWire.time(version.sample?.at)
-        let long = started.map { Date().timeIntervalSince($0) > 3600 } ?? false
+        let long = started.map { Date().timeIntervalSince($0) > MakeLibraryPackState.renderingHint } ?? false
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 PulsingDot(color: Palette.working, size: 6)

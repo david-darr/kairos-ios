@@ -548,11 +548,23 @@ extension APIClient {
 
     // Writes. None takes a request id.
 
+    /// The longest one call can take on this client (its whole-call limit is 180 seconds), so a normal run answers
+    /// before the phone gives up.
+    static let makeLibraryLongTimeout: TimeInterval = 175
+
+    private func makeLibraryLongPost(_ path: String, json: [String: Any]) async throws {
+        var request = try urlRequest("POST", path)
+        request.httpBody = try JSONSerialization.data(withJSONObject: json)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = Self.makeLibraryLongTimeout
+        _ = try await send(request)
+    }
+
     /// A model run on the desktop. The desktop picks the model connection (none is sent).
     func makeLibraryCreateFromBrief(brief: String, name: String) async throws {
         var body: [String: Any] = ["source": "brief", "brief": brief]
         if !name.isEmpty { body["name"] = name }
-        try await call("POST", "/api/style-packs", json: body)
+        try await makeLibraryLongPost("/api/style-packs", json: body)
     }
 
     func makeLibraryInstallStarter(_ id: String) async throws {
@@ -565,7 +577,7 @@ extension APIClient {
     }
 
     func makeLibraryMakeSample(_ id: String, version: Int) async throws {
-        try await call("POST", "/api/style-packs/" + (try MakeLibraryWire.pathID(id)) + "/versions/\(version)/sample", json: [:])
+        try await makeLibraryLongPost("/api/style-packs/" + (try MakeLibraryWire.pathID(id)) + "/versions/\(version)/sample", json: [:])
     }
 
     func makeLibraryCreateCharacter(family: String, name: String) async throws {
@@ -579,7 +591,7 @@ extension APIClient {
     }
 
     func makeLibraryMakeSheet(_ id: String, version: Int) async throws {
-        try await call("POST", "/api/characters/" + (try MakeLibraryWire.pathID(id)) + "/versions/\(version)/sheet", json: [:])
+        try await makeLibraryLongPost("/api/characters/" + (try MakeLibraryWire.pathID(id)) + "/versions/\(version)/sheet", json: [:])
     }
 }
 
