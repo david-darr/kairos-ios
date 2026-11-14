@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftUI
 
 /// Where one desktop read stands, for one plain sentence on screen.
@@ -119,7 +120,6 @@ nonisolated struct YouBotsApp: Identifiable, Hashable, Sendable {
     var summary: String
     /// connected, expired, failed, pending, off, added or unavailable.
     var state: String
-    var reason: String
     var enabled: Bool
     var usedBy: [String]
     var accounts: [YouBotsAccount]
@@ -225,7 +225,8 @@ final class YouBotsLive {
     private(set) var discordLive: Set<String>?
     private(set) var checkedAt: Date?
     /// Channel tests, by account and channel. They are NOT dropped when the connection changes: a test whose answer
-    /// was lost must stay off after leaving the screen, reopening it or unpairing.
+    /// was lost must stay off after leaving the screen, reopening it or unpairing (and, through `markKey`, after the app
+    /// is closed and opened again).
     private(set) var tests: [String: YouBotsTestState] = [:]
     /// The first-call change is moving a way up Reach me's call order.
     private(set) var callChanging = false
@@ -581,9 +582,8 @@ final class YouBotsLive {
             let name: String = YouBotsWire.safe(app.label?.string ?? app.id)
             let category: String = YouBotsWire.safe(app.category?.string ?? "Apps")
             let summary: String = YouBotsWire.safe(app.description?.string ?? "")
-            let reason: String = YouBotsWire.safe(app.reason?.string ?? "")
             rows.append(YouBotsApp(id: app.id, isMCP: app.kind?.string == "mcp", name: name, category: category, summary: summary,
-                                   state: app.state?.string ?? "unknown", reason: reason, enabled: app.enabled?.bool ?? true,
+                                   state: app.state?.string ?? "unknown", enabled: app.enabled?.bool ?? true,
                                    usedBy: usedBy, accounts: accounts))
         }
         var without: [String] = []
@@ -618,7 +618,7 @@ final class YouBotsLive {
             }
             let name: String = YouBotsWire.safe(bot.name?.string ?? "Discord bot")
             rows.append(YouBotsDiscord(id: bot.id, name: name, hasToken: bot.hasToken?.bool ?? false,
-                                       hasAllowedUser: bot.allowedUserId != nil, hasVoice: bot.voiceChannelId != nil,
+                                       hasAllowedUser: bot.allowedUserId?.isSet == true, hasVoice: bot.voiceChannelId?.isSet == true,
                                        overrides: overrides))
         }
         return (rows, found.skipped)
@@ -801,8 +801,33 @@ final class YouBotsLive {
 
     private static func testKey(_ account: String, _ id: String) -> String { account + "|" + id }
 
+    /// A test whose answer was lost is also kept on the phone, so it stays off after the app is closed and opened again.
+    /// The key is a SHA-256 of the account and channel: no address, name or id is stored.
+    private static func markKey(_ key: String) -> String {
+        let digest = SHA256.hash(data: Data(key.utf8))
+        return "YouBots.unconfirmedTest." + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func isMarked(_ key: String) -> Bool { UserDefaults.standard.bool(forKey: markKey(key)) }
+
+    private static func mark(_ key: String) { UserDefaults.standard.set(true, forKey: markKey(key)) }
+
+    private static func unmark(_ key: String) { UserDefaults.standard.removeObject(forKey: markKey(key)) }
+
+    private func currentTest(_ key: String) -> YouBotsTestState? {
+        tests[key] ?? (Self.isMarked(key) ? .unconfirmed : nil)
+    }
+
     /// Where this channel's test stands for the paired account.
-    func testState(_ id: String) -> YouBotsTestState? { tests[Self.testKey(Self.accountKey, id)] }
+    func testState(_ id: String) -> YouBotsTestState? { currentTest(Self.testKey(Self.accountKey, id)) }
+
+    /// The person looked in the channel themselves and allows one more test.
+    func allowAnotherTest(_ id: String) {
+        let key = Self.testKey(Self.accountKey, id)
+        guard currentTest(key) == .unconfirmed else { return }
+        Self.unmark(key)
+        tests[key] = nil
+    }
 
     /// Send one test message through a channel. It is a REAL message and has no request id, so: it is marked as sending
     /// before the request leaves; once the desktop has answered, it can be sent again by a new tap; if no answer came
@@ -812,33 +837,39 @@ final class YouBotsLive {
         guard isLive else { return }
         let account = liveAccount
         let key = Self.testKey(account, id)
-        switch tests[key] {
+        switch currentTest(key) {
         case .sending?, .unconfirmed?: return
         default: break
         }
         guard let row = channels.first(where: { $0.id == id }), row.enabled, row.state != "error" else { return }
+        // Marked before the request leaves; dropped only when the desktop answers, or the request never left.
+        Self.mark(key)
         tests[key] = .sending
         do {
             _ = try YouBotsWire.pathID(id)
             let client = try liveClient()
             try await client.youBotsConnectorTest(id)
             tests[key] = .sent
+            Self.unmark(key)
             if stillLive(account) {
                 Haptics.success()
             }
         } catch {
             if error is YouBotsNotSent {
                 tests[key] = .refused("Nothing was sent. The channel's id could not be read.")
+                Self.unmark(key)
             } else if let api = error as? APIError {
                 switch api {
                 case .notPaired, .badAddress, .unauthorized:
                     tests[key] = .refused("Nothing was sent. This phone is not paired with your desktop.")
+                    Self.unmark(key)
                 case .server(let status, _):
-                    // The desktop answered: it did not send. Its own words are never shown (they can carry an address).
+                    // The desktop answered. Its own words are never shown (they can carry an address).
+                    Self.unmark(key)
                     switch status {
                     case 400: tests[key] = .refused("Not sent. Say where this channel sends notifications, in Kairos on your desktop, first.")
                     case 404: tests[key] = .refused("Not sent. Your desktop does not have this channel any more.")
-                    case 502: tests[key] = .refused("Not sent. Your desktop could not send it through this channel. Check the channel in Kairos on your desktop.")
+                    case 502: tests[key] = .refused("Your desktop says sending failed. It may still have arrived: look in the channel before sending another.")
                     case 403: tests[key] = .refused("Not sent. Your account on your desktop is not allowed to do that.")
                     default: tests[key] = .refused("Not sent. Your desktop refused it (error \(status)).")
                     }
@@ -944,6 +975,14 @@ final class YouBotsLive {
         return (housekeepingEdits.days ?? base.days, housekeepingEdits.megabytes ?? Self.wholeMegabytes(base.megabytes))
     }
 
+    /// A saved edit would lower a value, so older trace details are deleted at the next daily cleanup.
+    var housekeepingLowers: Bool {
+        guard let base = housekeepingFilled else { return false }
+        if let days = housekeepingEdits.days, days < base.days { return true }
+        if let megabytes = housekeepingEdits.megabytes, megabytes < Self.wholeMegabytes(base.megabytes) { return true }
+        return false
+    }
+
     func editHousekeeping(days: Int? = nil, megabytes: Int? = nil) {
         guard let base = housekeepingFilled else { return }
         if let days { housekeepingEdits.days = days == base.days ? nil : days }
@@ -953,7 +992,7 @@ final class YouBotsLive {
     /// Save housekeeping. The route resets a value it is not sent, so both are always sent: the desktop's own, read
     /// again just before, with only the person's edits on top.
     func saveHousekeeping() async {
-        guard !housekeepingEdits.isEmpty, housekeepingFilled != nil else { return }
+        guard !housekeepingEdits.isEmpty, let filled = housekeepingFilled else { return }
         let edits = housekeepingEdits
         let box = YouBotsSentBox()
         await change(.housekeeping, key: "housekeeping",
@@ -968,6 +1007,12 @@ final class YouBotsLive {
                          try ensureLive(account)
                          guard let base = fresh else {
                              throw YouBotsNotSent(plain: "Your desktop's housekeeping could not be read in full, so nothing was sent.")
+                         }
+                         // A field the person edited that the desktop changed since the form was filled is never overwritten.
+                         let daysMoved = edits.days != nil && base.days != filled.days
+                         let sizeMoved = edits.megabytes != nil && Self.wholeMegabytes(base.megabytes) != Self.wholeMegabytes(filled.megabytes)
+                         if daysMoved || sizeMoved {
+                             throw YouBotsNotSent(plain: "Housekeeping changed on your desktop, so nothing was sent. Your edits are kept here.")
                          }
                          let next = YouBotsHousekeeping(days: edits.days ?? base.days,
                                                         megabytes: edits.megabytes.map(Double.init) ?? base.megabytes)
@@ -984,10 +1029,12 @@ final class YouBotsLive {
 
     // MARK: Discord bots
 
-    /// Set one channel override to silent or normal. The phone never sets one to open.
+    /// Set one channel override to silent, or from open to normal. The phone never sets one to open, and never makes a
+    /// silent one answer again: on the desktop that can open the channel to everyone when the bot has no allowed user.
     func setOverrideMode(bot: String, entry: String, mode: String) async {
         guard mode == "normal" || mode == "silent" else { return }
         guard let current = discordBots.first(where: { $0.id == bot })?.overrides.first(where: { $0.id == entry }), current.mode != mode else { return }
+        guard current.mode == "open" || mode == "silent" else { return }
         await change(.discord, key: "override:" + entry,
                      words: YouBotsWords(done: "#\(current.label) is \(mode) now.", failed: "#\(current.label) was not changed.", missingIsDone: false),
                      send: { client, _ in try await client.youBotsOverrideMode(bot: bot, entry: entry, mode: mode) },
@@ -1004,9 +1051,11 @@ final class YouBotsLive {
                      })
     }
 
-    /// Remove one channel override. The phone cannot add one back.
+    /// Remove one channel override. The phone cannot add one back, and never removes a silent one: that would let the
+    /// bot answer in that channel again.
     func removeOverride(bot: String, entry: String) async {
-        guard let current = discordBots.first(where: { $0.id == bot })?.overrides.first(where: { $0.id == entry }) else { return }
+        guard let current = discordBots.first(where: { $0.id == bot })?.overrides.first(where: { $0.id == entry }),
+              current.mode != "silent" else { return }
         await change(.discord, key: "override:" + entry,
                      words: YouBotsWords(done: "#\(current.label) was removed.", failed: "#\(current.label) was not removed.", missingIsDone: true),
                      send: { client, _ in try await client.youBotsRemoveOverride(bot: bot, entry: entry) },
@@ -1040,23 +1089,16 @@ final class YouBotsLive {
 
     // MARK: The first way bots call you
 
-    /// Make one way the first in Reach me's call order, through Reach me's own store: a way that is not in the order
-    /// is added only when the desktop says it is set up, then moved up one place at a time. It stops at the first
-    /// step that does not go through, and Reach me says what happened.
+    /// Make one way the first in Reach me's call order, through Reach me's own store: one write of the whole order
+    /// (`makeFirst`), with its compare-before-send and lost-answer check. A way that is not in the order is added only
+    /// when the desktop says it is set up. Reach me says what happened.
     func setFirstCall(_ way: String) async {
         let voice = YouVoiceLive.shared
         guard !callChanging, let view = voice.reach, view.call.first != way else { return }
         guard view.callChannels.contains(where: { $0.id == way && ($0.ready || view.call.contains(way)) }) else { return }
         callChanging = true
         defer { callChanging = false }
-        if !view.call.contains(way) {
-            await voice.setWay(.call, way, used: true)
-        }
-        for _ in 0..<(view.callChannels.count + 1) {
-            guard let now = voice.reach, let index = now.call.firstIndex(of: way), index > 0 else { return }
-            await voice.moveWay(.call, way, by: -1)
-            if voice.notice[.reach] != nil || voice.unconfirmed[.reach]?.isEmpty == false { return }
-        }
+        await voice.makeFirst(.call, way)
     }
 }
 

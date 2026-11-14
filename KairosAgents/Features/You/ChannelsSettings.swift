@@ -1490,7 +1490,8 @@ struct YouBotsChannelsScreen: View {
 
             if ready {
                 SettingsGroup("Your channels") {
-                    if live.discordBots.isEmpty && live.channels.isEmpty {
+                    if live.discordBots.isEmpty && live.channels.isEmpty
+                        && live.load(.connectors) == .loaded && live.load(.discord) == .loaded {
                         EmptyRow(text: "No channels yet. Add one in Kairos on your desktop to reach Kairos from your phone.")
                     }
                     ForEach(live.discordBots) { bot in
@@ -1700,6 +1701,9 @@ struct YouBotsChannelScreen: View {
                     StatusPill(text: "Sending...", tone: .working)
                 case .unconfirmed?:
                     StatusPill(text: "Not confirmed", tone: .warn)
+                    YouPillButton(title: "I checked, allow another", danger: false) {
+                        live.allowAnotherTest(channel.id)
+                    }
                 default:
                     if channel.enabled && channel.state != "error" {
                         YouPillButton(title: "Send test", symbol: "bell") { testing = true }
@@ -1730,7 +1734,7 @@ struct YouBotsChannelScreen: View {
         case .refused(let words)?:
             return words
         case .unconfirmed?:
-            return "Your desktop did not answer, so this phone cannot tell whether the test was sent. It will not send another one. Look in the channel itself, and in Kairos on your desktop."
+            return "Your desktop did not answer, so this phone cannot tell whether the test was sent. It will not send another one until you say you checked. Look in the channel itself, and in Kairos on your desktop."
         case .sending?:
             return nil
         case nil:
@@ -1748,6 +1752,7 @@ private struct YouBotsModeChange: Identifiable {
     let label: String
     let from: ChannelOverrideMode
     let to: ChannelOverrideMode
+    let hasAllowedUser: Bool
 }
 
 /// A Discord bot while paired: its connection, its voice (off behind a confirm), the first way bots call you (through
@@ -1851,7 +1856,7 @@ struct YouBotsDiscordScreen: View {
         }
         .sheet(item: $removing) { entry in
             ConfirmSheet(title: "Remove #\(entry.label)?",
-                         detail: "It goes back to the allow list and stops being a task delivery target. This phone cannot add it back: add one in Kairos on your desktop.",
+                         detail: Self.removeWords(bot),
                          confirm: "Remove") {
                 Task { await live.removeOverride(bot: bot.id, entry: entry.id) }
             }
@@ -1866,9 +1871,17 @@ struct YouBotsDiscordScreen: View {
     }
 
     private static func changeWords(_ change: YouBotsModeChange) -> String {
-        if change.to == .silent { return "It will never reply there, whoever writes. It stays a delivery target for tasks." }
-        if change.from == .open { return "Only the allow list is answered there again." }
-        return "It can reply there again, to the senders on the allow list."
+        if change.to == .silent {
+            return "It will never reply there, whoever writes. It stays a delivery target for tasks. This phone cannot change it back."
+        }
+        if change.hasAllowedUser { return "Only your allowed user is answered there now." }
+        return "This bot has no allowed user, so it still answers anyone there. Set an allowed user in Kairos on your desktop to narrow it."
+    }
+
+    private static func removeWords(_ bot: YouBotsDiscord) -> String {
+        let base = "It goes back to the allow list and stops being a task delivery target. This phone cannot add it back: add one in Kairos on your desktop."
+        if bot.hasAllowedUser { return base }
+        return "This bot has no allowed user, so it answers anyone there after this. " + base
     }
 
     /// The first way bots call you: Reach me's own call order, changed through Reach me's own store.
@@ -1896,26 +1909,33 @@ struct YouBotsDiscordScreen: View {
         let mode = ChannelOverrideMode(rawValue: entry.mode) ?? .normal
         let key = "override:" + entry.id
         let working = live.busy.contains(key)
-        let options: [ChannelOverrideMode] = mode == .open ? [.normal, .silent, .open] : [.normal, .silent]
+        // A silent channel stays silent from this phone: letting it answer again can open it to everyone.
+        let options: [ChannelOverrideMode]
+        switch mode {
+        case .open: options = [.open, .normal, .silent]
+        case .normal: options = [.normal, .silent]
+        case .silent: options = [.silent]
+        }
         return HStack(spacing: 0) {
             PickRow(
                 title: "#\(entry.label)",
                 detail: mode.detail,
                 selection: Binding(get: { mode }, set: { new in
-                    if new != mode, new != .open {
-                        changing = YouBotsModeChange(id: entry.id, bot: bot.id, label: entry.label, from: mode, to: new)
+                    if new != mode, new != .open, mode == .open || new == .silent {
+                        changing = YouBotsModeChange(id: entry.id, bot: bot.id, label: entry.label, from: mode, to: new,
+                                                     hasAllowedUser: bot.hasAllowedUser)
                     }
                 }),
                 options: options
             ) { $0.title }
-            .disabled(working)
+            .disabled(working || mode == .silent)
             if working {
                 StatusPill(text: "Working...", tone: .muted)
                     .padding(.trailing, 12)
             } else if live.unconfirmed[.discord]?.contains(key) == true {
                 StatusPill(text: "Not confirmed", tone: .warn)
                     .padding(.trailing, 12)
-            } else {
+            } else if mode != .silent {
                 Button {
                     Haptics.tap()
                     removing = entry

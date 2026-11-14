@@ -16,7 +16,7 @@ import Foundation
 // - GET /api/bot-workbench/computers and POST /{bot}/computer/sleep (routes/bot_workbench_routes.py over
 //   services/bot_workbench.py: inventory, docker_status). Admin accounts only.
 // - GET /api/bots/connections (services/bot_connections.py: inventory, _mcp_apps, _native_apps): the apps. Only an
-//   account's id, alias and status are read (its label is an email address); an app's reason text is masked.
+//   account's id, alias and status are read (its label is an email address); an app's failure text is never read.
 //   PUT /api/bots/connections/{app}/accounts/{account}/alias, PATCH /api/bots/mcp/{id} {enabled: false}.
 // - GET /api/connectors (routes/connector_routes.py: _shown over core/connectors/store.py: public): id, name, kind,
 //   label, enabled, open and the status word. `settings`, `account`, `secrets_set`, `webhook_path`, the model id and
@@ -39,6 +39,23 @@ nonisolated struct YouBotsNotSent: Error, Sendable {
 /// A list item that is counted and never read: the desktop's value is not decoded at all.
 nonisolated struct YouBotsSkipped: Decodable, Sendable {
     init(from decoder: Decoder) throws {}
+}
+
+/// A value that is only asked "is it set": true for a non-empty string (or a number or true), false for an empty
+/// string or false. What it holds is read into nothing and never kept.
+nonisolated struct YouBotsIsSet: Decodable, Sendable {
+    let isSet: Bool
+
+    init(from decoder: Decoder) throws {
+        let single = try decoder.singleValueContainer()
+        if let text = try? single.decode(String.self) {
+            isSet = !text.isEmpty
+        } else if let flag = try? single.decode(Bool.self) {
+            isSet = flag
+        } else {
+            isSet = true
+        }
+    }
 }
 
 nonisolated enum YouBotsWire {
@@ -246,7 +263,6 @@ nonisolated struct YouBotsAppDTO: Decodable, Sendable {
     var category: JSONValue?
     var description: JSONValue?
     var state: JSONValue?
-    var reason: JSONValue?
     var enabled: JSONValue?
     var usedBy: [BotKnowLossy<YouBotsAppUserDTO>]?
     var accounts: [BotKnowLossy<YouBotsAppAccountDTO>]?
@@ -302,8 +318,8 @@ nonisolated struct YouBotsDiscordDTO: Decodable, Sendable {
     var id: String
     var name: JSONValue?
     var hasToken: JSONValue?
-    var allowedUserId: YouBotsSkipped?
-    var voiceChannelId: YouBotsSkipped?
+    var allowedUserId: YouBotsIsSet?
+    var voiceChannelId: YouBotsIsSet?
     var channels: [BotKnowLossy<YouBotsOverrideDTO>]?
 }
 
@@ -542,6 +558,7 @@ nonisolated enum YouBotsSamples {
                    {"discord_channel_id": "1", "label": "no id"}]},
      {"id": "e2f3a4b5c6d7", "name": "Shop helper", "allowed_user_id": null, "model_endpoint_id": null, "has_token": true, "account": "owner",
       "channels": [], "voice_channel_id": null},
+     {"id": "f3a4b5c6d7e8", "name": "Old bot", "allowed_user_id": "", "has_token": true, "voice_channel_id": "", "channels": []},
      {"name": "no id"}]
     """#
 
@@ -615,14 +632,9 @@ nonisolated enum YouBotsSamples {
                   BotKnowWire.items(google.usedBy).items.first?.name?.string == "Kip", apps.items[1].enabled?.bool == true,
                   apps.items[2].enabled?.bool == false, apps.items[3].state?.string == "available",
                   without.items.count == 1, without.skipped == 1, without.items[0].name?.string == "Ledger" else { throw SampleMismatch("apps") }
-            // The reason text is cut down before it is shown: no password, no query, no port.
-            let shown = YouBotsWire.safe(apps.items[1].reason?.string ?? "")
-            guard !shown.contains("pw"), !shown.contains("key=abc"), !shown.contains("8443"), shown.contains("shop.example") else {
-                throw SampleMismatch("masked reason")
-            }
             guard YouBotsWire.alias("  Work   mail ") == "Work mail", YouBotsWire.alias("") == nil,
                   YouBotsWire.alias(String(repeating: "a", count: 65)) == nil else { throw SampleMismatch("alias") }
-            return "4 apps, accounts without their label, reason masked"
+            return "4 apps, accounts without their label, no failure text"
         },
         DecodeCheck("youbots.connectors") {
             let rows = BotKnowWire.items(try KJSON.decode([BotKnowLossy<YouBotsConnectorDTO>].self, from: YouBotsSamples.connectors))
@@ -638,12 +650,13 @@ nonisolated enum YouBotsSamples {
             let rows = BotKnowWire.items(try KJSON.decode([BotKnowLossy<YouBotsDiscordDTO>].self, from: YouBotsSamples.discordBots))
             let overrides = BotKnowWire.items(rows.items[0].channels)
             let status = try KJSON.decode(YouBotsStatusDTO.self, from: YouBotsSamples.status)
-            guard rows.items.count == 2, rows.skipped == 1, rows.items[0].id == "d1e2f3a4b5c6", rows.items[0].hasToken?.bool == true,
-                  rows.items[0].allowedUserId != nil, rows.items[0].voiceChannelId != nil,
+            guard rows.items.count == 3, rows.skipped == 1, rows.items[0].id == "d1e2f3a4b5c6", rows.items[0].hasToken?.bool == true,
+                  rows.items[0].allowedUserId?.isSet == true, rows.items[0].voiceChannelId?.isSet == true,
                   rows.items[1].allowedUserId == nil, rows.items[1].voiceChannelId == nil,
+                  rows.items[2].allowedUserId?.isSet == false, rows.items[2].voiceChannelId?.isSet == false,
                   overrides.items.count == 2, overrides.skipped == 1, overrides.items[0].mode?.string == "open", overrides.items[1].label?.string == "announcements",
                   status.discordConnectedBots?.compactMap({ $0.string }) == ["Kairos"] else { throw SampleMismatch("discord") }
-            return "2 Discord bots, 2 overrides, no ids of users or channels"
+            return "3 Discord bots, 2 overrides, no ids of users or channels"
         },
         DecodeCheck("youbots.guards") {
             guard (try? YouBotsWire.pathID("0a1b2c3d4e")) != nil, (try? YouBotsWire.pathID("acct_AbC-123")) != nil,
@@ -682,13 +695,14 @@ nonisolated enum YouBotsSamples {
                   info.maxRunning == 2, info.idleMinutes == 10, info.dockerAvailable == true, info.imageReady == true
             else { throw SampleMismatch("teams and computers") }
             guard apps.rows.count == 3, apps.rows[0].accounts.count == 2, apps.rows[0].accounts[0].alias == "Shop", apps.rows[0].usedBy == ["Kip"],
-                  apps.rows[1].isMCP, apps.rows[1].enabled, !apps.rows[2].enabled, !apps.rows[1].reason.contains("pw"),
-                  !apps.rows[1].reason.contains("8443"), apps.without == ["Ledger"]
+                  apps.rows[1].isMCP, apps.rows[1].enabled, !apps.rows[2].enabled, apps.rows[1].state == "failed",
+                  apps.without == ["Ledger"]
             else { throw SampleMismatch("apps") }
             guard channels.rows.count == 3, channels.rows[0].senders == 2, channels.rows[0].state == "listening", channels.rows[1].state == "error",
                   channels.rows[1].anyone, channels.rows[1].webhook, !channels.rows[2].enabled, channels.rows[2].state == "off", !channels.rows[2].twoWay
             else { throw SampleMismatch("channels") }
-            guard discord.rows.count == 2, discord.rows[0].hasToken, discord.rows[0].hasAllowedUser, discord.rows[0].hasVoice,
+            guard discord.rows.count == 3, !discord.rows[2].hasAllowedUser, !discord.rows[2].hasVoice,
+                  discord.rows[0].hasToken, discord.rows[0].hasAllowedUser, discord.rows[0].hasVoice,
                   discord.rows[0].overrides.map(\.mode) == ["open", "silent"], discord.rows[0].overrides.map(\.label) == ["shop-orders", "announcements"],
                   !discord.rows[1].hasAllowedUser, !discord.rows[1].hasVoice, discord.rows[1].overrides.isEmpty
             else { throw SampleMismatch("discord") }

@@ -1608,6 +1608,7 @@ struct YouBotsUsageScreen: View {
 /// desktop's own values read again just before, with only what the person changed on top.
 struct YouBotsHousekeepingScreen: View {
     private let live = YouBotsLive.shared
+    @State private var confirming = false
 
     var body: some View {
         let working = live.busy.contains("housekeeping") || live.unconfirmed[.housekeeping]?.isEmpty == false
@@ -1621,7 +1622,11 @@ struct YouBotsHousekeepingScreen: View {
                     YouStepperRow(title: "Trace size cap", value: Binding(get: { shown.megabytes }, set: { live.editHousekeeping(megabytes: $0) }),
                                   range: 1...4096, step: 16, unit: "MB")
                     ActionRow(title: live.busy.contains("housekeeping") ? "Saving..." : "Save housekeeping", symbol: "checkmark", tone: .gold) {
-                        Task { await live.saveHousekeeping() }
+                        if live.housekeepingLowers {
+                            confirming = true
+                        } else {
+                            Task { await live.saveHousekeeping() }
+                        }
                     }
                     .disabled(working || live.housekeepingEdits.isEmpty)
                     .opacity(working || live.housekeepingEdits.isEmpty ? 0.4 : 1)
@@ -1630,6 +1635,14 @@ struct YouBotsHousekeepingScreen: View {
             }
         }
         .task(id: YouBotsLive.connectionKey) { await live.read(.housekeeping) }
+        .sheet(isPresented: $confirming) {
+            let shown = live.housekeepingShown
+            ConfirmSheet(title: "Delete older trace details?",
+                         detail: "Trace details older than \(shown?.days ?? 0) days (or beyond \(shown?.megabytes ?? 0) MB) are deleted at the next daily cleanup. This cannot be undone.",
+                         confirm: "Save") {
+                Task { await live.saveHousekeeping() }
+            }
+        }
     }
 }
 
@@ -1845,8 +1858,8 @@ struct YouBotsAppsScreen: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(app.usedBy.isEmpty ? "No bot uses it yet." : "Used by \(app.usedBy.joined(separator: ", "))")
                         .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-                    if !app.reason.isEmpty {
-                        Text(app.reason).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                    if let words = Self.stateWords(app.state) {
+                        Text(words).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     ForEach(Array(app.accounts.enumerated()), id: \.element.id) { index, account in
@@ -1868,7 +1881,7 @@ struct YouBotsAppsScreen: View {
         let pill = Self.pill(server.state)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                RowLabel(title: server.name, detail: server.reason.isEmpty ? nil : server.reason)
+                RowLabel(title: server.name, detail: Self.stateWords(server.state))
                 StatusPill(text: pill.text, tone: pill.tone)
             }
             if server.enabled {
@@ -1882,6 +1895,18 @@ struct YouBotsAppsScreen: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    /// Fixed words for a state. The desktop's own failure text can carry a server address or a path, so it is never read.
+    private static func stateWords(_ state: String) -> String? {
+        switch state {
+        case "failed": return "The server did not answer at its last check. See why in Kairos on your desktop."
+        case "pending": return "Not tested yet."
+        case "expired": return "Sign in again in Kairos on your desktop."
+        case "unavailable": return "Not set up. See Kairos on your desktop."
+        case "off": return "Switched off."
+        default: return nil
+        }
     }
 
     private static func pill(_ state: String) -> (text: String, tone: StatusPill.Tone) {
