@@ -687,8 +687,9 @@ final class MakeLibraryLive {
 
     /// After the fixed wait with nothing on the desktop, the person may allow a second send. This only turns the button
     /// back on (the send itself asks again). It reads the desktop first and settles the hold instead when it can.
-    func releaseHold(_ key: String) async -> String {
-        guard isLive else { return "" }
+    /// `from` is the desktop and account the "Send this again?" sheet was opened for: nothing is released on another.
+    func releaseHold(_ key: String, from: String) async -> String {
+        guard isLive, from == account else { return "" }
         let acct = account
         let slot = Self.slot(acct, key)
         guard let held = pendingMap[slot], held.lost, waitedLongEnough(held) else { return "" }
@@ -785,14 +786,25 @@ final class MakeLibraryLive {
         case "starter":
             return packs.contains { $0.originKind == "starter" && $0.originFrom == hold.starterID } ? .applied : .unknown
         case "sample":
-            guard let id = hold.packID, let number = hold.version, let now = pack(id),
-                  let current = now.versions.first(where: { $0.number == number }) else { return .unknown }
-            let changed = current.sample?.at != hold.sampleAt || current.status == "awaiting_approval"
-                || castStatuses(now) != (hold.cast ?? [:])
+            // A pack that is gone from a fresh read can have nothing more happen to it.
+            guard let id = hold.packID, let number = hold.version else { return .unknown }
+            guard let now = pack(id) else { return .notApplied }
+            guard let current = now.versions.first(where: { $0.number == number }) else { return .unknown }
+            // The desktop renders each missing character sheet one after another inside the same request. So one
+            // sheet moving is not the end of it: the cast counts only when every character that was a draft or
+            // rejected at the send has left those two states.
+            let nowCast = castStatuses(now)
+            let waiting = (hold.cast ?? [:]).filter { $0.value == "draft" || $0.value == "rejected" }
+            let castDone = !waiting.isEmpty && waiting.allSatisfy { name, _ in
+                guard let status = nowCast[name] else { return false }
+                return status != "draft" && status != "rejected"
+            }
+            let changed = current.sample?.at != hold.sampleAt || current.status == "awaiting_approval" || castDone
             return changed ? .applied : .unknown
         case "editpack":
-            guard let id = hold.packID, let base = hold.baseVersion, let now = pack(id), let latest = now.latest,
-                  let values = MakeLibraryPackForm.values(now) else { return .unknown }
+            guard let id = hold.packID, let base = hold.baseVersion else { return .unknown }
+            guard let now = pack(id) else { return .notApplied }
+            guard let latest = now.latest, let values = MakeLibraryPackForm.values(now) else { return .unknown }
             guard latest.number > base else { return .notApplied }
             let match = (hold.fieldHashes ?? [:]).allSatisfy { name, hashed in
                 guard let field = MakeLibraryPackField(rawValue: name) else { return false }
@@ -809,12 +821,15 @@ final class MakeLibraryLive {
                 && (hold.nameHash == nil || same($0.name.lowercased(), hold.nameHash)) }
             return found ? .applied : .unknown
         case "editchar":
-            guard let id = hold.characterID, let base = hold.baseVersion, let now = character(id), let latest = now.latest else { return .unknown }
+            guard let id = hold.characterID, let base = hold.baseVersion else { return .unknown }
+            guard let now = character(id) else { return .notApplied }
+            guard let latest = now.latest else { return .unknown }
             guard latest.number > base else { return .notApplied }
             return now.versions.contains { $0.number > base && same($0.note, hold.noteHash) } ? .applied : .unknown
         case "sheet":
-            guard let id = hold.characterID, let number = hold.version,
-                  let status = character(id)?.versions.first(where: { $0.number == number })?.status else { return .unknown }
+            guard let id = hold.characterID, let number = hold.version else { return .unknown }
+            guard let now = character(id) else { return .notApplied }
+            guard let status = now.versions.first(where: { $0.number == number })?.status else { return .unknown }
             return status != hold.statusBefore ? .applied : .unknown
         default:
             return .unknown
@@ -1213,6 +1228,8 @@ struct MakeLibraryPendingLine: View {
     let key: String
     @Environment(MakeToast.self) private var toast
     @State private var confirmAgain = false
+    /// The desktop and account the "Send this again?" sheet was opened for.
+    @State private var againFor = ""
     private let live = MakeLibraryLive.shared
 
     var body: some View {
@@ -1237,7 +1254,10 @@ struct MakeLibraryPendingLine: View {
                                 }
                             }
                             if expired {
-                                MakePillButton(title: "Send again") { confirmAgain = true }
+                                MakePillButton(title: "Send again") {
+                                    againFor = MakeLibraryLive.accountKey
+                                    confirmAgain = true
+                                }
                             }
                         }
                     }
@@ -1249,7 +1269,7 @@ struct MakeLibraryPendingLine: View {
                                             + ["This only turns the button back on. You confirm the send itself next."],
                                         button: "Allow sending again") {
                     Task {
-                        let line = await live.releaseHold(key)
+                        let line = await live.releaseHold(key, from: againFor)
                         if !line.isEmpty { toast.say(line) }
                     }
                 }
@@ -1415,8 +1435,13 @@ struct MakeLibraryBriefSheet: View {
                     GoldButton(title: busy ? "Sending" : "Make the pack") { send() }
                         .disabled(busy)
                         .opacity(busy ? 0.5 : 1)
-                    QuietButton(title: "Back") { confirming = false }
-                        .disabled(busy)
+                    if busy {
+                        // The hold is in the shared store and the send does not depend on this sheet, so it can be closed.
+                        HintLine(text: "Your desktop keeps working. The result shows under New from a brief.")
+                        QuietButton(title: "Close") { dismiss() }
+                    } else {
+                        QuietButton(title: "Back") { confirming = false }
+                    }
                 } else {
                     MakeSheetTitle(title: "New style pack", detail: "Describe the look and sound. Your desktop turns it into a pack.")
                     MakeField(label: "Brief", text: $brief, prompt: "Warm paper colours, hand-drawn arrows, calm narration...", limit: MakeLibraryWire.briefLimit, lines: 4...10)
@@ -1437,7 +1462,6 @@ struct MakeLibraryBriefSheet: View {
             .padding(.bottom, 30)
         }
         .kSheet()
-        .interactiveDismissDisabled(live.isWriting("brief"))
     }
 
     private func send() {
