@@ -73,10 +73,10 @@ nonisolated enum DeskFilesWire {
     /// The most folders the desktop sends.
     static let limit = 500
 
-    /// A path that goes safely into a request's address. One that could be read as two values is not sent.
+    /// A path that can be sent. It goes through URLQueryItem, which encodes `&` and `#` (and the client turns a `+`
+    /// into `%2B`); the desktop splits a pair on its first `=` only. Only control characters are refused.
     static func pathOK(_ path: String) -> Bool {
-        !path.contains("&") && !path.contains("=") && !path.contains("#")
-            && !path.unicodeScalars.contains { $0.value < 32 }
+        !path.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }
     }
 
     /// The last part of a path, whichever slash the PC uses.
@@ -158,8 +158,8 @@ nonisolated enum DeskFilesSamples {
             guard folder.path == "C:\\Users\\sample", folder.parent == "C:\\Users", folder.dirs.count == 4, folder.skipped == 1,
                   !folder.truncated, !folder.differs, folder.load == .loaded else { throw SampleMismatch("folder fields") }
             guard folder.dirs[0].name == "Documents", folder.dirs[0].openable,
-                  // A name with an ampersand is listed but has no link.
-                  folder.dirs[2].name == "R&D notes", !folder.dirs[2].openable,
+                  // A name with an ampersand is listed and has a link (the query encodes it).
+                  folder.dirs[2].name == "R&D notes", folder.dirs[2].openable,
                   // No name: the last part of the path.
                   folder.dirs[3].name == "Music" else { throw SampleMismatch("rows") }
             let top = DeskFilesWire.folder(try KJSON.decode(DeskFilesFolderDTO.self, from: DeskFilesSamples.top), asked: "C:\\")
@@ -173,14 +173,21 @@ nonisolated enum DeskFilesSamples {
                   !DeskFilesWire.folder(read, asked: "c:/users/sample/").differs,
                   !DeskFilesWire.folder(read, asked: "C:\\Users\\sample").differs else { throw SampleMismatch("differs") }
             guard DeskFilesWire.lastName("C:\\Users\\sample\\Projects") == "Projects", DeskFilesWire.lastName("/home/x/y/") == "y",
-                  DeskFilesWire.pathOK("C:\\Users\\sample"), !DeskFilesWire.pathOK("a&b"), !DeskFilesWire.pathOK("a=b"),
-                  !DeskFilesWire.pathOK("a#b") else { throw SampleMismatch("path helpers") }
+                  DeskFilesWire.pathOK("C:\\Users\\sample"), DeskFilesWire.pathOK("a&b"), DeskFilesWire.pathOK("a=b"),
+                  DeskFilesWire.pathOK("a#b"), !DeskFilesWire.pathOK("a\nb") else { throw SampleMismatch("path helpers") }
+            // A folder name with `&`, `#` and `=` goes into the address encoded and reads back the same.
+            let client = APIClient(base: URL(string: "https://desk.example")!, token: nil)
+            let sent = try client.url("/api/workspace/browse", query: ["path": "C:\\R&D #1 a=b"])
+            let back = URLComponents(url: sent, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "path" }?.value
+            guard sent.absoluteString.contains("%26"), sent.absoluteString.contains("%23"), back == "C:\\R&D #1 a=b" else {
+                throw SampleMismatch("encoded path")
+            }
             let refused = try KJSON.decode(APIErrorBody.self, from: DeskFilesSamples.forbidden)
             guard refused.text == "admin privileges required",
                   DeskFilesWire.words(APIError.server(status: 403, detail: refused.text)) == "Files on this PC need an admin account on your desktop." else {
                 throw SampleMismatch("403")
             }
-            return "different folder noticed, odd names kept off the address, 403 sentence"
+            return "different folder noticed, odd names sent encoded, 403 sentence"
         },
     ]
 }

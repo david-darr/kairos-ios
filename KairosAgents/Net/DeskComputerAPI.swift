@@ -209,6 +209,9 @@ nonisolated struct DeskComputer: Identifiable, Hashable, Sendable {
     var waitingModel: Bool
     var recording: Bool
     var desktop: Bool
+    /// When this computer was opened (epoch seconds). Owner ids are reused, so this tells a computer from the one
+    /// that replaced it. Only the list carries it; a stream state has none.
+    var startedAt: Double?
 
     var kindName: String { isBot ? "A bot's computer" : "A chat's computer" }
     var heading: String { title.isEmpty ? kindName : title }
@@ -282,12 +285,58 @@ nonisolated enum DeskComputerWire {
     /// A page address as shown: the host and path, with no sign-in, query or fragment (they can carry a session).
     static func shownAddress(_ text: String?) -> String {
         guard let text, !text.isEmpty, text != "about:blank" else { return "" }
-        guard let parts = URLComponents(string: text), let host = parts.host, !host.isEmpty else {
-            return String(text.prefix(80))
+        if let parts = URLComponents(string: text), let host = parts.host, !host.isEmpty {
+            var path = hidingTokens(parts.path)
+            if path == "/" { path = "" }
+            return String((host + path).prefix(80))
         }
-        var path = parts.path
+        // Not readable as an address: keep only what is before a `?` or `#`, and nothing before an `@` in the host part.
+        var rest = Substring(text)
+        if let cut = rest.firstIndex(where: { $0 == "?" || $0 == "#" }) { rest = rest[..<cut] }
+        if let scheme = rest.range(of: "://") { rest = rest[scheme.upperBound...] }
+        let slash = rest.firstIndex(of: "/") ?? rest.endIndex
+        if let at = rest[..<slash].lastIndex(of: "@") { rest = rest[rest.index(after: at)...] }
+        var path = hidingTokens(String(rest))
         if path == "/" { path = "" }
-        return String((host + path).prefix(80))
+        return String(path.prefix(80))
+    }
+
+    /// A path with each long token-like part (20 or more letters, digits, `_` or `-`: a reset or sign-in code) hidden.
+    private static func hidingTokens(_ path: String) -> String {
+        path.split(separator: "/", omittingEmptySubsequences: false).map { part -> String in
+            let token = part.count >= 20 && part.unicodeScalars.allSatisfy {
+                ($0.value < 128 && CharacterSet.alphanumerics.contains($0)) || $0 == "_" || $0 == "-"
+            }
+            return token ? "..." : String(part)
+        }.joined(separator: "/")
+    }
+
+    /// An address in text: after `URL:`, with a scheme, or a host with a path, query or fragment.
+    private static let addressInText = try? NSRegularExpression(
+        pattern: #"(?<=URL: )\S+|[A-Za-z][A-Za-z0-9+.\-]*://\S+|\b[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}(?::\d+)?[/?#]\S*"#,
+        options: [.caseInsensitive])
+
+    /// Text from the desktop as shown: every address in it goes through `shownAddress`, so no query, fragment,
+    /// sign-in or long code is shown from a result line, a title or any other text.
+    static func cleanText(_ text: String) -> String {
+        guard let regex = addressInText else {
+            // Never shown as it came: cut at the first `?`.
+            return String(text.prefix { $0 != "?" })
+        }
+        let whole = text as NSString
+        var out = text
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: whole.length)).reversed() {
+            var piece = whole.substring(with: match.range)
+            var tail = ""
+            while let last = piece.last, ".,;:)]}'\"!>".contains(last) {
+                tail = String(last) + tail
+                piece.removeLast()
+            }
+            let shown = shownAddress(piece)
+            guard let range = Range(match.range, in: out) else { continue }
+            out.replaceSubrange(range, with: (shown.isEmpty ? "a blank page" : shown) + tail)
+        }
+        return out
     }
 
     static func date(_ seconds: Double?) -> Date? {
@@ -296,15 +345,17 @@ nonisolated enum DeskComputerWire {
     }
 
     static func computer(_ row: DeskComputerRunningDTO) -> DeskComputer {
-        DeskComputer(owner: row.owner, isBot: isBot(row.owner), title: (row.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+        DeskComputer(owner: row.owner, isBot: isBot(row.owner), title: cleanText((row.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)),
                      address: shownAddress(row.url), lastAction: date(row.lastAction), takenOver: row.takenOver ?? false,
-                     waitingModel: row.waitingModel ?? false, recording: row.recording ?? false, desktop: row.desktop ?? false)
+                     waitingModel: row.waitingModel ?? false, recording: row.recording ?? false, desktop: row.desktop ?? false,
+                     startedAt: row.startedAt)
     }
 
     static func computer(_ frame: DeskComputerFrameDTO, owner: String) -> DeskComputer {
-        DeskComputer(owner: owner, isBot: isBot(owner), title: (frame.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+        DeskComputer(owner: owner, isBot: isBot(owner), title: cleanText((frame.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)),
                      address: shownAddress(frame.url), lastAction: date(frame.lastAction), takenOver: frame.takenOver ?? false,
-                     waitingModel: frame.waitingModel ?? false, recording: frame.recording ?? false, desktop: frame.desktop ?? false)
+                     waitingModel: frame.waitingModel ?? false, recording: frame.recording ?? false, desktop: frame.desktop ?? false,
+                     startedAt: nil)
     }
 
     /// The running computers, one row per owner, the newest action first. Rows of another kind are dropped.
@@ -363,10 +414,12 @@ nonisolated enum DeskComputerWire {
         case "": title = "A step"
         default: title = action.prefix(1).uppercased() + String(action.dropFirst())
         }
-        let result = (dto.result ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Every text of the step goes through cleanText before it is clipped: an address in it loses its query,
+        // fragment, sign-in and long codes, wherever the desktop wrote it.
+        let result = cleanText((dto.result ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         let names = (dto.images?.items ?? []).filter { imageNames.contains($0) }
-        return DeskComputerStep(number: dto.step, title: title, result: clip(result, 300), failed: dto.ok == false,
-                                typed: typed.map { clip($0, 400) }, address: shownAddress(dto.url ?? args?["url"]?.string),
+        return DeskComputerStep(number: dto.step, title: clip(cleanText(title), 120), result: clip(result, 300), failed: dto.ok == false,
+                                typed: typed.map { clip(cleanText($0), 400) }, address: shownAddress(dto.url ?? args?["url"]?.string),
                                 isClick: action == "click", kept: Set(names), reasons: dto.notKept ?? [:], time: date(dto.time))
     }
 
@@ -516,6 +569,9 @@ nonisolated enum DeskComputerSamples {
       {"step": 4, "action": "type", "arguments": {"text": "two blue bells"}, "point": null, "result": "The save window did not open",
        "code": "no_window", "ok": false, "url": null, "time": 1793100030.0, "images": ["after.jpg"],
        "evidence": {"kept": ["action.json", "after.jpg"], "not_kept": {"before.jpg": "this action returned no screenshot"}}},
+      {"step": 5, "action": "type", "arguments": {"text": "hello"}, "point": null,
+       "result": "Not typed: no field is focused. URL: https://shop.example/login?token=zzz", "code": "no_focus", "ok": false,
+       "url": "https://user:pw@shop.example/reset/abcdefghijklmnopqrstuvwxyz0123?code=zzz#top", "time": 1793100040.0, "images": []},
       {"action": "click"},
       {"step": 2, "action": "scroll", "arguments": {"dy": -300}}
     ], "days": 7, "agent_id": "7c1d9e22", "agent_name": "Shop helper"}
@@ -537,7 +593,8 @@ nonisolated enum DeskComputerSamples {
             }
             // The page address loses its query and fragment.
             guard rows[1].owner == "chat:5b9e2f0a4c18", !rows[1].isBot, rows[1].title == "Bike shop",
-                  rows[1].address == "shop.example/products", rows[1].lastAction != nil, !rows[1].takenOver else {
+                  rows[1].address == "shop.example/products", rows[1].lastAction != nil, !rows[1].takenOver,
+                  rows[1].startedAt == 1793100000.0, rows[0].startedAt == 1793100100.0 else {
                 throw SampleMismatch("chat row")
             }
             guard (try? DeskComputerWire.ownerPath("chat:5b9e2f0a4c18")) != nil, (try? DeskComputerWire.ownerPath("agent:7c1d9e22")) != nil,
@@ -575,7 +632,7 @@ nonisolated enum DeskComputerSamples {
             guard runs.count == 2, runs[0].id == "run_a1", runs[0].count == 4, runs[1].id == "run_b2" else { throw SampleMismatch("runs") }
             let read = try KJSON.decode(DeskComputerStepsDTO.self, from: DeskComputerSamples.steps)
             let mapped = DeskComputerWire.steps(read)
-            guard mapped.steps.count == 4, mapped.skipped == 1, read.days == 7, read.agentName == "Shop helper" else {
+            guard mapped.steps.count == 5, mapped.skipped == 1, read.days == 7, read.agentName == "Shop helper" else {
                 throw SampleMismatch("step rows")
             }
             let open = mapped.steps[0], click = mapped.steps[1], hidden = mapped.steps[2], typed = mapped.steps[3]
@@ -587,7 +644,34 @@ nonisolated enum DeskComputerSamples {
                 throw SampleMismatch("step fields")
             }
             guard click.name(for: .click) == "marker.jpg", click.name(for: .before) == "before.jpg" else { throw SampleMismatch("names") }
-            return "2 runs, 4 steps, private text kept as marked"
+            // A result line that carries an address with a code in its query shows the address without it.
+            let refused = mapped.steps[4]
+            guard refused.result == "Not typed: no field is focused. URL: shop.example/login",
+                  !refused.result.contains("?"), !refused.result.contains("zzz"),
+                  refused.address == "shop.example/reset/...", !refused.address.contains("zzz"), !refused.address.contains("pw") else {
+                throw SampleMismatch("step address text")
+            }
+            return "2 runs, 5 steps, private text kept as marked, addresses in text cleaned"
+        },
+        DecodeCheck("deskcomputer.addresses") {
+            let one = DeskComputerWire.cleanText("Go to https://a.example/x?code=zzz#frag, then (http://b.example/y/reset?t=1).")
+            let two = DeskComputerWire.cleanText("Not typed. URL: about:blank")
+            let three = DeskComputerWire.cleanText("Opened shop.example/cart?session=zzz and docs.example/a/abcdefghijklmnopqrstuvwxyz1234")
+            let four = DeskComputerWire.cleanText("Page https://me:secret@c.example/p/abcdefghij-klmnopqrst_uvwxyz")
+            guard one == "Go to a.example/x, then (b.example/y/reset).", two == "Not typed. URL: a blank page",
+                  three == "Opened shop.example/cart and docs.example/a/...", four == "Page c.example/p/...",
+                  DeskComputerWire.cleanText("Plain words, no address.") == "Plain words, no address.",
+                  DeskComputerWire.cleanText("Node.js and file.txt") == "Node.js and file.txt" else {
+                throw SampleMismatch("text")
+            }
+            // An address that cannot be read keeps nothing from a `?`, a `#` or before an `@` in its host part.
+            let odd = DeskComputerWire.shownAddress("https://us er@shop example/a?token=zzz")
+            let long = DeskComputerWire.shownAddress("https://shop.example/reset/abcdefghijklmnopqrstuvwxyz0123?x=1")
+            guard odd.hasSuffix("/a"), !odd.contains("zzz"), !odd.contains("er@"), !odd.contains("?"), long == "shop.example/reset/...",
+                  DeskComputerWire.shownAddress("https://shop.example/short-slug") == "shop.example/short-slug" else {
+                throw SampleMismatch("address")
+            }
+            return "addresses in text lose query, fragment, sign-in and long codes"
         },
         DecodeCheck("deskcomputer.errors") {
             let forbidden = try KJSON.decode(APIErrorBody.self, from: DeskComputerSamples.forbidden)

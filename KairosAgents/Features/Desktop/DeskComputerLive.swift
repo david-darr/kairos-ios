@@ -35,6 +35,15 @@ nonisolated enum DeskComputerStopPhase: Equatable, Sendable {
     case sending
     /// The answer was lost: the list is read again to see what the desktop has.
     case checking
+    /// The list could not be read to check. Stop stays off; "Check again" reads it once more. A stop is never sent
+    /// again while this is not settled.
+    case unchecked
+}
+
+/// An unsettled stop belongs to one account on one desktop and one computer.
+nonisolated struct DeskComputerStopKey: Hashable, Sendable {
+    var account: String
+    var owner: String
 }
 
 nonisolated struct DeskComputerRunsState: Sendable {
@@ -73,17 +82,22 @@ final class DeskComputerLive {
     private var stepPictures: [String: UIImage] = [:]
     private var pictureOrder: [String] = []
     private var pictureFailed: Set<String> = []
-    /// Stops whose answer is not settled, by owner. Kept here, not in a screen, so leaving or reopening the
-    /// screen never turns Stop back on.
-    private var stopMap: [String: DeskComputerStopPhase] = [:]
-    private var noteMap: [String: String] = [:]
+    /// Stops whose answer is not settled, by account and owner. Kept here, not in a screen, and never cleared by
+    /// leaving or reopening the screen, an account switch or an unpair: only a list read that shows what happened
+    /// ends one.
+    private var stopMap: [DeskComputerStopKey: DeskComputerStopPhase] = [:]
+    private var noteMap: [DeskComputerStopKey: String] = [:]
+    /// When the computer was opened, as the list said when its stop was sent (owner ids are reused).
+    private var stopOpened: [DeskComputerStopKey: Double] = [:]
 
     @ObservationIgnored private var reads: [String: Int] = [:]
     @ObservationIgnored private var writeSerial = 0
     @ObservationIgnored private var inFlight = 0
     @ObservationIgnored private var streamSerial = 0
     @ObservationIgnored private var streamTask: Task<Void, Never>?
-    @ObservationIgnored private var checkTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var checkTasks: [DeskComputerStopKey: Task<Void, Never>] = [:]
+    @ObservationIgnored private var checkGeneration = 0
+    @ObservationIgnored private var checkOwners: [DeskComputerStopKey: Int] = [:]
 
     private init() {}
 
@@ -115,6 +129,7 @@ final class DeskComputerLive {
         streamTask = nil
         for task in checkTasks.values { task.cancel() }
         checkTasks = [:]
+        checkOwners = [:]
         account = key
         listLoad = .idle
         rows = []
@@ -131,8 +146,7 @@ final class DeskComputerLive {
         stepPictures = [:]
         pictureOrder = []
         pictureFailed = []
-        stopMap = [:]
-        noteMap = [:]
+        // Unsettled stops stay: they belong to their own account and are checked again when it is current.
         reads = [:]
     }
 
@@ -163,9 +177,15 @@ final class DeskComputerLive {
         return watchedState ?? rows.first { $0.owner == chosen }
     }
 
-    func isStopping(_ owner: String) -> Bool { current && stopMap[owner] != nil }
-    func stopPhase(_ owner: String) -> DeskComputerStopPhase? { current ? stopMap[owner] : nil }
-    func note(_ owner: String) -> String? { current ? noteMap[owner] : nil }
+    private func stopKey(_ owner: String) -> DeskComputerStopKey { DeskComputerStopKey(account: account, owner: owner) }
+
+    /// Stop is on its way or being checked (the button reads "Stopping").
+    func isStopping(_ owner: String) -> Bool {
+        let phase = stopPhase(owner)
+        return phase == .sending || phase == .checking
+    }
+    func stopPhase(_ owner: String) -> DeskComputerStopPhase? { current ? stopMap[stopKey(owner)] : nil }
+    func note(_ owner: String) -> String? { current ? noteMap[stopKey(owner)] : nil }
     func runs(_ owner: String) -> DeskComputerRunsState? { current ? runMap[owner] : nil }
     func steps(_ runID: String) -> DeskComputerStepsState? { current ? stepMap[runID] : nil }
     func stepPicture(_ key: String) -> UIImage? { current ? stepPictures[key] : nil }
@@ -221,6 +241,7 @@ final class DeskComputerLive {
             rows = DeskComputerWire.computers(list)
             skippedRows = list.skipped
             listLoad = .loaded
+            resumeStops(account)
             return true
         }
     }
@@ -285,7 +306,7 @@ final class DeskComputerLive {
         rows = []
         skippedRows = 0
         listLoad = .idle
-        for owner in Array(noteMap.keys) where stopMap[owner] == nil { noteMap[owner] = nil }
+        for key in Array(noteMap.keys) where stopMap[key] == nil { noteMap[key] = nil }
     }
 
     /// The steps sheet closed: its text and pictures are dropped.
@@ -381,84 +402,192 @@ final class DeskComputerLive {
         }
         follow()
         let account = self.account
-        guard stopMap[owner] == nil else { return .busy }
-        stopMap[owner] = .sending
-        noteMap[owner] = nil
+        let key = stopKey(owner)
+        guard stopMap[key] == nil else { return .busy }
+        stopMap[key] = .sending
+        noteMap[key] = nil
+        // What the confirm was drawn from. Owner ids are reused, so the computer's opening time tells it from a
+        // new one. One read of the list first makes sure this is still that computer: if it was replaced, or is
+        // already gone, nothing is sent.
+        var opened = rows.first { $0.owner == owner }?.startedAt
+        if let client = Connection.shared.client, let list = try? await client.deskComputerList() {
+            guard stillLive(account) else {
+                stopMap[key] = nil
+                return .refused(Self.desktopChanged)
+            }
+            let now = DeskComputerWire.computers(list).first { $0.owner == owner }
+            guard let now else {
+                stopMap[key] = nil
+                await settle(owner, account, opened: nil)
+                return .done
+            }
+            if let before = opened, let after = now.startedAt, before != after {
+                stopMap[key] = nil
+                let line = "Nothing was stopped. This \(now.isBot ? "bot's" : "chat's") computer was replaced by a new one. Choose it again from the list."
+                noteMap[key] = line
+                await loadList()
+                return .refused(line)
+            }
+            opened = now.startedAt ?? opened
+        }
+        guard stillLive(account) else {
+            stopMap[key] = nil
+            return .refused(Self.desktopChanged)
+        }
+        stopOpened[key] = opened
         writeSerial += 1
         inFlight += 1
         var status: Int?
+        var detail = ""
         var failure: Error?
         do {
             guard let client = Connection.shared.client else { throw APIError.notPaired }
             _ = try await client.deskComputerStop(owner)
         } catch {
             failure = error
-            if let api = error as? APIError, case .server(let code, _) = api { status = code }
+            if let api = error as? APIError, case .server(let code, let text) = api {
+                status = code
+                detail = text.lowercased()
+            }
             Connection.shared.note(error)
         }
         inFlight -= 1
         writeSerial += 1
-        guard stillLive(account) else { return .refused(Self.desktopChanged) }
+        let live = stillLive(account)
         guard let error = failure else {
-            stopMap[owner] = nil
-            await settle(owner, account)
+            // The desktop said it stopped it.
+            stopMap[key] = nil
+            stopOpened[key] = nil
+            if live { await settle(owner, account, opened: opened) }
             return .done
         }
         if Self.refused(error) {
-            stopMap[owner] = nil
-            if status == 404 {
-                // Already closed: the computer is not running, which is what Stop is for.
-                await settle(owner, account)
+            stopMap[key] = nil
+            stopOpened[key] = nil
+            // Only "computer is closed" means it is not running. The desktop also answers 404 for a chat or bot
+            // it does not know, and then it stopped nothing.
+            if status == 404, detail.contains("closed") {
+                if live { await settle(owner, account, opened: opened) }
                 return .done
             }
             let line = "Nothing was stopped. " + DeskComputerWire.words(error)
-            noteMap[owner] = line
-            return .refused(line)
+            noteMap[key] = line
+            return .refused(live ? line : Self.desktopChanged)
         }
-        // The answer never arrived. The desktop is read again, and Stop stays off until it is known.
-        stopMap[owner] = .checking
+        // The answer never arrived. The state stays under this account and computer, and the list is read until
+        // it shows what happened. Stop stays off until then, and is never sent again.
+        stopMap[key] = .checking
         let line = "Your desktop did not confirm the stop, and this phone is checking. Stop stays off until it knows."
-        noteMap[owner] = line
-        watchStop(owner, account)
+        noteMap[key] = line
+        if live { watchStop(owner, account) }
         return .unconfirmed(line)
     }
 
     /// After a stop the desktop answered: read the list so the screen shows what the desktop has.
-    private func settle(_ owner: String, _ account: String) async {
+    private func settle(_ owner: String, _ account: String, opened: Double?) async {
         let fresh = await loadList()
         guard stillLive(account) else { return }
-        if fresh, rows.contains(where: { $0.owner == owner }) {
-            noteMap[owner] = "Your desktop answered, but it lists this computer as running."
+        let key = stopKey(owner)
+        if fresh, let row = rows.first(where: { $0.owner == owner }) {
+            if let opened, let now = row.startedAt, opened != now {
+                noteMap[key] = "Stopped. The chat or bot has opened a new computer since."
+            } else {
+                noteMap[key] = "Your desktop answered, but it lists this computer as running."
+            }
         } else {
-            noteMap[owner] = nil
+            noteMap[key] = nil
         }
     }
 
-    /// Read the list for about 30 seconds after a lost stop. It never sends the stop again.
+    /// What a fresh list says about an unsettled stop. True when it is settled (the entry is gone). It never sends.
+    @discardableResult
+    private func resolveStop(_ owner: String, _ account: String) -> Bool {
+        let key = DeskComputerStopKey(account: account, owner: owner)
+        guard let phase = stopMap[key], phase != .sending else { return stopMap[key] == nil }
+        guard let row = rows.first(where: { $0.owner == owner }) else {
+            // Not running any more: stopped.
+            stopMap[key] = nil
+            stopOpened[key] = nil
+            noteMap[key] = "Stopped. Your desktop no longer lists this computer."
+            return true
+        }
+        if let opened = stopOpened[key], let now = row.startedAt, opened != now {
+            stopMap[key] = nil
+            stopOpened[key] = nil
+            noteMap[key] = "Stopped. The chat or bot has opened a new computer since."
+            return true
+        }
+        return false
+    }
+
+    /// After a fresh list: every unsettled stop of this account is resolved by it, and one that is still waiting
+    /// and has no check running is checked again. A check that ended because the account was not current (an
+    /// account switch, an unpair) picks up here, so Stop never stays on "Stopping" for good.
+    private func resumeStops(_ account: String) {
+        for key in Array(stopMap.keys) where key.account == account {
+            guard let phase = stopMap[key], phase != .sending else { continue }
+            if resolveStop(key.owner, account) { continue }
+            if phase == .checking, checkTasks[key] == nil { watchStop(key.owner, account) }
+        }
+    }
+
+    /// "Check again": read the list once more for a stop that could not be checked. It never sends the stop.
+    func recheckStop(_ owner: String) {
+        guard on, stopPhase(owner) == .unchecked else { return }
+        let key = stopKey(owner)
+        stopMap[key] = .checking
+        noteMap[key] = "Checking with your desktop. Stop stays off until it knows."
+        watchStop(owner, account)
+    }
+
+    /// Read the list for about 30 seconds after a lost stop. It never sends the stop again, and it always ends in
+    /// one of: stopped, still running (Stop is offered again behind its confirm) or could not check (Check again).
     private func watchStop(_ owner: String, _ account: String) {
-        checkTasks[owner]?.cancel()
-        checkTasks[owner] = Task { [weak self] in
+        let key = DeskComputerStopKey(account: account, owner: owner)
+        checkTasks[key]?.cancel()
+        checkGeneration += 1
+        let generation = checkGeneration
+        checkOwners[key] = generation
+        checkTasks[key] = Task { [weak self] in
             var checked = false
             for attempt in 0..<10 {
                 try? await Task.sleep(for: .seconds(attempt == 0 ? 1 : 3))
-                guard let self, !Task.isCancelled, self.stillLive(account) else { return }
+                guard let self, !Task.isCancelled else { return }
+                guard self.stillLive(account) else {
+                    // Not current (another account, unpaired): the entry stays, and the next fresh list picks it up.
+                    self.endCheck(key, generation)
+                    return
+                }
                 if await self.loadList() {
+                    guard !Task.isCancelled, self.stillLive(account) else {
+                        if !Task.isCancelled { self.endCheck(key, generation) }
+                        return
+                    }
                     checked = true
-                    if !self.rows.contains(where: { $0.owner == owner }) {
-                        self.stopMap[owner] = nil
-                        self.noteMap[owner] = nil
-                        self.checkTasks[owner] = nil
+                    if self.resolveStop(owner, account) {
+                        self.endCheck(key, generation)
                         return
                     }
                 }
             }
-            guard let self, self.stillLive(account) else { return }
-            self.stopMap[owner] = nil
-            self.checkTasks[owner] = nil
-            self.noteMap[owner] = checked
-                ? "Your desktop still lists this computer as running, so the stop may not have arrived. You can stop it again."
-                : "This phone could not read your desktop to check the stop. Look at your desktop before you stop it again."
+            guard let self, !Task.isCancelled else { return }
+            self.endCheck(key, generation)
+            guard self.stillLive(account), self.stopMap[key] != nil else { return }
+            if checked {
+                self.stopMap[key] = nil
+                self.stopOpened[key] = nil
+                self.noteMap[key] = "Your desktop still lists this computer as running, so the stop may not have arrived. You can stop it again."
+            } else {
+                self.stopMap[key] = .unchecked
+                self.noteMap[key] = "This phone could not read your desktop to check the stop. Look at your desktop, then Check again."
+            }
         }
+    }
+
+    private func endCheck(_ key: DeskComputerStopKey, _ generation: Int) {
+        guard checkOwners[key] == generation else { return }
+        checkOwners[key] = nil
+        checkTasks[key] = nil
     }
 
     // MARK: Steps
@@ -574,7 +703,7 @@ struct DeskComputerScreen: View {
         }
         .sheet(isPresented: $askStop) {
             if let owner = live.selected {
-                ConfirmSheet(title: "Stop \(live.watched?.heading ?? "this computer")?",
+                ConfirmSheet(title: DeskComputerWire.isBot(owner) ? "Stop this bot's computer?" : "Stop this chat's computer?",
                              detail: stopDetail,
                              confirm: "Stop computer") {
                     Task {
@@ -627,9 +756,20 @@ struct DeskComputerScreen: View {
     }
 
     private var stopDetail: String {
-        let what = live.watched.map { $0.isBot ? "This bot's computer" : "This chat's computer" } ?? "This computer"
-        let page = live.watched.flatMap { $0.address.isEmpty ? nil : " It is on \($0.address)." } ?? ""
-        return "\(what) closes on your desktop.\(page) Whatever it had open is lost, and a new computer starts when a chat or bot needs one. The last picture stays here for a short while. You cannot undo this from your iPhone."
+        let watched = live.watched
+        let what = watched.map { $0.isBot ? "This bot's computer" : "This chat's computer" } ?? "This computer"
+        // The page's own title is the website's text: it is only said as what the page shows, never as the name.
+        var page = ""
+        if let watched, !watched.title.isEmpty {
+            let title = watched.title.count > 60 ? String(watched.title.prefix(60)) + "..." : watched.title
+            page = " It is showing a page titled \"\(title)\"" + (watched.address.isEmpty ? "." : " on \(watched.address).")
+        } else if let watched, !watched.address.isEmpty {
+            page = " It is showing a page on \(watched.address)."
+        }
+        var lost = ""
+        if watched?.recording == true { lost += " The recording in progress on your desktop is thrown away." }
+        if watched?.takenOver == true { lost += " The person using it on your desktop loses control." }
+        return "\(what) closes on your desktop.\(page) Whatever it had open is lost.\(lost) The chat or bot keeps going and can open a new computer on its next step. The last picture stays here for a short while. You cannot undo this from your iPhone."
     }
 
     // MARK: List
@@ -762,12 +902,19 @@ struct DeskComputerScreen: View {
         if live.phase == .closed {
             HintLine(text: "This computer is closed. The picture is the last one the desktop kept.", symbol: "moon")
         } else {
-            let stopping = live.isStopping(owner)
-            DeskPillButton(title: stopping ? "Stopping" : "Stop this computer", symbol: "stop.circle", tint: Palette.danger) {
-                askStop = true
+            if live.stopPhase(owner) == .unchecked {
+                // The stop could not be checked: no second Stop is offered until the desktop's list says what happened.
+                DeskPillButton(title: "Check again", symbol: "arrow.clockwise") {
+                    live.recheckStop(owner)
+                }
+            } else {
+                let stopping = live.isStopping(owner)
+                DeskPillButton(title: stopping ? "Stopping" : "Stop this computer", symbol: "stop.circle", tint: Palette.danger) {
+                    askStop = true
+                }
+                .disabled(stopping)
+                .opacity(stopping ? 0.5 : 1)
             }
-            .disabled(stopping)
-            .opacity(stopping ? 0.5 : 1)
         }
         if let note = live.note(owner) {
             HintLine(text: note, symbol: "exclamationmark.triangle", color: Palette.goldText)
