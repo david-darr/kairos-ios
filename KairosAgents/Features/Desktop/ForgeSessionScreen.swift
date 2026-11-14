@@ -821,6 +821,7 @@ struct DeskForgeSessionView: View {
             guard live.on else { return }
             await live.loadSession(sessionID)
             if draft.isEmpty, let kept = live.takeDraft(sessionID) { draft = kept }
+            takeSettledSend()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(live.isRunning(sessionID) ? 2 : 6))
                 if Task.isCancelled { break }
@@ -830,7 +831,15 @@ struct DeskForgeSessionView: View {
         .onChange(of: streamSignature) {
             Task { await live.pollSession(sessionID) }
         }
-        .onDisappear { live.forgetPendingSend(sessionID) }
+        .onChange(of: live.settledSend(sessionID)) { takeSettledSend() }
+    }
+
+    /// The desktop turned out to have an unconfirmed message: its words leave the box, so they are not sent again.
+    private func takeSettledSend() {
+        guard let text = live.settledSend(sessionID) else { return }
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text.trimmingCharacters(in: .whitespacesAndNewlines) { draft = "" }
+        notice = nil
+        live.clearSettledSend(sessionID)
     }
 
     // MARK: Layout

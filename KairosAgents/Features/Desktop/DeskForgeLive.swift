@@ -259,6 +259,8 @@ final class DeskForgeLive {
     private var repoChoice: String?
     private var noteMap: [String: String] = [:]
     private var draftMap: [String: String] = [:]
+    /// The words of a kept send that a read of the desktop has since shown: the session screen clears them from its box.
+    private var settledMap: [String: String] = [:]
     /// Starts whose answer was lost, by project, branch and task. Kept here so leaving the screen changes nothing.
     private var startChecks: [String: DeskForgeStartCheck] = [:]
     /// The project a "New session" control asked for.
@@ -341,6 +343,7 @@ final class DeskForgeLive {
         repoChoice = nil
         noteMap = [:]
         draftMap = [:]
+        settledMap = [:]
         composeProjectID = nil
         reads = [:]
         pendingSends = [:]
@@ -376,6 +379,10 @@ final class DeskForgeLive {
     func isUnsettled(_ requestID: String) -> Bool { current && unsettledAnswers.contains(requestID) }
 
     func clearNote(_ sessionID: String) { noteMap[sessionID] = nil }
+
+    /// The words of an unconfirmed send that the desktop turned out to have.
+    func settledSend(_ sessionID: String) -> String? { current ? settledMap[sessionID] : nil }
+    func clearSettledSend(_ sessionID: String) { settledMap[sessionID] = nil }
 
     /// A first task that was not sent, handed to the session's box once.
     func takeDraft(_ sessionID: String) -> String? {
@@ -1054,8 +1061,12 @@ final class DeskForgeLive {
 
     /// True while the phone is still checking whether the desktop made the session for this start.
     func isChecking(_ start: DeskForgeStart?) -> Bool {
-        guard current, let start else { return false }
-        return startChecks[Self.startKey(start)]?.phase == .checking
+        guard current, let start, let phase = startChecks[Self.startKey(start)]?.phase else { return false }
+        switch phase {
+        // Found: the session exists, so the same task must be opened there, never started again.
+        case .checking, .found: return true
+        case .over: return false
+        }
     }
 
     /// What to say about a start whose answer was lost, or nil when there is nothing to say.
@@ -1070,7 +1081,7 @@ final class DeskForgeLive {
                 return DeskForgeStartNotice(text: "Your desktop made the session after all. Your task is in its box, not sent yet.", sessionID: id, checking: false)
             case .over(let checked):
                 let text = checked
-                    ? "Your desktop has no new session for this task. You can start it again."
+                    ? "This phone did not see a new session for this task. It may still be in the making on your desktop. Check this project's sessions before you start again."
                     : "This phone could not read your desktop to check. Look at this project's sessions in Kairos on your desktop before you start again."
                 return DeskForgeStartNotice(text: text, sessionID: nil, checking: false)
             case .checking:
@@ -1097,7 +1108,12 @@ final class DeskForgeLive {
             var phase: DeskForgeStartPhase = .over(checked: false)
             while Date() < end {
                 try? await Task.sleep(for: .seconds(4))
-                if Task.isCancelled || !self.stillLive(account) { return }
+                if Task.isCancelled { return }
+                if !self.stillLive(account) {
+                    self.startChecks[key]?.phase = .over(checked: false)
+                    self.startTasks[key] = nil
+                    return
+                }
                 switch await self.read("sessions:" + projectID, account, { try await $0.deskForgeProjectSessions(projectID) }) {
                 case .fresh(let now):
                     if let found = Self.newSession(in: now.items, before: before, task: task) {
@@ -1111,11 +1127,12 @@ final class DeskForgeLive {
                 case .failed:
                     phase = .over(checked: false)
                 case .stale:
-                    if Task.isCancelled || !self.stillLive(account) { return }
+                    if Task.isCancelled { return }
                 }
                 if case .found = phase { break }
             }
-            guard self.stillLive(account) else { return }
+            if Task.isCancelled { return }
+            if !self.stillLive(account) { phase = .over(checked: false) }
             self.startChecks[key]?.phase = phase
             self.startTasks[key] = nil
         }
@@ -1125,20 +1142,18 @@ final class DeskForgeLive {
     /// dropped, so a later new message with the same words gets a new id and really runs.
     private func settlePending(_ id: String) {
         guard let pending = pendingSends[id], !busyKeys.contains("send:" + id) else { return }
+        var arrived = false
         if let run = runMap[id], let turnID = run.turnId, turnID != pending.turnID, run.prompt == pending.text {
-            pendingSends[id] = nil
-            return
+            arrived = true
+        } else if let turns = detailMap[id]?.turns, detailMap[id]?.load == .loaded, turns.count > pending.turns,
+                  turns.last(where: { !$0.prompt.isEmpty })?.prompt == pending.text {
+            arrived = true
         }
-        if let turns = detailMap[id]?.turns, detailMap[id]?.load == .loaded, turns.count > pending.turns,
-           turns.last(where: { !$0.prompt.isEmpty })?.prompt == pending.text {
-            pendingSends[id] = nil
-        }
-    }
-
-    /// The person left the session: whatever send was kept is over, so the same words typed later are a new message.
-    func forgetPendingSend(_ id: String) {
-        guard !busyKeys.contains("send:" + id) else { return }
+        guard arrived else { return }
         pendingSends[id] = nil
+        // The screen takes these words out of its box, so they cannot be sent a second time by mistake.
+        settledMap[id] = pending.text
+        noteMap[id] = "Your desktop got this message."
     }
 
     /// Send a message to a session. One request id per message: sending the same words again reuses it, and the
@@ -1181,7 +1196,7 @@ final class DeskForgeLive {
                 pendingSends[id] = nil
                 return .done
             }
-            let safe = " Your text is still in the box. Sending the same words again is safe: your desktop runs one message once. "
+            let safe = " Your text is still in the box. Sending these same words again is safe: your desktop runs one message once. "
             if sawRuns && sawSession {
                 return .unconfirmed("Your desktop did not confirm this message, and it is not in the session." + safe + why)
             }
@@ -1707,8 +1722,9 @@ struct DeskForgeRequestText: View {
         guard let value, !value.isNull else { return nil }
         if case .string(let text) = value { return text.isEmpty ? nil : text }
         let object = foundation(value)
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+        // A bare number or true/false is not a JSON document on its own: show it as it is.
+        guard JSONSerialization.isValidJSONObject(object) else { return "\(object)" }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
               let text = String(data: data, encoding: .utf8) else { return nil }
         return text
     }
