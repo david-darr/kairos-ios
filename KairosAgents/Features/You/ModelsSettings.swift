@@ -199,6 +199,14 @@ struct ModelsScreen: View {
     }
 
     var body: some View {
+        if YouVoiceLive.isPaired {
+            YouVoiceModelsScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Models", subtitle: "The models your chats and bots can use.", trailing: {
             if !sample.connections.isEmpty {
                 YouPillButton(title: "Test all", symbol: "bolt") { testAll() }
@@ -559,6 +567,15 @@ struct AddModelScreen: View {
     }
 
     var body: some View {
+        if YouVoiceLive.isPaired {
+            YouVoiceDesktopOnlyPage(title: "Add a model", subtitle: "Connect a model your chats and bots can use.",
+                                    line: "Add and remove models in Kairos on your desktop. A key, an address or a sign-in never goes through this phone.")
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Add a model", subtitle: "Connect a model your chats and bots can use.") {
             GlassSwitch(items: ModelConnectionKind.allCases, selection: $kind, title: { $0.short })
 
@@ -802,7 +819,10 @@ struct ModelGuideScreen: View {
 
     var body: some View {
         SettingsPage("Choose how Kairos thinks", subtitle: "Choose the option that fits you. Kairos helps you connect it, and you can change it any time.") {
-            if let finishedTitle {
+            if YouVoiceLive.isPaired {
+                NoteText(text: "Setting up a model, signing in and saving a key happen in Kairos on your desktop. A key never goes through this phone.",
+                         symbol: "desktopcomputer")
+            } else if let finishedTitle {
                 finishedCard(finishedTitle)
             } else if let open {
                 detail(open)
@@ -1135,6 +1155,234 @@ struct ModelGuideScreen: View {
             open = nil
             localProgress = nil
             apiOnKey = false
+        }
+    }
+}
+
+// MARK: - Paired
+
+/// A page that says where to do something while paired.
+struct YouVoiceDesktopOnlyPage: View {
+    let title: String
+    let subtitle: String
+    let line: String
+
+    var body: some View {
+        SettingsPage(title, subtitle: subtitle) {
+            NoteText(text: line, symbol: "desktopcomputer")
+        }
+    }
+}
+
+/// Models while paired: the desktop's own connections with their measured speed, Test, the image switch, long chats and
+/// the helper model. Adding, sharing and removing a model, and every key, are done in Kairos on the desktop.
+struct YouVoiceModelsScreen: View {
+    private let live = YouVoiceLive.shared
+
+    var body: some View {
+        SettingsPage("Models", subtitle: "The models your chats and bots can use.") {
+            YouVoiceLoadLine(part: .models, loading: "Reading your models from your desktop.")
+            YouVoiceNoticeLine(part: .models)
+
+            if live.load(.models) == .loaded && !live.memberOnly.contains(.models) {
+                NoteText(text: "Add and remove models in Kairos on your desktop.", symbol: "desktopcomputer")
+
+                let own = live.models.filter { $0.sharedBy == nil }
+                let shared = live.models.filter { $0.sharedBy != nil }
+                if own.isEmpty && shared.isEmpty {
+                    NoteText(text: "Nothing added yet. Add a model in Kairos on your desktop.", symbol: "info.circle")
+                }
+
+                ForEach(Array(ModelConnectionKind.allCases.enumerated()), id: \.offset) { index, kind in
+                    let list = own.filter { $0.kind == kind }
+                    if !list.isEmpty {
+                        SettingsGroup(kind.title) {
+                            ForEach(list) { connection in
+                                connectionRow(connection)
+                            }
+                        }
+                        .arrives(index)
+                    }
+                }
+
+                if !shared.isEmpty {
+                    SettingsGroup("Shared with you", footer: "Connections other accounts on this Kairos let you use. Their key and address stay private.") {
+                        ForEach(shared) { connection in
+                            connectionRow(connection)
+                        }
+                    }
+                }
+                if live.skippedModels > 0 {
+                    NoteText(text: live.skippedModels == 1
+                             ? "1 model could not be read here. See it in Kairos on your desktop."
+                             : "\(live.skippedModels) models could not be read here. See them in Kairos on your desktop.")
+                }
+            }
+
+            YouVoiceLoadLine(part: .settings, loading: "Reading the long chat and helper settings from your desktop.")
+            YouVoiceNoticeLine(part: .settings)
+
+            if let compact = live.autoCompact {
+                SettingsGroup("Long chats", footer: "When a chat fills 85% of the model's context window, Kairos summarises its earlier part in the background. The whole chat stays, the last messages stay word for word, and nothing is deleted. Claude Code and Codex manage their own.") {
+                    YouToggleRow(title: "Compact local and API chats automatically", isOn: Binding(
+                        get: { compact },
+                        set: { on in Task { await live.setAutoCompact(on) } }
+                    ), disabled: live.busy.contains("autoCompact"))
+                }
+            }
+
+            if let choice = live.helperChoice {
+                SettingsGroup("Helpers", footer: "Any chat or task can hand up to 3 research jobs to helpers that work in parallel and report back. They run on this model, can only read, and stop after 10 minutes or 40,000 tokens each.") {
+                    PickRow(
+                        title: "Model for helpers",
+                        detail: helperDetail,
+                        symbol: "person.2",
+                        selection: Binding(
+                            get: { choice },
+                            set: { value in Task { await live.setHelper(value) } }
+                        ),
+                        options: helperOptions(current: choice),
+                        label: helperLabel
+                    )
+                    .disabled(live.busy.contains("helper"))
+                }
+            }
+        }
+        .animation(Motion.snappy, value: live.models)
+        .animation(Motion.snappy, value: live.tests)
+        .task(id: YouVoiceLive.connectionKey) { await live.readModels() }
+    }
+
+    // MARK: Helpers row
+
+    private var firstLocal: YouVoiceModel? { live.models.first { $0.kind == .local } }
+
+    private func helperOptions(current: String) -> [String] {
+        var options = ["auto"] + live.models.filter { $0.kind == .local || $0.kind == .api }.map(\.id) + ["off"]
+        if !options.contains(current) { options.insert(current, at: 1) }
+        return options
+    }
+
+    private func helperLabel(_ option: String) -> String {
+        switch option {
+        case "auto": return firstLocal.map { "Automatic: \($0.name)" } ?? "Automatic"
+        case "off": return "Off"
+        default: return live.models.first { $0.id == option }?.name ?? "Another model"
+        }
+    }
+
+    private var helperDetail: String {
+        if let local = firstLocal {
+            return "Automatic uses \(local.name), the first local model."
+        }
+        return "Automatic needs a local model, and none is added yet."
+    }
+
+    // MARK: A connection
+
+    private func connectionRow(_ connection: YouVoiceModel) -> some View {
+        let testing = live.testingID != nil
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: connection.kind.symbol)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Palette.goldText)
+                    .frame(width: 26)
+                Text(connection.name)
+                    .font(KFont.ui(16.5, .medium))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                testPill(connection.id)
+            }
+            .accessibilityElement(children: .combine)
+
+            Text(connection.details)
+                .font(KFont.ui(13.5, relativeTo: .footnote))
+                .foregroundStyle(Palette.inkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let sharedBy = connection.sharedBy {
+                StatusPill(text: "Shared by \(sharedBy)", tone: .working)
+            }
+
+            if let speed = connection.speed {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(speed)
+                        .font(KFont.ui(13, relativeTo: .footnote))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(Palette.inkDim)
+            }
+
+            if connection.isSmallWindow, let window = connection.contextWindow {
+                VStack(alignment: .leading, spacing: 4) {
+                    StatusPill(text: "Small window", tone: .warn)
+                    Text("Kairos's own instructions and tools take about 2,100 of these \(window) tokens on every message, leaving little for the chat. 16,384 is the default for new local models.")
+                        .font(KFont.ui(13, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if let note = testNote(connection.id) {
+                Text(note.text)
+                    .font(KFont.ui(13.5, relativeTo: .footnote))
+                    .foregroundStyle(note.bad ? Palette.danger : Palette.inkDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if connection.canToggleImages {
+                Toggle(isOn: Binding(
+                    get: { live.models.first { $0.id == connection.id }?.acceptsImages ?? false },
+                    set: { on in
+                        Haptics.select()
+                        Task { await live.setImages(connection.id, on) }
+                    }
+                )) {
+                    Text("Accepts images")
+                        .font(KFont.ui(15))
+                        .foregroundStyle(Palette.ink)
+                }
+                .toggleStyle(.switch)
+                .tint(Palette.gold)
+                .frame(minHeight: 44)
+                .disabled(live.busy.contains("image:" + connection.id))
+            }
+
+            HStack(spacing: 8) {
+                YouPillButton(title: "Test", symbol: "bolt") { Task { await live.test(connection.id) } }
+                    .disabled(testing)
+                    .opacity(testing ? 0.4 : 1)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func testPill(_ id: String) -> some View {
+        switch live.tests[id] {
+        case .testing?:
+            StatusPill(text: "Testing...", tone: .working)
+        case .ok(let ms)?:
+            StatusPill(text: "OK · \(ms) ms", tone: .ok)
+        case .failed?:
+            StatusPill(text: "Failed", tone: .bad)
+        case .unconfirmed?:
+            StatusPill(text: "Not confirmed", tone: .warn)
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func testNote(_ id: String) -> (text: String, bad: Bool)? {
+        switch live.tests[id] {
+        case .failed(let why)?: return (why, true)
+        case .unconfirmed(let why)?: return (why, false)
+        default: return nil
         }
     }
 }

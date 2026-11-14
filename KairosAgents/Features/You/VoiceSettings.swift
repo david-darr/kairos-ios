@@ -110,6 +110,14 @@ struct VoiceScreen: View {
     private var isAdmin: Bool { store.current.isAdmin }
 
     var body: some View {
+        if YouVoiceLive.isPaired {
+            YouVoiceVoiceScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Voice", subtitle: "How Kairos sounds, and how it hears you.") {
             SettingsGroup("Voice", footer: "Calls, Open Mic, replies read aloud, voice notes, phone calls and Discord voice all use this. A bot can still have its own voice.") {
                 ForEach(VoiceEngineChoice.allCases, id: \.self) { choice in
@@ -733,6 +741,14 @@ struct BotVoiceScreen: View {
     private var bots: [Bot] { SampleData.allBots.filter { $0.members.isEmpty } }
 
     var body: some View {
+        if YouVoiceLive.isPaired {
+            YouVoiceBotVoiceScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Bot call voice", subtitle: "How a bot sounds on a live call.") {
             SettingsGroup {
                 PickRow(
@@ -824,6 +840,441 @@ struct BotVoiceScreen: View {
             .accessibilityLabel("Play a sample of \(voice.capitalized)")
         }
         .padding(.horizontal, 16)
+    }
+}
+
+// MARK: - Paired
+
+extension VoiceEngineChoice {
+    /// The name the desktop gives this Voice choice (routes/voice_engine_routes.py: Choice).
+    nonisolated var wireName: String {
+        switch self {
+        case .kairos: "kairos"
+        case .gptLive: "gpt_live"
+        case .elevenLabs: "elevenlabs"
+        }
+    }
+}
+
+/// Voice while paired: which voice is used, its quality, an HD voice that is already installed, pronunciations and what
+/// the desktop listens with. A key, a voice server, a download and the free Gemini key are set up on the desktop.
+struct YouVoiceVoiceScreen: View {
+    private let live = YouVoiceLive.shared
+    @State private var confirming: YouVoiceNamed?
+    @State private var askUseDesktop = false
+
+    var body: some View {
+        SettingsPage("Voice", subtitle: "How Kairos sounds, and how it hears you.") {
+            YouVoiceLoadLine(part: .engines, loading: "Reading your voice from your desktop.")
+            YouVoiceNoticeLine(part: .engines)
+
+            if let engines = live.engines {
+                voiceGroup(engines).arrives(0)
+                qualityGroup(engines).arrives(1)
+            }
+
+            pronunciationsSection.arrives(2)
+            listeningSection.arrives(3)
+
+            NoteText(text: "The backup voice and the Open Mic voice are set in Kairos on your desktop.", symbol: "desktopcomputer")
+
+            geminiSection.arrives(5)
+
+            NoteText(text: "On this phone, calls and dictation use the iPhone's own microphone and speaker.", symbol: "iphone")
+
+            SettingsGroup {
+                YouNavRow(title: "Bot call voice", detail: "The live voice your bots use on a call.", symbol: "phone", to: .botVoice)
+            }
+
+            NoteText(text: "Keys, voice servers, downloads and the graphics card setup are changed on the desktop.", symbol: "desktopcomputer")
+        }
+        .animation(Motion.snappy, value: live.engines)
+        .task(id: YouVoiceLive.connectionKey) { await live.readVoice() }
+        .sheet(item: $confirming) { named in
+            let choice = VoiceEngineChoice.allCases.first { $0.wireName == named.id }
+            ConfirmSheet(title: "Use \(choice?.title ?? "this voice")?",
+                         detail: paidWords(choice),
+                         confirm: "Use \(choice?.title ?? "it")",
+                         danger: false) {
+                Task { await live.setChoice(named.id) }
+            }
+        }
+        .sheet(isPresented: $askUseDesktop) {
+            ConfirmSheet(title: "Drop your changes?",
+                         detail: "The pronunciation list changed on your desktop. Your edits here are dropped and the desktop's list is shown.",
+                         confirm: "Show the desktop's list") {
+                Task { await live.pronUseDesktop() }
+            }
+        }
+    }
+
+    private func paidWords(_ choice: VoiceEngineChoice?) -> String {
+        switch choice {
+        case .gptLive?:
+            return "GPT-Live may use your paid OpenAI account, about 5 cents a minute during calls and Open Mic. Your voice goes to OpenAI."
+        case .elevenLabs?:
+            return "ElevenLabs may use your paid ElevenLabs account, about 4 cents a minute of speech. Every spoken sentence goes to ElevenLabs."
+        default:
+            return ""
+        }
+    }
+
+    // MARK: Voice choice
+
+    private func voiceGroup(_ engines: YouVoiceEngines) -> some View {
+        SettingsGroup("Voice", footer: "Calls, Open Mic, replies read aloud, voice notes, phone calls and Discord voice all use this. A bot can still have its own voice. A key or a voice server is added in Kairos on your desktop.") {
+            ForEach(VoiceEngineChoice.allCases, id: \.self) { choice in
+                engineRow(choice, engines)
+            }
+            if let host = engines.serverHost {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(Palette.goldText)
+                    RowLabel(title: "A voice server on your desktop", detail: host)
+                    StatusPill(text: "In use")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(minHeight: 52)
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    private func usable(_ choice: VoiceEngineChoice, _ engines: YouVoiceEngines) -> Bool {
+        switch choice {
+        case .kairos: true
+        case .gptLive: engines.gptAvailable
+        case .elevenLabs: engines.elevenHasKey
+        }
+    }
+
+    private func engineRow(_ choice: VoiceEngineChoice, _ engines: YouVoiceEngines) -> some View {
+        let chosen = engines.choice == choice.wireName
+        let ready = usable(choice, engines)
+        let saving = live.busy.contains("choice")
+        return Button {
+            Haptics.select()
+            guard ready, !chosen else { return }
+            if choice == .kairos {
+                Task { await live.setChoice(choice.wireName) }
+            } else {
+                confirming = YouVoiceNamed(id: choice.wireName)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(chosen ? Palette.goldText : Palette.inkFaint)
+                    .contentTransition(.symbolEffect(.replace))
+                RowLabel(title: choice.title,
+                         detail: ready ? choice.detail : "Set up on your desktop first. \(choice.detail)")
+                if chosen {
+                    StatusPill(text: "In use")
+                } else if !ready {
+                    StatusPill(text: "Not set up", tone: .muted)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(minHeight: 52)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(scale: 0.985))
+        .disabled(saving)
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+    }
+
+    // MARK: Quality
+
+    private func qualityGroup(_ engines: YouVoiceEngines) -> some View {
+        let saving = live.busy.contains("quality")
+        return VStack(alignment: .leading, spacing: 12) {
+            SettingsGroup("Voice quality", footer: "For Kairos Voice. Installing HD voice or the standard voice is done in Kairos on your desktop.") {
+                qualityRow(title: "Standard", detail: "Works on any computer.", chosen: engines.quality != "hd", enabled: !saving) {
+                    Task { await live.setQuality("standard") }
+                }
+                if engines.hdInstalled {
+                    qualityRow(title: "HD",
+                               detail: engines.hdReady ? "Clearer, on the desktop's NVIDIA card. Installed."
+                                   : "Installed, but not ready. \(engines.hdReason)",
+                               chosen: engines.quality == "hd", enabled: engines.hdReady && !saving) {
+                        Task { await live.setQuality("hd") }
+                    }
+                }
+                if let ready = engines.kokoroReady {
+                    StatusRow(title: "Standard voice (Kokoro)",
+                              detail: ready ? nil : (engines.kokoroReason.isEmpty ? "Not downloaded on your desktop." : engines.kokoroReason),
+                              symbol: "speaker.wave.2", status: ready ? "Ready" : "Not ready", tone: ready ? .ok : .muted)
+                }
+                if engines.quality == "hd" && engines.hdInstalled {
+                    ForEach(engines.hdVoices) { voice in
+                        hdVoiceRow(voice, engines)
+                    }
+                }
+            }
+            if engines.hdOffered && !engines.hdInstalled {
+                NoteText(text: "HD voice can be installed in Kairos on your desktop.", symbol: "desktopcomputer")
+            }
+        }
+    }
+
+    private func qualityRow(title: String, detail: String, chosen: Bool, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.select()
+            if !chosen { action() }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(chosen ? Palette.goldText : Palette.inkFaint)
+                    .contentTransition(.symbolEffect(.replace))
+                RowLabel(title: title, detail: detail)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 52)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(scale: 0.985))
+        .disabled(!enabled)
+        .opacity(enabled || chosen ? 1 : 0.55)
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+    }
+
+    private func hdVoiceRow(_ voice: YouVoiceHDVoice, _ engines: YouVoiceEngines) -> some View {
+        let chosen = engines.hdVoice == voice.id
+        let isPlaying = live.previewing == voice.id
+        let loading = live.previewing != nil
+        return HStack(spacing: 8) {
+            Button {
+                Haptics.select()
+                if !chosen { Task { await live.setHDVoice(voice.id) } }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(chosen ? Palette.goldText : Palette.inkFaint)
+                    Text(voice.name)
+                        .font(KFont.ui(16))
+                        .foregroundStyle(Palette.ink)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 30)
+                .frame(minHeight: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle(scale: 0.985))
+            .disabled(live.busy.contains("hdVoice"))
+            .accessibilityAddTraits(chosen ? .isSelected : [])
+            Button {
+                Haptics.tap()
+                Task { await live.previewHD(voice.id) }
+            } label: {
+                Image(systemName: isPlaying ? "waveform" : "play.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Palette.goldText)
+                    .symbolEffect(.variableColor.iterative, isActive: isPlaying)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 44, height: 44)
+                    .background(Palette.ink.opacity(0.08), in: Circle())
+            }
+            .buttonStyle(PressStyle())
+            .disabled(loading)
+            .opacity(loading && !isPlaying ? 0.4 : 1)
+            .accessibilityLabel(isPlaying ? "Loading or playing a sample of \(voice.name)" : "Play a sample of \(voice.name)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+    }
+
+    // MARK: Pronunciations
+
+    @ViewBuilder
+    private var pronunciationsSection: some View {
+        YouVoiceLoadLine(part: .pronunciations, loading: "Reading your pronunciations from your desktop.")
+        YouVoiceNoticeLine(part: .pronunciations)
+        if live.load(.pronunciations) == .loaded && !live.memberOnly.contains(.pronunciations) {
+            let saving = live.busy.contains("pron")
+            if live.pronChanged {
+                YouAccessLine(text: "The list changed on your desktop. Your edits are kept here and nothing was sent.",
+                              action: "Show the desktop's list") { askUseDesktop = true }
+            }
+            if live.pronUnconfirmed {
+                YouAccessLine(text: "Your desktop did not confirm the last save. Check it before saving again.",
+                              action: "Check again") { Task { await live.read(.pronunciations) } }
+            }
+            SettingsGroup("Pronunciations", footer: "Words Kairos Voice says wrong, like a name. Write how to say it with hyphens between syllables and the stressed one in capitals, like shi-VAWN for Siobhan. HD voice uses these spellings too.") {
+                if live.pronRows.isEmpty {
+                    EmptyRow(text: "No words yet.")
+                }
+                ForEach(live.pronRows) { row in
+                    pronRow(row)
+                }
+                ActionRow(title: "Add a word", symbol: "plus") {
+                    withAnimation(Motion.snappy) { live.pronAdd() }
+                }
+                .disabled(saving)
+                let blocked = saving || !live.pronDirty || live.pronChanged || live.pronUnconfirmed
+                ActionRow(title: saving ? "Saving..." : "Save pronunciations", symbol: "checkmark", tone: .gold) {
+                    Task { await live.savePronunciations() }
+                }
+                .disabled(blocked)
+                .opacity(blocked ? 0.45 : 1)
+            }
+        }
+    }
+
+    private func pronRow(_ row: YouVoicePronRow) -> some View {
+        let id = row.id
+        return HStack(spacing: 8) {
+            TextField("Word", text: Binding(
+                get: { live.pronRows.first { $0.id == id }?.word ?? "" },
+                set: { live.pronSet(id, word: $0) }
+            ))
+            .font(KFont.ui(16))
+            .foregroundStyle(Palette.ink)
+            .autocorrectionDisabled()
+            Image(systemName: "arrow.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Palette.inkFaint)
+                .accessibilityHidden(true)
+            TextField("How to say it", text: Binding(
+                get: { live.pronRows.first { $0.id == id }?.say ?? "" },
+                set: { live.pronSet(id, say: $0) }
+            ))
+            .font(KFont.ui(16))
+            .foregroundStyle(Palette.goldText)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            Button {
+                Haptics.tap()
+                withAnimation(Motion.snappy) { live.pronRemove(id) }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Palette.danger)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle())
+            .accessibilityLabel(row.word.isEmpty ? "Remove this word" : "Remove \(row.word)")
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 6)
+        .frame(minHeight: 52)
+        .disabled(live.busy.contains("pron"))
+    }
+
+    // MARK: Listening and the free key
+
+    @ViewBuilder
+    private var listeningSection: some View {
+        YouVoiceLoadLine(part: .speech, loading: "Reading the listening models from your desktop.")
+        if let speech = live.speech {
+            let active = speech.models.first { $0.id == speech.active }?.label ?? speech.active ?? "none yet"
+            SettingsGroup("Listening", footer: "How Kairos hears you, on the desktop. Using the \(active) model. Downloading a model is done in Kairos on your desktop.") {
+                ForEach(speech.models) { model in
+                    HStack(spacing: 8) {
+                        RowLabel(title: model.sizeMb.map { "\(model.label) · \($0) MB" } ?? model.label, symbol: "waveform")
+                        if model.id == speech.active {
+                            StatusPill(text: "In use")
+                        } else if model.downloaded {
+                            StatusPill(text: "Downloaded", tone: .muted)
+                        } else {
+                            StatusPill(text: "Not downloaded", tone: .muted)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(minHeight: 52)
+                    .accessibilityElement(children: .combine)
+                }
+                if let turn = speech.smartTurn {
+                    StatusRow(title: "Know when you have finished (Smart Turn)", symbol: "clock",
+                              status: turn.ready ? "Ready" : "Not ready", tone: turn.ready ? .ok : .muted)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var geminiSection: some View {
+        YouVoiceLoadLine(part: .freeVoice, loading: "Reading the free Gemini key status from your desktop.")
+        if let connected = live.freeVoiceConfigured {
+            SettingsGroup("Realtime on a free Gemini key", footer: "The quickest, most natural way to talk with a bot. Realtime calls send your audio to Google. The key is added or changed in Kairos on your desktop.") {
+                StatusRow(title: "Gemini free key",
+                          detail: connected ? "Realtime voice can use Gemini at no cost." : "Not set up yet.",
+                          symbol: "sparkles", status: connected ? "Connected" : "Not set up", tone: connected ? .ok : .muted)
+            }
+        }
+    }
+}
+
+/// Bot call voice while paired: the desktop keeps ONE live voice, read-typed switch and idle time for the whole account.
+struct YouVoiceBotVoiceScreen: View {
+    private let live = YouVoiceLive.shared
+    private let voices = YouVoiceWire.botVoices
+
+    var body: some View {
+        SettingsPage("Bot call voice", subtitle: "How your bots sound on a live call. This is one setting for your whole account.") {
+            YouVoiceLoadLine(part: .botVoice, loading: "Reading the bot call voice from your desktop.")
+            YouVoiceNoticeLine(part: .botVoice)
+
+            if let shown = live.botVoiceShown {
+                let saving = live.busy.contains("botVoice")
+                SettingsGroup("Live voice", footer: "Every bot uses this voice. Voice changes apply to your next call.") {
+                    ForEach(voices, id: \.self) { voice in
+                        voiceRow(voice, chosen: shown.voice == voice)
+                    }
+                }
+                .arrives(0)
+
+                SettingsGroup("During a call") {
+                    YouToggleRow(title: "Read typed replies", detail: "Speak the replies to messages you type during a call.",
+                                 isOn: Binding(get: { shown.readTyped }, set: { live.editBotVoice(readTyped: $0) }), disabled: saving)
+                    YouStepperRow(title: "End an idle call after", detail: "Minutes with nobody talking.",
+                                  value: Binding(get: { shown.idleMinutes }, set: { live.editBotVoice(idleMinutes: $0) }),
+                                  range: 1...60, unit: "min")
+                        .disabled(saving)
+                }
+                .arrives(1)
+
+                let blocked = saving || live.botEdits.isEmpty || live.unconfirmed[.botVoice]?.isEmpty == false
+                GoldButton(title: saving ? "Saving..." : "Save") { Task { await live.saveBotVoice() } }
+                    .disabled(blocked)
+                    .opacity(blocked ? 0.5 : 1)
+                    .arrives(2)
+            } else if live.load(.botVoice) == .loaded && !live.memberOnly.contains(.botVoice) {
+                YouAccessLine(text: "Your desktop's answer could not be read in full. Set the bot call voice in Kairos on your desktop.")
+            }
+        }
+        .task(id: YouVoiceLive.connectionKey) { await live.read(.botVoice) }
+    }
+
+    private func voiceRow(_ voice: String, chosen: Bool) -> some View {
+        Button {
+            Haptics.select()
+            withAnimation(Motion.snappy) { live.editBotVoice(voice: voice) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(chosen ? Palette.goldText : Palette.inkFaint)
+                    .contentTransition(.symbolEffect(.replace))
+                Text(voice.capitalized)
+                    .font(KFont.ui(16))
+                    .foregroundStyle(Palette.ink)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 52)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(scale: 0.985))
+        .disabled(live.busy.contains("botVoice"))
+        .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 }
 
