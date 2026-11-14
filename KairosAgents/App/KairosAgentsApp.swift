@@ -7,6 +7,12 @@ struct KairosAgentsApp: App {
     /// Calls and notifications have to be listening from launch, before any screen is up.
     @UIApplicationDelegateAdaptor(NativeAppDelegate.self) private var native
 
+    init() {
+        // A finished render is watched from one temporary file. Any left behind by an app that was closed
+        // mid-play is removed at launch, before a screen is up.
+        MakeVideoWatchFiles.clearAll()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
