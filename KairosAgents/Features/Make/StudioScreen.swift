@@ -99,7 +99,12 @@ struct StudioScreen: View {
         let studio = make.studio
         switch studio.scope {
         case .library(let library):
-            StudioLibraryView(library: library)
+            // Paired, the libraries are not on live data yet: they would show the sample's connection state.
+            if studio.isLive && !MakeStudioLive.librariesLive {
+                HintLine(text: MakeStudioWords.libraries)
+            } else {
+                StudioLibraryView(library: library)
+            }
         case .all, .channel:
             switch studio.tab {
             case .dashboard:
@@ -212,7 +217,12 @@ struct StudioAlerts: View {
                             Text("Platform warning.").font(KFont.ui(15, .semibold, relativeTo: .subheadline)).foregroundStyle(Palette.ink)
                             Text(channel.warning ?? "\(channel.handle) is paused.").font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
                                 .fixedSize(horizontal: false, vertical: true)
+                            // Paired, resuming a channel can restart automatic posting: off while hands-off is on or not known.
+                            let held = studio.isLive && MakeStudioLive.shared.postingHeld(studio)
                             MakePillButton(title: "Resolve warning") { studio.sheet = .resolve(channel.id) }
+                                .disabled(held)
+                                .opacity(held ? 0.5 : 1)
+                            if held { HintLine(text: MakeStudioLive.shared.heldLine(studio)) }
                         }
                         Spacer(minLength: 0)
                     }
@@ -349,17 +359,23 @@ struct StudioPickerSheet: View {
                     }
                 }
 
+                // Paired, the libraries are left out until they are on live data (MakeStudioLive.librariesLive).
+                let showLibraries = !studio.isLive || MakeStudioLive.librariesLive
+                // Paired, the editor opens a real video by its desktop id, and the row is not drawn when there is none.
+                let editorPost: StudioPost? = studio.isLive ? studio.posts.first(where: { $0.videoID != nil }) : nil
+                let showEditor = !studio.isLive || editorPost != nil
+                if showLibraries || showEditor {
                 VStack(alignment: .leading, spacing: 8) {
-                    SectionLabel(text: "Libraries")
+                    SectionLabel(text: showLibraries ? "Libraries" : "Editor")
                     VStack(spacing: 0) {
+                        if showLibraries {
                         ForEach(StudioLibrary.allCases, id: \.self) { library in
                             pickRow(title: library.rawValue, detail: library.about, count: 0, selected: studio.scope == .library(library)) {
                                 Image(systemName: library.symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.goldText).frame(width: 36, height: 36)
                             } action: { go(.library(library)) }
                         }
-                        // Paired, the editor opens a real video by its desktop id, and the row is not drawn when there is none.
-                        let editorPost: StudioPost? = studio.isLive ? studio.posts.first(where: { $0.videoID != nil }) : nil
-                        if !studio.isLive || editorPost != nil {
+                        }
+                        if showEditor {
                             pickRow(title: "Editor", detail: editorPost.map { "Open the video of \($0.title)" } ?? "Open the video editor", count: 0, selected: false) {
                                 Image(systemName: "film").font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.goldText).frame(width: 36, height: 36)
                             } action: {
@@ -376,6 +392,8 @@ struct StudioPickerSheet: View {
                     }
                     .kCard(radius: 20)
                 }
+                }
+                if studio.isLive && !MakeStudioLive.librariesLive { HintLine(text: MakeStudioWords.libraries) }
 
                 if studio.isLive {
                     HintLine(text: MakeStudioWords.addChannel + " " + MakeStudioWords.setup)

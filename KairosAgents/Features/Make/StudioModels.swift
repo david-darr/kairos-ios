@@ -477,7 +477,11 @@ nonisolated enum StudioSheet: Identifiable, Hashable, Sendable {
     case socialApp(StudioPlatform)
     case teamReport
     // Paired only: each one asks before it changes something on the desktop.
-    case planApprove(String)
+    /// The plan's id and the version of the plan the person was reading when the sheet opened.
+    case planApprove(String, Int?)
+    /// The ids of the posts that were waiting when the sheet opened: exactly these are approved.
+    case approveBatch([String])
+    case resumeTeam
     case sheetApprove(String)
     case packApprove(String)
     case decisionReject(String)

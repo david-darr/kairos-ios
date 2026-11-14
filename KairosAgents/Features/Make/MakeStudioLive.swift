@@ -124,8 +124,10 @@ final class MakeStudioChannelForm {
 /// The paired desktop behind Studio: niches, channels, posts, approvals, pipeline, publishing, scoreboard, report and
 /// settings (all reads), and the changes the phone may make (approve, reject, redraft, prepare, decide a plan, a
 /// character sheet or a style pack, hands-off off, pause or resume the team, resume or archive or edit a channel,
-/// confirm or reject a decision, run one cycle, send the report). Posting to any platform, scheduling, marking
-/// posted, hands-off on, accounts and keys, metrics import and routines on stay on the desktop.
+/// confirm or reject a decision, send the report). Whatever could end in a public post (approve, resume, redraft, a
+/// plan, sheet or pack approval) first reads hands-off posting from the desktop and sends nothing when it is on or
+/// cannot be read. Posting to any platform, scheduling, marking posted, hands-off on, running a cycle, accounts and
+/// keys, metrics import and routines on stay on the desktop.
 /// Unpaired, nothing here runs and Studio is its sample.
 @Observable
 final class MakeStudioLive {
@@ -143,20 +145,41 @@ final class MakeStudioLive {
     private(set) var planVersions: [String: Int] = [:]
     /// Changes that have left the phone and are not settled, by account and item. Never cleared by a screen.
     private(set) var pendingMap: [String: MakeStudioPending] = [:]
-    /// Accounts whose weekly report was sent from this phone in this run of the app.
+    /// Accounts whose weekly report was sent from this phone in this run of the app (the button stays off).
     private(set) var reportSent: Set<String> = []
+    /// The week each account's report was last sent from this phone, kept on disk so a relaunch remembers it.
+    private(set) var reportWeeks: [String: String] = MakeStudioLive.storedReportWeeks()
     private(set) var skipped = 0
+    /// The last read of the desktop said whether hands-off posting is on. When it did not, nothing that could
+    /// lead to a public post is offered.
+    private(set) var handsOffKnown = false
 
     @ObservationIgnored private var details: [String: MakeStudioDetailDTO] = [:]
     @ObservationIgnored private var verifiers: [String: () -> MakeStudioVerdict] = [:]
-    @ObservationIgnored private var cycleSince: [String: Date] = [:]
     @ObservationIgnored private weak var studio: StudioStore?
     @ObservationIgnored private var readSerial = 0
-    @ObservationIgnored private var writeSerial = 0
-    @ObservationIgnored private var inFlight = 0
+    /// Per account, so one account's slow change never holds up another account's first read.
+    @ObservationIgnored private var writeSerials: [String: Int] = [:]
+    @ObservationIgnored private var inFlights: [String: Int] = [:]
     @ObservationIgnored private var numbersTask: Task<Void, Never>?
 
     static let desktopChanged = "Your paired desktop changed. Try again."
+
+    /// The library screens are not on live data yet (the next pass switches them on). While this is false and the
+    /// phone is paired, the picker leaves them out and their sheets say where to do it.
+    static let librariesLive = false
+
+    // MARK: Hands-off posting
+
+    /// With hands-off posting on, an approved post goes out on its own within minutes, and the team's Producer approves
+    /// what its team made. So approving, resuming and sending a post back for a redraft could end in a public post.
+    /// They stay off while hands-off is on, and while the last read did not say.
+    func postingHeld(_ studio: StudioStore) -> Bool { studio.handsOff || !handsOffKnown }
+
+    /// The one line that says why those are off.
+    func heldLine(_ studio: StudioStore) -> String {
+        studio.handsOff ? MakeStudioWords.handsOffHeld : MakeStudioWords.handsOffUnknown
+    }
 
     // MARK: Connection
 
@@ -184,7 +207,9 @@ final class MakeStudioLive {
         isLive && studio.isLive && account == Self.accountKey && load == .loaded
     }
 
-    /// Follow pairing: paired fills the store from the desktop, unpaired puts the sample back.
+    /// Follow pairing: paired fills the store from the desktop, unpaired puts the sample back. Safe to call from
+    /// more than one place (the Make home and the Studio screen): it only acts when pairing or the account changed,
+    /// so a second call finds nothing to do and a read in flight is left alone.
     func follow(_ studio: StudioStore) {
         self.studio = studio
         let key = Self.accountKey
@@ -210,6 +235,7 @@ final class MakeStudioLive {
         packChoices = []
         forms = [:]
         planVersions = [:]
+        handsOffKnown = false
         skipped = 0
         details = [:]
         numbersTask?.cancel()
@@ -231,7 +257,7 @@ final class MakeStudioLive {
     func isBusy(_ key: String) -> Bool { pending(key) != nil }
 
     /// A change of any kind is on its way (the screen keeps its sheets from closing meanwhile).
-    var writing: Bool { inFlight > 0 }
+    var writing: Bool { (inFlights[account] ?? 0) > 0 }
 
     // MARK: Reading
 
@@ -252,8 +278,8 @@ final class MakeStudioLive {
         let mine = readSerial
         if load != .loaded { load = .loading }
         for _ in 0..<4 {
-            let writes = writeSerial
-            if inFlight > 0 {
+            let writes = writeSerials[key] ?? 0
+            if (inFlights[key] ?? 0) > 0 {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard stillLive(key), mine == readSerial else { return false }
                 continue
@@ -261,7 +287,7 @@ final class MakeStudioLive {
             do {
                 let snapshot = try await fetch(try client())
                 guard stillLive(key), mine == readSerial else { return false }
-                guard writes == writeSerial, inFlight == 0 else { continue }
+                guard writes == (writeSerials[key] ?? 0), (inFlights[key] ?? 0) == 0 else { continue }
                 apply(snapshot, to: studio)
                 load = .loaded
                 startNumbers()
@@ -638,6 +664,7 @@ final class MakeStudioLive {
             studio.handsOff = settings.handsOff
             studio.teamPaused = settings.teamPaused
         }
+        handsOffKnown = snapshot.handsOff?.readable == true
         if let hands = snapshot.handsOff {
             studio.handsOff = hands.on
             studio.teamPaused = hands.paused
@@ -740,8 +767,8 @@ final class MakeStudioLive {
         let slot = Self.slot(acct, key)
         pendingMap[slot] = MakeStudioPending(key: key)
         verifiers[slot] = verify
-        inFlight += 1
-        writeSerial += 1
+        inFlights[acct, default: 0] += 1
+        writeSerials[acct, default: 0] += 1
         var outcome: MakeStudioOutcome
         do {
             let message = try await send(try client())
@@ -760,8 +787,8 @@ final class MakeStudioLive {
                 outcome = .unconfirmed(lostLine)
             }
         }
-        inFlight -= 1
-        writeSerial += 1
+        inFlights[acct, default: 1] -= 1
+        writeSerials[acct, default: 0] += 1
         guard stillLive(acct) else { return outcome }
         let read = await loadLive()
         if case .unconfirmed = outcome, read, let check = verifiers[slot] {
@@ -818,6 +845,19 @@ final class MakeStudioLive {
         "Your desktop did not confirm \(what). It may already have it. Check again reads your desktop; nothing is sent twice."
     }
 
+    /// Read the desktop's hands-off state right before a change that could end in a public post. Nothing is sent
+    /// when it is on, or when it cannot be read: the screen's own copy may be old.
+    private func requireHandsOffOff(_ client: APIClient, what: String) async throws {
+        let unknown = MakeStudioChanged(words: "Your desktop did not say whether hands-off posting is on, so \(what) was not sent. Try again, or do it in Kairos on your desktop.")
+        let answer: JSONValue
+        do { answer = try await client.makeStudioHandsOff() } catch { throw unknown }
+        let state = MakeStudioHandsOffDTO(answer)
+        guard state.readable else { throw unknown }
+        guard !state.on else {
+            throw MakeStudioChanged(words: "Hands-off posting is on in Kairos on your desktop, so \(what) here could lead to a public post. Do it on your desktop, or turn hands-off posting off first.")
+        }
+    }
+
     func approve(_ postID: String) async -> MakeStudioOutcome {
         guard !postLocked(postID) else { return .busy }
         guard let id = Int(postID) else { return .refused("That post is not on your desktop.") }
@@ -826,16 +866,21 @@ final class MakeStudioLive {
                              lostLine: lostWords("the approval"),
                              verify: { [weak self] in self?.verdict(post: postID) { $0 == .awaiting ? .notApplied : .applied } ?? .unknown },
                              send: { client in
+                                 try await requireHandsOffOff(client, what: "approving")
                                  try await client.makeStudioApprove(id)
                                  return nil
                              })
     }
 
-    func approveAll() async -> MakeStudioOutcome {
+    /// Approve exactly the posts the sheet showed (their ids were taken when it opened). Refuses if any of them is
+    /// no longer waiting.
+    func approveAll(_ ids: [String]) async -> MakeStudioOutcome {
         guard let studio else { return .busy }
-        let ids = studio.scoped(studio.posts).filter { $0.publish == .awaiting }.map(\.id)
         let numbers = ids.compactMap { Int($0) }
         guard !numbers.isEmpty, numbers.count == ids.count else { return .refused("There are no posts waiting to approve.") }
+        guard ids.allSatisfy({ studio.post($0)?.publish == .awaiting }) else {
+            return .refused("Some of these posts are not waiting any more. Open Approvals and look at what is waiting now.")
+        }
         guard !ids.contains(where: { postLocked($0) }) else { return .busy }
         return await perform("approveAll", done: "Approved.", notApplied: "Your desktop still has those posts waiting. None was approved.",
                              lostLine: lostWords("the approvals"),
@@ -845,6 +890,7 @@ final class MakeStudioLive {
                                  return waiting.count == ids.count ? .notApplied : .applied
                              },
                              send: { client in
+                                 try await requireHandsOffOff(client, what: "approving")
                                  let answer = try await client.makeStudioApproveBatch(numbers)
                                  let row = MakeStudioRow(answer)
                                  let approved = row?.list("approved").count ?? 0
@@ -882,6 +928,7 @@ final class MakeStudioLive {
                              lostLine: lostWords("the redraft"),
                              verify: { [weak self] in self?.verdict(post: postID) { $0 == .rejected ? .notApplied : .applied } ?? .unknown },
                              send: { client in
+                                 try await requireHandsOffOff(client, what: "sending it back for a redraft")
                                  try await client.makeStudioRedraft(id)
                                  return nil
                              })
@@ -909,9 +956,9 @@ final class MakeStudioLive {
     }
 
     /// A long video's plan. The desktop approves "the plan as it is now", so the phone first checks that the plan
-    /// is still the one the person read.
-    func decidePlan(_ videoID: String, approve: Bool, reason: String = "") async -> MakeStudioOutcome {
-        let shown = planVersions[videoID]
+    /// is still the one the person read: for an approval, the version the sheet was opened on.
+    func decidePlan(_ videoID: String, version opened: Int? = nil, approve: Bool, reason: String = "") async -> MakeStudioOutcome {
+        let shown = approve ? opened : planVersions[videoID]
         return await perform("plan:" + videoID, done: approve ? "Plan approved. The team can render it now." : "Plan rejected. The Producer plans again.",
                              notApplied: "Your desktop still has this plan waiting.",
                              lostLine: lostWords(approve ? "the approval" : "the rejection"),
@@ -920,6 +967,7 @@ final class MakeStudioLive {
                                  return studio.plans.contains { $0.id == videoID } ? .notApplied : .applied
                              },
                              send: { client in
+                                 if approve { try await requireHandsOffOff(client, what: "approving the plan") }
                                  let state = MakeStudioRow(try await client.makeStudioPlanState(videoID))
                                  guard state?.str("status") == "awaiting_approval", state?.int("version") == shown else {
                                      throw MakeStudioChanged(words: "This plan changed on your desktop since you read it. It is shown again now. Read it, then decide.")
@@ -940,6 +988,7 @@ final class MakeStudioLive {
                                  return studio.liveSheets.contains { $0.0.id == id && $0.1.number == version } ? .notApplied : .applied
                              },
                              send: { client in
+                                 if approve { try await requireHandsOffOff(client, what: "approving the character sheet") }
                                  try await client.makeStudioSheetDecide(id, version: version, approve: approve, reason: reason.isEmpty ? "No reason given" : reason)
                                  return nil
                              })
@@ -956,6 +1005,7 @@ final class MakeStudioLive {
                                  return studio.livePacks.contains { $0.0.id == id && $0.1.number == version } ? .notApplied : .applied
                              },
                              send: { client in
+                                 if approve { try await requireHandsOffOff(client, what: "approving the style pack") }
                                  try await client.makeStudioPackDecide(id, version: version, approve: approve, reason: reason.isEmpty ? "No reason given" : reason)
                                  return nil
                              })
@@ -977,6 +1027,8 @@ final class MakeStudioLive {
                       lostLine: lostWords(on ? "the pause" : "the resume"),
                       verify: { [weak self] in self?.studio.map { $0.teamPaused == on ? .applied : .notApplied } ?? .unknown },
                       send: { client in
+                          // Pausing is always safe. Resuming restarts automatic posting, so it asks the desktop first.
+                          if !on { try await requireHandsOffOff(client, what: "resuming the team") }
                           try await client.makeStudioTeamPause(on)
                           return nil
                       })
@@ -988,6 +1040,7 @@ final class MakeStudioLive {
                              lostLine: lostWords("the resume"),
                              verify: { [weak self] in self?.studio?.channel(channelID).map { $0.state == .paused ? .notApplied : .applied } ?? .unknown },
                              send: { client in
+                                 try await requireHandsOffOff(client, what: "resuming the channel")
                                  try await client.makeStudioResume(id)
                                  return nil
                              })
@@ -1080,51 +1133,57 @@ final class MakeStudioLive {
         return outcome
     }
 
-    // MARK: Spending and sending
+    // MARK: Sending the report
 
-    /// Run one cycle for one channel. It spends bot money against the monthly cap, and takes no request id, so a lost
-    /// answer keeps this off until the desktop shows a run that started after it was sent.
-    func runCycle(channelID: String) async -> MakeStudioOutcome {
-        guard let id = Int(channelID) else { return .refused("That channel is not on your desktop.") }
-        let acct = account
-        guard setup?.cycleRunning != true else { return .refused("A cycle is already running on your desktop.") }
-        let sentAt = Date()
-        cycleSince[acct] = sentAt
-        return await perform("cycle", done: "The Producer started a cycle. It takes a few minutes. Its post waits in Approvals.",
-                             notApplied: "Your desktop did not start a cycle.",
-                             lostLine: "Your desktop did not confirm the cycle. It may be running and spending. Check again reads your desktop; this stays off until it shows a run.",
-                             verify: { [weak self] in
-                                 guard let self, let setup = self.setup else { return .unknown }
-                                 let since = (self.cycleSince[acct] ?? sentAt).timeIntervalSince1970 - 5
-                                 return setup.cycleRunning || (setup.lastRunStarted ?? 0) >= since ? .applied : .unknown
-                             },
-                             send: { client in
-                                 let answer = try await client.makeStudioRunCycle(id)
-                                 guard MakeStudioRow(answer)?.flag("started") == true else {
-                                     throw MakeStudioChanged(words: "Your desktop did not start a new run.")
-                                 }
-                                 return nil
-                             })
+    private static let reportDefaultsKey = "MakeStudioReportWeeks"
+
+    /// The week (as a year and a week number) each account's report was last sent from this phone.
+    private static func storedReportWeeks() -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: reportDefaultsKey) as? [String: String] ?? [:]
     }
 
-    /// Put the weekly report in the Inbox. A message goes out, and the desktop takes no request id, so a lost answer
-    /// keeps this off for the rest of this run of the app.
+    private static func thisWeek() -> String {
+        let parts = Calendar(identifier: .iso8601).dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date())
+        return "\(parts.yearForWeekOfYear ?? 0)-W\(parts.weekOfYear ?? 0)"
+    }
+
+    /// The report was already sent from this phone this week, perhaps before the app was last closed.
+    func reportSentThisWeek(_ acct: String) -> Bool { reportWeeks[acct] == Self.thisWeek() }
+
+    private func setReportWeek(_ week: String?, for acct: String) {
+        reportWeeks[acct] = week
+        UserDefaults.standard.set(reportWeeks, forKey: Self.reportDefaultsKey)
+    }
+
+    /// Put the weekly report in the Inbox. A message goes out, and the desktop takes no request id. The week is
+    /// written to disk BEFORE the request leaves and stays written unless the desktop said no, so a lost answer or a
+    /// relaunch never turns this into a quiet second send: the confirm says it goes again.
     func sendReport() async -> MakeStudioOutcome {
         let acct = account
         guard !reportSent.contains(acct) else { return .refused("The report was already sent.") }
-        let outcome = await perform("report", done: "Report sent to your Inbox.",
-                                    notApplied: "Your desktop did not send the report.",
-                                    lostLine: "Your desktop did not confirm the report. It may be in your Inbox. This stays off so it is not sent twice. Look in your Inbox on your desktop.",
-                                    verify: { .unknown },
-                                    send: { client in
-                                        let answer = try await client.makeStudioReportSend()
-                                        guard MakeStudioRow(answer)?.flag("delivered") == true else {
-                                            throw MakeStudioChanged(words: "Your desktop could not send it: the Producer bot that sends it is missing. Nothing was sent.")
-                                        }
-                                        return nil
-                                    })
-        if case .done = outcome { reportSent.insert(acct) }
-        return outcome
+        let before = reportWeeks[acct]
+        return await perform("report", done: "Report sent to your Inbox.",
+                             notApplied: "Your desktop did not send the report.",
+                             lostLine: "Your desktop did not confirm the report. It may be in your Inbox. This stays off so it is not sent twice. Look in your Inbox on your desktop.",
+                             verify: { .unknown },
+                             send: { client in
+                                 setReportWeek(Self.thisWeek(), for: acct)
+                                 reportSent.insert(acct)
+                                 do {
+                                     let answer = try await client.makeStudioReportSend()
+                                     guard MakeStudioRow(answer)?.flag("delivered") == true else {
+                                         throw MakeStudioChanged(words: "Your desktop could not send it: the Producer bot that sends it is missing. Nothing was sent.")
+                                     }
+                                     return nil
+                                 } catch {
+                                     if Self.wasRefused(error) {
+                                         // The desktop said no: nothing went out, so the week is not marked.
+                                         setReportWeek(before, for: acct)
+                                         reportSent.remove(acct)
+                                     }
+                                     throw error
+                                 }
+                             })
     }
 }
 
@@ -1141,6 +1200,11 @@ nonisolated enum MakeStudioWords {
     static let editPost = "Edit a post's text in Kairos on your desktop."
     static let teamReport = "The team report is in Kairos on your desktop."
     static let restore = "Restore an archived channel in Kairos on your desktop."
+    static let runCycle = "Run a cycle in Kairos on your desktop."
+    static let libraries = "Formats, styles, characters, connections and templates are in Kairos on your desktop."
+    static let handsOffHeld = "Hands-off posting is on in Kairos on your desktop, so approving or resuming here could lead to a public post. Approve it on your desktop, or turn hands-off posting off first."
+    static let handsOffUnknown = "Your desktop did not say whether hands-off posting is on, so approving and resuming are off here. Refresh, or do it in Kairos on your desktop."
+    static let handsOffUnreadLine = "Whether hands-off posting is on could not be read from your desktop."
 }
 
 /// Studio while the desktop is being read, or could not be.
@@ -1221,11 +1285,14 @@ struct MakeStudioHandsOffStrip: View {
                     .font(.system(size: 18))
                     .foregroundStyle(studio.teamPaused ? Palette.danger : Palette.goldText)
                     .contentTransition(.symbolEffect(.replace))
-                Text(studio.handsOffLine)
+                // "Every post waits for your OK" is only said when the desktop was read as having hands-off off.
+                Text(studio.handsOff || studio.teamPaused || live.handsOffKnown ? studio.handsOffLine : MakeStudioWords.handsOffUnreadLine)
                     .font(KFont.ui(14.5, relativeTo: .subheadline))
                     .foregroundStyle(Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            let held = live.postingHeld(studio)
+            let resumeOff = studio.teamPaused && held
             HStack(spacing: 8) {
                 if studio.handsOff {
                     MakePillButton(title: "Turn hands-off posting off", expand: true) {
@@ -1235,130 +1302,27 @@ struct MakeStudioHandsOffStrip: View {
                     .opacity(live.isBusy("handsoff") ? 0.5 : 1)
                 }
                 MakePillButton(title: studio.teamPaused ? "Resume team" : "Pause team", symbol: studio.teamPaused ? "play.fill" : "pause.fill", expand: studio.handsOff == false) {
-                    let on = !studio.teamPaused
-                    Task { toast.say(await live.setTeamPause(on).line) }
+                    // Pausing is sent at once. Resuming asks first, because it can restart automatic posting.
+                    if studio.teamPaused {
+                        studio.sheet = .resumeTeam
+                    } else {
+                        Task { toast.say(await live.setTeamPause(true).line) }
+                    }
                 }
-                .disabled(live.isBusy("pause"))
-                .opacity(live.isBusy("pause") ? 0.5 : 1)
+                .disabled(live.isBusy("pause") || resumeOff)
+                .opacity(live.isBusy("pause") || resumeOff ? 0.5 : 1)
             }
-            if !studio.handsOff { HintLine(text: MakeStudioWords.handsOffOn) }
+            if resumeOff {
+                HintLine(text: live.heldLine(studio))
+            } else if !studio.handsOff && live.handsOffKnown {
+                HintLine(text: MakeStudioWords.handsOffOn)
+            }
             MakeStudioPendingLine(key: "handsoff")
             MakeStudioPendingLine(key: "pause")
         }
         .padding(14)
         .background(studio.teamPaused ? Palette.danger.opacity(0.08) : Palette.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(studio.teamPaused ? Palette.danger.opacity(0.4) : Palette.line, lineWidth: 1))
-    }
-}
-
-/// Run one cycle, and the one line about what stays on the desktop. Shown on the All channels dashboard.
-struct MakeStudioCycleTile: View {
-    @Environment(MakeStore.self) private var make
-    private let live = MakeStudioLive.shared
-
-    var body: some View {
-        let studio = make.studio
-        VStack(spacing: 12) {
-            if let setup = live.setup, setup.imported {
-                let running = setup.cycleRunning || studio.cycleRunning
-                let busy = live.isBusy("cycle")
-                MakeTile(title: "Run one cycle", symbol: "play.circle") {
-                    Text("The Producer researches, writes and renders one post for a channel you choose. It spends from your monthly cap, and the post still waits for your OK.")
-                        .font(KFont.ui(14, relativeTo: .footnote)).foregroundStyle(Palette.inkDim)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if running { HintLine(text: "A cycle is running on your desktop now.", symbol: "clock") }
-                    MakeStudioPendingLine(key: "cycle")
-                    MakePillButton(title: running ? "Cycle running" : "Run one cycle", symbol: "play.fill", filled: !running && !busy) {
-                        studio.sheet = .runCycle
-                    }
-                    .disabled(running || busy || studio.channels.filter { $0.state == .live }.isEmpty)
-                    .opacity(running || busy ? 0.5 : 1)
-                }
-            }
-            HintLine(text: MakeStudioWords.setup)
-        }
-    }
-}
-
-/// The channel chooser and the confirm for one cycle. It names the channel and the monthly cap.
-struct MakeStudioCycleSheet: View {
-    @Environment(MakeStore.self) private var make
-    @Environment(MakeToast.self) private var toast
-    @Environment(\.dismiss) private var dismiss
-    @State private var chosen: String?
-    @State private var working = false
-    @State private var note: String?
-    private let live = MakeStudioLive.shared
-
-    private var capLine: String {
-        guard let cap = live.setup?.monthlyCap, cap > 0 else { return "No monthly spend cap is set on your desktop." }
-        let spent = live.setup?.spent.map { " $\(String(format: "%.2f", $0)) is spent this month." } ?? ""
-        return "Monthly spend cap: $\(String(format: "%.0f", cap)).\(spent)"
-    }
-
-    var body: some View {
-        let studio = make.studio
-        let channels = studio.channels.filter { $0.state == .live }
-        FittedSheet(estimate: 520) {
-            VStack(alignment: .leading, spacing: 14) {
-                if let id = chosen, let channel = studio.channel(id) {
-                    MakeSheetTitle(title: "Run one cycle for \(channel.handle)?", detail: capLine)
-                    Text("The Producer researches, writes and renders one post. It spends bot money against your monthly cap, and it cannot be taken back once it starts. The post still waits for your OK.")
-                        .font(KFont.ui(15)).foregroundStyle(Palette.inkDim)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let note { Text(note).font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.danger) }
-                    GoldButton(title: working ? "Sending" : "Run one cycle now") { start(id) }
-                        .disabled(working || live.setup?.cycleRunning == true || live.isBusy("cycle"))
-                        .opacity(working ? 0.6 : 1)
-                    QuietButton(title: "Back") { chosen = nil }.disabled(working)
-                } else {
-                    MakeSheetTitle(title: "Run one cycle", detail: "Choose the channel. " + capLine)
-                    VStack(spacing: 0) {
-                        if channels.isEmpty { EmptyLine(text: "No live channel to run.").padding(16) }
-                        ForEach(channels) { channel in
-                            Button {
-                                Haptics.select()
-                                chosen = channel.id
-                            } label: {
-                                HStack(spacing: 12) {
-                                    ChannelAvatar(channel: channel, size: 36)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(channel.handle).font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
-                                        Text(channel.platform.name).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
-                                    }
-                                    Spacer(minLength: 0)
-                                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.inkFaint)
-                                }
-                                .padding(.horizontal, 14)
-                                .frame(minHeight: 58)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(PressStyle(scale: 0.99))
-                        }
-                    }
-                    .kCard(radius: 20)
-                    QuietButton(title: "Cancel") { dismiss() }
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 16)
-        }
-        .interactiveDismissDisabled(working)
-    }
-
-    private func start(_ id: String) {
-        guard !working else { return }
-        working = true
-        note = nil
-        Task {
-            let outcome = await live.runCycle(channelID: id)
-            working = false
-            toast.say(outcome.line)
-            switch outcome {
-            case .refused, .busy: note = outcome.line
-            case .done, .unconfirmed: dismiss()
-            }
-        }
     }
 }
 
@@ -1395,11 +1359,12 @@ struct MakeStudioApprovalButtons: View {
     var body: some View {
         let studio = make.studio
         let busy = live.isBusy("approve:\(post.id)") || live.isBusy("reject:\(post.id)") || live.isBusy("approveAll")
+        let held = live.postingHeld(studio)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                MakePillButton(title: "Approve", filled: !busy, expand: true) { studio.sheet = .approvePost(post.id) }
-                    .disabled(busy)
-                    .opacity(busy ? 0.5 : 1)
+                MakePillButton(title: "Approve", filled: !busy && !held, expand: true) { studio.sheet = .approvePost(post.id) }
+                    .disabled(busy || held)
+                    .opacity(busy || held ? 0.5 : 1)
                 Menu {
                     Button("Reject", systemImage: "xmark") { studio.sheet = .rejectPost(post.id) }
                     Button("Details", systemImage: "info.circle") { studio.sheet = .post(post.id) }
@@ -1424,11 +1389,13 @@ struct MakeStudioPlanButtons: View {
     var body: some View {
         let studio = make.studio
         let busy = live.isBusy("plan:\(plan.id)")
+        let held = live.postingHeld(studio)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                MakePillButton(title: "Approve plan", filled: !busy, expand: true) { studio.sheet = .planApprove(plan.id) }
-                    .disabled(busy)
-                    .opacity(busy ? 0.5 : 1)
+                // The version the person is reading goes into the sheet, so the approval is for that version only.
+                MakePillButton(title: "Approve plan", filled: !busy && !held, expand: true) { studio.sheet = .planApprove(plan.id, live.planVersions[plan.id]) }
+                    .disabled(busy || held)
+                    .opacity(busy || held ? 0.5 : 1)
                 MakePillButton(title: "Reject") { studio.sheet = .planReject(plan.id) }
                     .disabled(busy)
                     .opacity(busy ? 0.5 : 1)
@@ -1450,11 +1417,12 @@ struct MakeStudioSheetButtons: View {
     var body: some View {
         let studio = make.studio
         let busy = live.isBusy("sheet:\(rowID)")
+        let held = live.postingHeld(studio)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                MakePillButton(title: "Approve", filled: !busy, expand: true) { studio.sheet = .sheetApprove(rowID) }
-                    .disabled(busy)
-                    .opacity(busy ? 0.5 : 1)
+                MakePillButton(title: "Approve", filled: !busy && !held, expand: true) { studio.sheet = .sheetApprove(rowID) }
+                    .disabled(busy || held)
+                    .opacity(busy || held ? 0.5 : 1)
                 MakePillButton(title: "Reject") { studio.sheet = .sheetReject(rowID) }
                     .disabled(busy)
                     .opacity(busy ? 0.5 : 1)
@@ -1472,11 +1440,12 @@ struct MakeStudioPackButtons: View {
     var body: some View {
         let studio = make.studio
         let busy = live.isBusy("pack:\(rowID)")
+        let held = live.postingHeld(studio)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                MakePillButton(title: "Approve", filled: !busy, expand: true) { studio.sheet = .packApprove(rowID) }
-                    .disabled(busy)
-                    .opacity(busy ? 0.5 : 1)
+                MakePillButton(title: "Approve", filled: !busy && !held, expand: true) { studio.sheet = .packApprove(rowID) }
+                    .disabled(busy || held)
+                    .opacity(busy || held ? 0.5 : 1)
                 MakePillButton(title: "Reject") { studio.sheet = .packReject(rowID) }
                     .disabled(busy)
                     .opacity(busy ? 0.5 : 1)
@@ -1519,13 +1488,16 @@ struct MakeStudioPostActions: View {
                         }
                     }
                 case .rejected:
-                    MakePillButton(title: "Redraft", filled: !live.isBusy("redraft:\(post.id)")) { studio.sheet = .redraftPost(post.id) }
-                        .disabled(live.isBusy("redraft:\(post.id)"))
+                    let held = live.postingHeld(studio)
+                    MakePillButton(title: "Redraft", filled: !live.isBusy("redraft:\(post.id)") && !held) { studio.sheet = .redraftPost(post.id) }
+                        .disabled(live.isBusy("redraft:\(post.id)") || held)
+                        .opacity(held ? 0.5 : 1)
                 case .drafted:
                     MakePillButton(title: "Details") { studio.sheet = .post(post.id) }
                 }
             }
             .scrollableRow()
+            if post.publish == .rejected, live.postingHeld(studio) { HintLine(text: live.heldLine(studio)) }
             MakeStudioPendingLine(key: "prepare:\(post.id)")
             MakeStudioPendingLine(key: "redraft:\(post.id)")
         }
@@ -1804,6 +1776,9 @@ struct MakeStudioReport: View {
                     }
                 }
                 MakeStudioPendingLine(key: "report")
+                if !sent, !busy, live.reportSentThisWeek(MakeStudioLive.accountKey) {
+                    HintLine(text: "This phone already sent the report this week. Sending again puts a second note in your Inbox.")
+                }
                 MakePillButton(title: sent ? "Sent to your Inbox" : (busy ? "Not confirmed" : "Send to my Inbox"),
                                symbol: sent ? "checkmark" : "tray.and.arrow.down", filled: !sent && !busy) {
                     studio.sheet = .reportSend
@@ -1834,12 +1809,15 @@ struct MakeStudioChannelSettings: View {
                     case .archived:
                         HintLine(text: MakeStudioWords.restore)
                     case .paused:
+                        let held = live.postingHeld(studio)
                         HStack(spacing: 8) {
-                            MakePillButton(title: "Resume channel", filled: true) { studio.sheet = .resolve(channel.id) }
-                                .disabled(live.isBusy("resume:\(channel.id)"))
+                            MakePillButton(title: "Resume channel", filled: !held) { studio.sheet = .resolve(channel.id) }
+                                .disabled(live.isBusy("resume:\(channel.id)") || held)
+                                .opacity(held ? 0.5 : 1)
                             MakePillButton(title: "Archive", danger: true) { studio.sheet = .archive(channel.id) }
                                 .disabled(live.isBusy("archive:\(channel.id)"))
                         }
+                        if held { HintLine(text: live.heldLine(studio)) }
                     case .live:
                         MakePillButton(title: "Archive", danger: true) { studio.sheet = .archive(channel.id) }
                             .disabled(live.isBusy("archive:\(channel.id)"))
@@ -2031,9 +2009,12 @@ struct MakeStudioPostDetails: View {
                 if let numbers = post.numbers { numbersGrid(numbers) }
             }
         case .rejected:
+            let held = live.postingHeld(studio)
             VStack(alignment: .leading, spacing: 8) {
-                MakePillButton(title: "Redraft", filled: true) { studio.sheet = .redraftPost(post.id) }
-                    .disabled(live.isBusy("redraft:\(post.id)"))
+                MakePillButton(title: "Redraft", filled: !held) { studio.sheet = .redraftPost(post.id) }
+                    .disabled(live.isBusy("redraft:\(post.id)") || held)
+                    .opacity(held ? 0.5 : 1)
+                if held { HintLine(text: live.heldLine(studio)) }
                 MakeStudioPendingLine(key: "redraft:\(post.id)")
             }
         case .drafted:

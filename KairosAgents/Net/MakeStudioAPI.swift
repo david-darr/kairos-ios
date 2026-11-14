@@ -44,12 +44,14 @@ import Foundation
 // - PUT /hands-off {on: false} (only off is ever sent), PUT /team-pause {on}
 // - POST /channels/{id}/resume, /archive {reason}, /edit (only the fields the person changed)
 // - POST /decisions/{id}/confirm {actor: "user"}, /reject {reason}
-// - POST /setup/run-cycle {channel_id}: one run of the Producer's routine. services/bot_routines.py run_now refuses
-//   a second run while one is under way (409 "This routine is already running").
 // - POST /report/send: puts the report in the Inbox (and, with hands-off on, sends a message).
 //
+// With hands-off posting on, an approved post is posted by the desktop within minutes, so before approve,
+// approve-batch, redraft, a plan, sheet or pack approval, team resume and channel resume the phone reads
+// GET /hands-off again and sends nothing when it is on or cannot be read.
+//
 // Never called from the phone: publish to YouTube, TikTok or Instagram, schedule, mark posted, hands-off on,
-// social apps and connections, metrics import, routines on, add channel, post edit.
+// social apps and connections, metrics import, routines on, run a cycle, add channel, post edit.
 
 // MARK: - Reading one row
 
@@ -460,9 +462,13 @@ nonisolated struct MakeStudioHandsOffDTO: Sendable {
     var on = false
     var paused = false
     var taps = 0
+    /// The answer really said whether hands-off posting is on (a true or false, or 1 or 0). When it did not, the
+    /// phone treats the state as not known.
+    var readable = false
 
     init(_ root: JSONValue) {
         guard let row = MakeStudioRow(root) else { return }
+        readable = row.value("on")?.bool != nil || row.value("on")?.int != nil
         on = row.flag("on")
         paused = row.flag("paused")
         taps = row.list("taps").count
@@ -645,11 +651,6 @@ extension APIClient {
 
     func makeStudioDecisionReject(_ id: Int) async throws {
         try await call("POST", Self.studio + "/decisions/\(id)/reject", json: ["actor": "user"])
-    }
-
-    /// Spends bot money against the monthly cap. One run at a time is the desktop's own rule (409 while running).
-    func makeStudioRunCycle(_ channelID: Int) async throws -> JSONValue {
-        try await post(Self.studio + "/setup/run-cycle", json: ["channel_id": channelID])
     }
 
     /// Puts the weekly report in the Inbox. Sends a message, takes no request id.
@@ -860,10 +861,13 @@ nonisolated enum MakeStudioSamples {
         DecodeCheck("makestudio.settings-state") {
             let settings = MakeStudioSettingsDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.settings))
             let hands = MakeStudioHandsOffDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.handsOff))
+            let handsNull = MakeStudioHandsOffDTO(try KJSON.decode(JSONValue.self, from: #"{"on": null, "paused": false}"#))
+            let handsMissing = MakeStudioHandsOffDTO(try KJSON.decode(JSONValue.self, from: #"{"paused": false}"#))
             let setup = MakeStudioSetupDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.setup))
-            let report = MakeStudioReportDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.report))
+            let report =MakeStudioReportDTO(try KJSON.decode(JSONValue.self, from: MakeStudioSamples.report))
             guard settings.batchApproval, settings.teamPaused, !settings.handsOff, settings.weights == [0.4, 0.4, 0.2],
-                  hands.on, !hands.paused, hands.taps == 1,
+                  hands.on, hands.readable, !hands.paused, hands.taps == 1,
+                  !handsNull.readable, !handsMissing.readable,
                   setup.imported, setup.cycleRunning, setup.monthlyCap == 40, setup.spent == 14.25, setup.lastRunStarted == 1_793_000_500.5,
                   report.lines.count == 3, report.lines[0] == "Content Studio weekly report", report.from == 1_792_400_000 else {
                 throw SampleMismatch("settings, hands-off, setup or report fields")

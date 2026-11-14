@@ -80,7 +80,7 @@ struct OverviewDashboard: View {
                     .buttonStyle(PressStyle(scale: 0.98))
                 }
             }
-            if studio.isLive { MakeStudioCycleTile() }
+            if studio.isLive { HintLine(text: MakeStudioWords.runCycle) }
         }
     }
 }
@@ -236,15 +236,26 @@ struct ApprovalsView: View {
         let plans = studio.plans.filter { !$0.approved && (studio.currentChannelID == nil || $0.channelID == studio.currentChannelID) }
         let showLibrary = studio.currentChannelID == nil
         let empty = posts.isEmpty && plans.isEmpty && (!showLibrary || (studio.sheetsWaiting.isEmpty && studio.packsWaiting.isEmpty))
+        // Paired: approving can lead to a public post while hands-off posting is on or not known, so the buttons are
+        // off with one line saying why, and "nothing is posted by approving" is only said when it was read as off.
+        let held = studio.isLive && MakeStudioLive.shared.postingHeld(studio)
         VStack(alignment: .leading, spacing: 12) {
-            Text(studio.isLive
-                 ? "Approving marks a post approved. Nothing is posted by approving: the Publisher prepares it, and you post it on your desktop."
-                 : "Approving marks a post approved. Nothing is posted by approving: the Publisher prepares it, and you post it from Publishing.")
-                .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
-                .fixedSize(horizontal: false, vertical: true)
+            if held {
+                HintLine(text: MakeStudioLive.shared.heldLine(studio))
+            } else {
+                Text(studio.isLive
+                     ? "Approving marks a post approved. Nothing is posted by approving: the Publisher prepares it, and you post it on your desktop."
+                     : "Approving marks a post approved. Nothing is posted by approving: the Publisher prepares it, and you post it from Publishing.")
+                    .font(KFont.ui(13.5, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if studio.batchApproval && posts.count > 1 {
-                MakePillButton(title: "Approve all \(posts.count)", symbol: "checkmark.circle", filled: true, expand: true) { studio.sheet = .approveAll }
-                    .disabled(studio.isLive && MakeStudioLive.shared.isBusy("approveAll"))
+                // Paired, the sheet takes the ids shown here, so it approves exactly what is on this screen.
+                MakePillButton(title: "Approve all \(posts.count)", symbol: "checkmark.circle", filled: !held, expand: true) {
+                    studio.sheet = studio.isLive ? StudioSheet.approveBatch(posts.map(\.id)) : StudioSheet.approveAll
+                }
+                .disabled(studio.isLive && (MakeStudioLive.shared.isBusy("approveAll") || held))
+                .opacity(held ? 0.5 : 1)
             }
             if studio.isLive { MakeStudioPendingLine(key: "approveAll") }
             if empty {
@@ -315,11 +326,13 @@ struct ApprovalPostCard: View {
                     .accessibilityLabel("More actions")
                 }
             }
-            Text(studio.isLive
-                 ? "After you approve, Publishing prepares it. Posting it is done in Kairos on your desktop."
-                 : "After you approve, Publishing prepares it and opens the upload page; you press Post yourself.")
-                .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
-                .fixedSize(horizontal: false, vertical: true)
+            if !(studio.isLive && MakeStudioLive.shared.postingHeld(studio)) {
+                Text(studio.isLive
+                     ? "After you approve, Publishing prepares it. Posting it is done in Kairos on your desktop."
+                     : "After you approve, Publishing prepares it and opens the upload page; you press Post yourself.")
+                    .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(14)
         .kCard(radius: 22, raised: true)

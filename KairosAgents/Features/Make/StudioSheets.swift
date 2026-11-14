@@ -151,7 +151,7 @@ struct StudioSheetView: View {
         case .accountChooser(let id): AccountChooserSheet(channelID: id)
         case .socialApp(let platform): SocialAppSheet(platform: platform)
         case .teamReport: TeamReportSheet()
-        case .planApprove, .sheetApprove, .packApprove, .decisionReject, .reportSend: EmptyView()
+        case .planApprove, .approveBatch, .resumeTeam, .sheetApprove, .packApprove, .decisionReject, .reportSend: EmptyView()
         }
     }
 
@@ -163,6 +163,10 @@ struct StudioSheetView: View {
         func say(_ work: @escaping () async -> MakeStudioOutcome) {
             Task { toast.say(await work().line) }
         }
+        // Whatever could end in a public post is not offered while hands-off posting is on or not known. The send
+        // itself reads the desktop again, so a sheet opened before the state changed still sends nothing.
+        let hold = live.postingHeld(studio)
+        let holdText = live.heldLine(studio)
         switch sheet {
         case .setup: return held(MakeStudioWords.setup)
         case .addChannel: return held(MakeStudioWords.addChannel)
@@ -180,10 +184,12 @@ struct StudioSheetView: View {
                 return true
             })
         case .redraftPost(let id):
+            if hold { return held(holdText) }
             return AnyView(MakeConfirmSheet(title: "Send back for redraft?", detail: studio.post(id)?.title ?? "", button: "Send back for redraft") {
                 say { await live.redraft(id) }
             })
         case .approvePost(let id):
+            if hold { return held(holdText) }
             let post = studio.post(id)
             return AnyView(MakeSwipeUpConfirm(
                 title: "Approve this post?",
@@ -194,13 +200,29 @@ struct StudioSheetView: View {
                 say { await live.approve(id) }
             })
         case .approveAll:
-            let count = studio.scoped(studio.posts).filter { $0.publish == .awaiting }.count
-            return AnyView(MakeSwipeUpConfirm(title: "Approve all \(count) posts?", detail: "Each post is approved as it is. Nothing is posted.", confirmLabel: "Swipe up to approve all") {
-                say { await live.approveAll() }
+            // Paired, Approvals opens .approveBatch with the ids it showed. This one is never opened paired.
+            return held("Open Approvals to approve what is waiting.")
+        case .approveBatch(let ids):
+            if hold { return held(holdText) }
+            // These ids were taken when the sheet opened: this count is what is sent, and nothing else.
+            return AnyView(MakeSwipeUpConfirm(title: "Approve all \(ids.count) posts?",
+                                              detail: "Exactly these \(ids.count) posts are approved, each as it is. Nothing is posted by approving.",
+                                              confirmLabel: "Swipe up to approve all") {
+                say { await live.approveAll(ids) }
             })
         case .runCycle:
-            return AnyView(MakeStudioCycleSheet())
+            return held(MakeStudioWords.runCycle)
+        case .resumeTeam:
+            if hold { return held(holdText) }
+            return AnyView(MakeConfirmSheet(title: "Resume the team?", detail: "The Producer and its bots start working again on your desktop.", button: "Resume team") {
+                say { await live.setTeamPause(false) }
+            })
+        case .newBrief, .editPack, .duplicatePack, .importPack, .newCharacter, .characterVersion:
+            // The libraries are not on live data yet: their sheets would change only the phone's copy.
+            if !MakeStudioLive.librariesLive { return held(MakeStudioWords.libraries) }
+            return nil
         case .resolve(let id):
+            if hold { return held(holdText) }
             let channel = studio.channel(id)
             return AnyView(MakeConfirmSheet(title: "Resume \(channel?.handle ?? "this channel")?", detail: channel?.warning ?? "It starts making posts again.", button: "Resume") {
                 say { await live.resumeChannel(id) }
@@ -219,10 +241,11 @@ struct StudioSheetView: View {
             return AnyView(MakeConfirmSheet(title: "Reject \(decision?.title ?? "this decision")?", detail: "Nothing changes. The Producer is told it was turned down.", button: "Reject", danger: true) {
                 say { await live.decide(id, confirm: false) }
             })
-        case .planApprove(let id):
+        case .planApprove(let id, let version):
+            if hold { return held(holdText) }
             let plan = studio.plans.first { $0.id == id }
-            return AnyView(MakeConfirmSheet(title: "Approve the plan for \(plan?.title ?? "this video")?", detail: "Your desktop approves the plan exactly as it reads now, and renders the long video, which takes many minutes of its machine.", button: "Approve plan") {
-                say { await live.decidePlan(id, approve: true) }
+            return AnyView(MakeConfirmSheet(title: "Approve the plan for \(plan?.title ?? "this video")?", detail: "Your desktop approves the plan exactly as it read when you opened this, and renders the long video, which takes many minutes of its machine. If the plan changed since, nothing is approved.", button: "Approve plan") {
+                say { await live.decidePlan(id, version: version, approve: true) }
             })
         case .planReject(let id):
             return AnyView(NoteSheet(title: "Reject plan", detail: studio.plans.first { $0.id == id }?.title, label: "Note", limit: 500, button: "Reject plan") { text in
@@ -230,6 +253,7 @@ struct StudioSheetView: View {
                 return true
             })
         case .sheetApprove(let key):
+            if hold { return held(holdText) }
             let row = studio.liveSheetRows.first { $0.id == key }
             return AnyView(MakeConfirmSheet(title: "Approve \(row?.character.name ?? "this sheet"), version \(row?.version.number ?? 0)?", detail: "Videos may cast this version. Its sheet is not shown on this phone: approve it only if you have looked at it on your desktop.", button: "Approve sheet") {
                 say { await live.decideSheet(key, approve: true) }
@@ -240,6 +264,7 @@ struct StudioSheetView: View {
                 return true
             })
         case .packApprove(let key):
+            if hold { return held(holdText) }
             let row = studio.livePackRows.first { $0.id == key }
             return AnyView(MakeConfirmSheet(title: "Approve \(row?.pack.name ?? "this style pack"), version \(row?.version.number ?? 0)?", detail: "Channels and videos may use this version. Its sample is not shown on this phone: approve it only if you have watched it on your desktop.", button: "Approve pack") {
                 say { await live.decidePack(key, approve: true) }
