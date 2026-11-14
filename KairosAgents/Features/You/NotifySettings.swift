@@ -142,6 +142,14 @@ struct ReachMeScreen: View {
     private let bots = SampleData.allBots.filter { $0.members.isEmpty }
 
     var body: some View {
+        if YouVoiceLive.isPaired {
+            YouVoiceReachScreen()
+        } else {
+            sampleBody
+        }
+    }
+
+    private var sampleBody: some View {
         SettingsPage("Reach me", subtitle: "Where your bots reach you, in the order you choose. A bot tries the first way that is set up, then the next.") {
             SettingsGroup("Messages and calls from bots") {
                 YouToggleRow(title: store.pausedNote == nil ? "Bots may reach me" : "Paused: bots will not message or call you", detail: pauseDetail, symbol: "hand.raised", isOn: Binding(get: { store.pausedNote == nil }, set: { on in
@@ -388,6 +396,303 @@ private struct ReachMeBotRow: View {
             .background(Palette.ink.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
+        .accessibilityLabel("\(bot.name): \(name.lowercased()), \(title(kind, current))")
+    }
+}
+
+// MARK: - Paired
+
+/// Reach me while paired: pause, the two orders, quiet hours and each bot's choice, as the desktop has them. Only a way
+/// the desktop already has set up can be turned on; nothing is added from the phone.
+struct YouVoiceReachScreen: View {
+    private let live = YouVoiceLive.shared
+    private let chats = ChatStore.shared
+
+    var body: some View {
+        SettingsPage("Reach me", subtitle: "Where your bots reach you, in the order you choose. A bot tries the first way that is set up, then the next.") {
+            YouVoiceLoadLine(part: .reach, loading: "Reading Reach me from your desktop.")
+            YouVoiceNoticeLine(part: .reach)
+
+            if let view = live.reach {
+                SettingsGroup("Messages and calls from bots") {
+                    YouToggleRow(title: view.isPaused ? "Paused: bots will not message or call you" : "Bots may reach me",
+                                 detail: pauseDetail(view), symbol: "hand.raised",
+                                 isOn: Binding(get: { !view.isPaused }, set: { on in Task { await live.setPaused(!on) } }),
+                                 disabled: live.busy.contains("pause"))
+                }
+                .arrives(0)
+
+                SettingsGroup("Message me", footer: "For results and things to look at soon. The first way here that is set up and takes it wins.") {
+                    YouVoiceOrderList(kind: .message, order: view.message, channels: view.messageChannels)
+                }
+                .arrives(1)
+
+                SettingsGroup("Call me", footer: "For something urgent, or when you asked a bot to call. The first way here is also \"When a bot calls you\" on a Discord bot page. A daily limit or a busy line is reported to the bot, not worked around.") {
+                    YouVoiceOrderList(kind: .call, order: view.call, channels: view.callChannels)
+                }
+                .arrives(2)
+
+                SettingsGroup("Quiet hours", footer: "In your own time zone. Messages wait until quiet hours end; calls are not made.") {
+                    YouToggleRow(title: "Quiet hours", detail: view.quietNow ? "It is quiet hours now." : nil, symbol: "moon",
+                                 isOn: Binding(get: { view.quietEnabled }, set: { on in Task { await live.setQuiet(enabled: on) } }),
+                                 disabled: live.busy.contains("quiet"))
+                    YouVoiceTimeRow(title: "From", text: view.quietStart) { text in Task { await live.setQuiet(start: text) } }
+                    YouVoiceTimeRow(title: "Until", text: view.quietEnd) { text in Task { await live.setQuiet(end: text) } }
+                }
+                .arrives(3)
+
+                SettingsGroup("Each bot", footer: "A bot can use your order, only one way, or never reach out.") {
+                    let bots = chats.isSample ? [] : chats.bots.filter { $0.members.isEmpty }
+                    if bots.isEmpty {
+                        EmptyRow(text: "Your bots show here once your desktop has sent them.")
+                    }
+                    ForEach(bots) { bot in
+                        YouVoiceBotRow(bot: bot, view: view)
+                    }
+                }
+                .arrives(4)
+
+                SettingsGroup("What reaches you, honestly") {
+                    Text("Only a real phone call (Phone line) rings like a call on a locked iPhone. A Kairos ring on a phone is a notification, a plain banner, not a call screen. Telegram, WhatsApp, Discord, iMessage, Signal and texts arrive as those apps' own notifications. Nothing works when your desktop is off or asleep: every message and call starts there. A way that is not set up is set up in Kairos on your desktop.")
+                        .font(KFont.ui(14.5, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.inkDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                    YouNavRow(title: "Phone line", symbol: "phone", to: .phone)
+                }
+                .arrives(5)
+
+                SettingsGroup("Recent") {
+                    if view.log.isEmpty {
+                        EmptyRow(text: "Nothing sent yet.")
+                    } else {
+                        ForEach(view.log) { entry in
+                            HStack(spacing: 8) {
+                                RowLabel(title: entry.title, detail: entry.detail.isEmpty ? nil : entry.detail,
+                                         symbol: entry.delivered ? "checkmark" : "xmark",
+                                         tint: entry.delivered ? Palette.success : Palette.danger)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .frame(minHeight: 52)
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                }
+                .arrives(6)
+            }
+        }
+        .animation(Motion.snappy, value: live.reach)
+        .task(id: YouVoiceLive.connectionKey) { await live.read(.reach) }
+    }
+
+    private func pauseDetail(_ view: YouVoiceReachView) -> String {
+        guard view.isPaused else {
+            return "Reply STOP on any channel (Telegram, WhatsApp, Discord, iMessage, Signal or a text) to pause every bot on every channel at once. START turns it back on."
+        }
+        var words = "Paused"
+        if let at = view.pausedAt { words += " " + at.formatted(date: .abbreviated, time: .shortened) }
+        words += view.pausedBy == "settings" ? " from this switch." : " by a STOP reply."
+        return words + " Reply START anywhere, or turn this on."
+    }
+}
+
+/// The order editor: chosen ways first, numbered, with Up, Down and a switch; then the unused ones.
+private struct YouVoiceOrderList: View {
+    let kind: ReachMeKind
+    let order: [String]
+    let channels: [YouVoiceChannelRow]
+    private let live = YouVoiceLive.shared
+
+    var body: some View {
+        let rest = channels.map(\.id).filter { !order.contains($0) }
+        let busy = live.busy.contains(kind == .message ? "message" : "call")
+        ForEach(order + rest, id: \.self) { id in
+            if let channel = channels.first(where: { $0.id == id }) {
+                row(channel, at: order.firstIndex(of: id), count: order.count, busy: busy)
+            } else if let at = order.firstIndex(of: id) {
+                // A way the desktop lists but this phone does not know: it can still be moved or turned off.
+                row(YouVoiceChannelRow(id: id, label: id.capitalized, ready: false), at: at, count: order.count, busy: busy)
+            }
+        }
+    }
+
+    private func row(_ channel: YouVoiceChannelRow, at: Int?, count: Int, busy: Bool) -> some View {
+        let canTurnOn = channel.ready
+        return HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(at.map { "\($0 + 1). \(channel.label)" } ?? channel.label)
+                        .font(KFont.ui(16))
+                        .foregroundStyle(at == nil ? Palette.inkDim : Palette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    StatusPill(text: channel.ready ? "Ready" : "Not set up", tone: channel.ready ? .ok : .muted)
+                }
+                if !channel.ready && at == nil {
+                    Text("Set this up in Kairos on your desktop first.")
+                        .font(KFont.ui(13.5, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let at {
+                moveButton(channel, symbol: "arrow.up", step: -1, enabled: at > 0 && !busy)
+                moveButton(channel, symbol: "arrow.down", step: 1, enabled: at < count - 1 && !busy)
+            }
+            Toggle("Use \(channel.label)", isOn: Binding(get: { at != nil }, set: { used in
+                Haptics.select()
+                Task { await live.setWay(kind, channel.id, used: used) }
+            }))
+            .labelsHidden()
+            .tint(Palette.gold)
+            .disabled(busy || (at == nil && !canTurnOn))
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 12)
+        .padding(.vertical, 10)
+        .frame(minHeight: 60)
+    }
+
+    private func moveButton(_ channel: YouVoiceChannelRow, symbol: String, step: Int, enabled: Bool) -> some View {
+        Button {
+            Haptics.tap()
+            Task { await live.moveWay(kind, channel.id, by: step) }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Palette.ink)
+                .frame(width: 34, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.25)
+        .accessibilityLabel("Move \(channel.label) \(step < 0 ? "up" : "down")")
+    }
+}
+
+/// A time of day as the desktop keeps it ("07:30"); a change is sent when it is picked.
+private struct YouVoiceTimeRow: View {
+    let title: String
+    let text: String
+    let pick: (String) -> Void
+    private let live = YouVoiceLive.shared
+
+    var body: some View {
+        HStack {
+            Text(title).font(KFont.ui(16)).foregroundStyle(Palette.ink)
+            Spacer()
+            DatePicker(title, selection: Binding(get: { date }, set: { value in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: value)
+                let next = YouVoiceWire.clockText(hour: parts.hour ?? 0, minute: parts.minute ?? 0)
+                if next != text { pick(next) }
+            }), displayedComponents: .hourAndMinute)
+                .labelsHidden()
+                .tint(Palette.gold)
+                .disabled(live.busy.contains("quiet"))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(minHeight: 52)
+    }
+
+    private var date: Date {
+        let clock = YouVoiceWire.clock(text) ?? (hour: 22, minute: 0)
+        return Calendar.current.date(bySettingHour: clock.hour, minute: clock.minute, second: 0, of: Date()) ?? Date()
+    }
+}
+
+/// One bot: how it may message you and how it may call you.
+private struct YouVoiceBotRow: View {
+    let bot: Bot
+    let view: YouVoiceReachView
+    private let live = YouVoiceLive.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                BotFace(bot: bot, size: 30)
+                Text(bot.name).font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                choice(.message)
+                choice(.call)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func channels(_ kind: ReachMeKind) -> [YouVoiceChannelRow] {
+        kind == .message ? view.messageChannels : view.callChannels
+    }
+
+    /// "default" (your order), "never", one way's id, or "custom" (a longer list set on the desktop).
+    private func value(_ kind: ReachMeKind) -> String {
+        guard let list = kind == .message ? view.bots[bot.id]?.message : view.bots[bot.id]?.call else { return "default" }
+        if list.isEmpty { return "never" }
+        return list.count == 1 ? list[0] : "custom"
+    }
+
+    private func title(_ kind: ReachMeKind, _ value: String) -> String {
+        switch value {
+        case "default": return "Your order"
+        case "never": return "Never"
+        case "custom": return "A custom order"
+        default: return "Only \(channels(kind).first { $0.id == value }?.label ?? value)"
+        }
+    }
+
+    private func set(_ kind: ReachMeKind, _ value: String) {
+        Haptics.select()
+        let choice: [String]? = switch value {
+        case "default": nil
+        case "never": []
+        case "custom": nil
+        default: [value]
+        }
+        guard value != "custom" else { return }
+        Task { await live.setBot(bot.id, kind, choice) }
+    }
+
+    private func choice(_ kind: ReachMeKind) -> some View {
+        let current = value(kind)
+        var options = ["default", "never"] + channels(kind).filter { $0.ready || $0.id == current }.map(\.id)
+        if current == "custom" { options.append("custom") }
+        if !options.contains(current) { options.append(current) }
+        let name = kind == .message ? "Messages" : "Calls"
+        return Menu {
+            Picker(name, selection: Binding(get: { current }, set: { set(kind, $0) })) {
+                ForEach(options, id: \.self) { option in
+                    Text(title(kind, option)).tag(option)
+                }
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(KFont.ui(12, .medium, relativeTo: .caption))
+                    .foregroundStyle(Palette.inkFaint)
+                HStack(spacing: 4) {
+                    Text(title(kind, current))
+                        .font(KFont.ui(14, .medium, relativeTo: .footnote))
+                        .foregroundStyle(current == "never" ? Palette.danger : Palette.goldText)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.inkFaint)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minHeight: 44)
+            .background(Palette.ink.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .disabled(live.busy.contains("bots"))
         .accessibilityLabel("\(bot.name): \(name.lowercased()), \(title(kind, current))")
     }
 }
