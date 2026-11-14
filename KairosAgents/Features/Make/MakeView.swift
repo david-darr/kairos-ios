@@ -443,7 +443,7 @@ struct MakeView: View {
     private func makeAnother(_ job: MakeHomeJob) {
         guard let ask = job.ask, let kind = job.kind, live.send == nil else { return }
         Haptics.thud()
-        Task { finishLive(await live.start(text: ask, kind: kind), text: ask) }
+        Task { finishLive(await live.start(text: ask, kind: kind, fresh: true), text: ask) }
     }
 
     private func finishLive(_ outcome: MakeHomeOutcome, text: String) {
@@ -457,9 +457,9 @@ struct MakeView: View {
         case .some(.design(let id)):
             Haptics.tap()
             cover = .design(id)
-        case .some(.video(let id)):
-            Haptics.tap()
-            cover = .editor(id)
+        case .some(.video):
+            // The video editor does not read the desktop yet. Until it does, a paired phone never opens the sample one.
+            chrome.say("Open this video in Kairos on your desktop")
         case .some(.file):
             Haptics.tap()
             liveFile = live.fileViewing(item)

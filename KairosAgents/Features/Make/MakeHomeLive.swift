@@ -287,7 +287,10 @@ final class MakeHomeLive {
                 do {
                     videos = try await client().makeHomeVideos()
                 } catch {
-                    if error is CancellationError || Task.isCancelled { return false }
+                    if error is CancellationError || Task.isCancelled {
+                        if mine == readSerial, load == .loading { load = .idle }
+                        return false
+                    }
                     videoError = error
                 }
                 guard stillLive(key), mine == readSerial else { return false }
@@ -297,7 +300,10 @@ final class MakeHomeLive {
                 load = .loaded
                 return true
             } catch {
-                if error is CancellationError || Task.isCancelled { return false }
+                if error is CancellationError || Task.isCancelled {
+                    if mine == readSerial, load == .loading { load = .idle }
+                    return false
+                }
                 Connection.shared.note(error)
                 guard stillLive(key), mine == readSerial else { return false }
                 load = .failed("What you made could not be read from your desktop. " + error.plainWords)
@@ -416,12 +422,12 @@ final class MakeHomeLive {
 
     /// One Make tap: one send id, kept for a retry of this same tap. The text stays in the box until the
     /// desktop says it started.
-    func start(text: String, kind: MakeHomeKind) async -> MakeHomeOutcome {
+    func start(text: String, kind: MakeHomeKind, fresh: Bool = false) async -> MakeHomeOutcome {
         guard isLive, send == nil, !notYours else { return .busy }
         let key = account
         guard stillLive(key) else { return .refused(Self.desktopChanged) }
         let id: String
-        if let refused = refusedSend, refused.text == text, refused.kind == kind {
+        if !fresh, let refused = refusedSend, refused.text == text, refused.kind == kind {
             id = refused.sendID
         } else {
             id = MakeHomeWire.newSendID()
@@ -478,11 +484,19 @@ final class MakeHomeLive {
                 let api = error as? APIError
                 switch api {
                 case .some(.server(status: 404, let detail)) where detail == "Task or suggestion not found":
-                    notYours = true
-                    line = Self.notYoursLine
+                    // The desktop says this for a member account, and also when a start broke part way after
+                    // it saved the task. Keep the id, and only an account with no task of its own gets the member line.
+                    refusedSend = sent
+                    if tracked.isEmpty && making.isEmpty {
+                        notYours = true
+                        line = Self.notYoursLine
+                    } else {
+                        line = "Your desktop could not start this. What it is making shows below."
+                    }
                 case .some(.server(status: 404, _)):
                     line = "Your desktop cannot start this yet. It may need a newer Kairos."
                 case .some(.server(status: 409, _)):
+                    refusedSend = sent
                     line = "Your desktop already has a different request under this send, so nothing new was started. What it is making shows below."
                 default:
                     refusedSend = sent
