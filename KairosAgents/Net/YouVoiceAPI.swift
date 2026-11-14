@@ -710,7 +710,7 @@ nonisolated enum YouVoiceSamples {
               {"id": "iris", "name": "Iris", "description": "Warm female voice."}, {"id": "ryan", "name": "Ryan"}, {"name": "No id"}],
             "default_voice": "iris", "running": false, "sources": []},
      "kairos": {"kokoro_ready": true, "kokoro_reason": ""},
-     "gpt_live": {"available": true, "endpoint_id": "112233445566", "price_per_minute": 0.05, "key_page": "https://example.com/keys", "verified": false},
+     "gpt_live": {"available": true, "endpoint_id": "live:112233445566", "price_per_minute": 0.05, "key_page": "https://example.com/keys", "verified": false},
      "elevenlabs": {"has_key": false, "key_page": "https://example.com/keys", "models": ["m1"], "price_per_1k": 0.2, "verified": false},
      "voicebox": {"url": "http://127.0.0.1:17493", "repo": "https://example.com/repo", "verified": false},
      "compatible": {"url": "", "voices": []}}
@@ -804,7 +804,7 @@ nonisolated enum YouVoiceSamples {
             let read = try KJSON.decode(YouVoiceEngineStateDTO.self, from: YouVoiceSamples.engines)
             let state = YouVoiceLive.enginesState(from: read)
             guard state.choice == "kairos", state.quality == "standard", state.hdVoice == "iris",
-                  state.kokoroReady == true, state.gptAvailable, state.gptPrice == 0.05, state.gptEndpointID == "112233445566", !state.elevenHasKey,
+                  state.kokoroReady == true, state.gptAvailable, state.gptPrice == 0.05, state.gptEndpointID == "live:112233445566", !state.elevenHasKey,
                   state.hdInstalled, state.hdReady, state.hdVoices.map(\.id) == ["iris", "ryan"],
                   state.serverHost == nil else { throw SampleMismatch("engines") }
             var server = read

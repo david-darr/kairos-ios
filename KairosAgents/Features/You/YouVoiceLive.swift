@@ -453,7 +453,10 @@ final class YouVoiceLive {
 
     /// The connection GPT-Live runs on, by name, when the models are read (and the person it is shared by).
     func gptLiveConnection() -> (name: String, sharedBy: String?)? {
-        guard let id = engines?.gptEndpointID, let found = models.first(where: { $0.id == id }) else { return nil }
+        // The desktop names it "live:" plus the connection's id.
+        guard let raw = engines?.gptEndpointID else { return nil }
+        let id = raw.hasPrefix("live:") ? String(raw.dropFirst(5)) : raw
+        guard let found = models.first(where: { $0.id == id }) else { return nil }
         return (found.name, found.sharedBy)
     }
 
@@ -755,7 +758,8 @@ final class YouVoiceLive {
         pronRows.compactMap { row in
             let word = row.word.trimmingCharacters(in: .whitespaces)
             let say = row.say.trimmingCharacters(in: .whitespaces)
-            if word.isEmpty && say.isEmpty && row.phonemes.isEmpty { return nil }
+            // A row with no word and no respelling is a removed row, whatever sound was kept for it.
+            if word.isEmpty && say.isEmpty { return nil }
             return (id: row.id, item: YouVoicePronItem(word: word, say: say, phonemes: row.phonemes))
         }
     }
@@ -772,7 +776,13 @@ final class YouVoiceLive {
     private func showPronunciations(_ fresh: [YouVoicePronItem]) {
         if pronDirty {
             // The person's edits stay. If the desktop has moved on from the list the form was filled from, say so.
-            pronChanged = fresh != pronFilled
+            // A desktop list that equals the form is the person's own save landing late: it becomes the filled list.
+            if Self.sameWords(fresh, cleanedPron()) {
+                pronFilled = fresh
+                pronChanged = false
+            } else {
+                pronChanged = fresh != pronFilled
+            }
         } else {
             pronFilled = fresh
             pronRows = fresh.map(Self.pronRow)
