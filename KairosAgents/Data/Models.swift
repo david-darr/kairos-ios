@@ -152,8 +152,8 @@ nonisolated enum JumpArea: String, CaseIterable, Identifiable, Hashable, Sendabl
         case .studio: "The Content dashboard and your channels."
         case .designs: "Everything made on the design canvas."
         case .forge: "Coding sessions on your desktop."
-        case .computer: "See and steer your desktop screen."
-        case .browse: "Your desktop browser, from here."
+        case .computer: "Watch a computer Kairos is using."
+        case .browse: "The browser in Kairos on your desktop."
         case .toolStore: "Skills, tools, tabs and add-ons."
         case .addTab: "Add a tab from the Tool Store."
         }

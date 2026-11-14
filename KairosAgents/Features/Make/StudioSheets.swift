@@ -218,9 +218,11 @@ struct StudioSheetView: View {
                 say { await live.setTeamPause(false) }
             })
         case .newBrief, .editPack, .duplicatePack, .importPack, .newCharacter, .characterVersion:
-            // The libraries are not on live data yet: their sheets would change only the phone's copy.
-            if !MakeStudioLive.librariesLive { return held(MakeStudioWords.libraries) }
-            return nil
+            // Paired, these sample sheets are never drawn: they would change only the phone's copy. The live
+            // libraries open their own sheets from their own screens.
+            return held(MakeStudioLive.librariesLive
+                ? "Open this from the library's own screen here, or do it in Kairos on your desktop."
+                : MakeStudioWords.libraries)
         case .resolve(let id):
             if hold { return held(holdText) }
             let channel = studio.channel(id)

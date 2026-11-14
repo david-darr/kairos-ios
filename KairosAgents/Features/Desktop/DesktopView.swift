@@ -33,10 +33,10 @@ struct DesktopView: View {
                         areaTile("hammer", "Forge", forgeDetail, id: "forge") { open(.forgeHome) }
                         // Paired, a tile whose screen still shows made-up data stays closed (constants in DeskForgeLive).
                         if !paired || DeskForgeLive.computerLive {
-                            areaTile("cursorarrow.rays", "Computer", "See and steer", id: "computer") { router.push(.area(.computer), on: .desktop) }
+                            areaTile("cursorarrow.rays", "Computer", paired ? "Watch and stop" : "See and steer", id: "computer") { router.push(.area(.computer), on: .desktop) }
                         }
                         if !paired || DeskForgeLive.browseLive {
-                            areaTile("globe", "Browse", "Your PC's browser", id: "browse") { router.push(.area(.browse), on: .desktop) }
+                            areaTile("globe", "Browse", paired ? "On your desktop" : "Your PC's browser", id: "browse") { router.push(.area(.browse), on: .desktop) }
                         }
                         if !paired || DeskForgeLive.localModelsLive {
                             areaTile("cpu", "Local models", "Run on this PC", id: "models") { open(.localModels) }
