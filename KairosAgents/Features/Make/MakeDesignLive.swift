@@ -2517,7 +2517,7 @@ struct MakeDesignTextLive: View {
             VStack(spacing: 16) {
                 MakeSheetTitle(title: "Edit text", detail: target.label)
                 if filled != nil {
-                    MakeField(label: "Text", text: $text, limit: 4000, lines: 2...8)
+                    MakeField(label: "Text", text: $text, limit: 20000, lines: 2...8)
                         .disabled(sending)
                 } else if unreadable {
                     MakeDesignLine(text: "This text could not be read from your desktop.", action: "Try again") { Task { await fill() } }
@@ -2638,8 +2638,9 @@ struct MakeDesignTokensLive: View {
         filled = Dictionary(doc.tokens.map { ($0.id, $0.value) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// Back at the value the form was filled from (a colour in other letter case is the same colour): no edit.
     private func edit(_ name: String, _ value: String) {
-        if value == filled?[name] { edits[name] = nil } else { edits[name] = value }
+        if value.lowercased() == filled?[name]?.lowercased() { edits[name] = nil } else { edits[name] = value }
     }
 
     private func row(_ token: MakeDesignToken, changedHere: Bool) -> some View {
