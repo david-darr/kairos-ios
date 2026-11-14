@@ -651,6 +651,9 @@ nonisolated struct MakeVideoAskPending {
     var since: Date
     var before: Set<String>
     var request: String
+    /// How many new runs with this text must show before the Ask is settled: 2 after "Ask again anyway" with the
+    /// same words, so the first request's late reply is not taken for the second's.
+    var need = 1
 }
 
 /// The unconfirmed Ask, kept in memory next to the drafts so closing and reopening the video never turns Ask back
@@ -742,6 +745,7 @@ final class MakeVideoLive {
     /// The run ids that existed before the unconfirmed Ask was sent, and its stripped text.
     @ObservationIgnored var askBefore: Set<String> = []
     @ObservationIgnored var askRequest = ""
+    @ObservationIgnored var askNeed = 1
     @ObservationIgnored var askWatchTask: Task<Void, Never>?
     @ObservationIgnored var restoreFrom: Int?
     /// The person chose to leave without saving: nothing is kept for next time.
@@ -769,6 +773,7 @@ final class MakeVideoLive {
         askSince = nil
         askBefore = []
         askRequest = ""
+        askNeed = 1
         MakeVideoAskStore.clear(account: account, video: videoID)
     }
 
@@ -848,6 +853,8 @@ extension EditorModel {
         let first = live.doc == nil
         await loadLive()
         guard stillLive(live), live.phase == .ready else { return }
+        // The replies are read again whenever an earlier read of them failed: Ask stays off until they are known.
+        if !first, live.review == nil { await refreshReview() }
         if first {
             await refreshReview()
             await adoptRunningJob()
@@ -879,6 +886,7 @@ extension EditorModel {
             next.askSince = pending.since
             next.askBefore = pending.before
             next.askRequest = pending.request
+            next.askNeed = pending.need
             next.askMayRepeat = Date().timeIntervalSince(pending.since) >= Self.askRepeatAfter
             next.askLine = "An earlier request to Kairos was not confirmed by your desktop. Ask stays off until its reply shows up."
         }
@@ -1235,6 +1243,9 @@ extension EditorModel {
         } catch {
             if error is CancellationError || Task.isCancelled { return }
             Connection.shared.note(error)
+            if stillLive(live), live.review == nil, live.askLine == nil {
+                live.askLine = "Kairos's earlier replies could not be read from your desktop, so Ask is off for now. Leave this video and open it again to try once more."
+            }
         }
     }
 
@@ -1519,7 +1530,8 @@ extension EditorModel {
 
     private var askReady: Bool {
         guard let live, live.phase == .ready else { return false }
-        return !isDirty && !live.askBusy && !live.askChecking && live.unconfirmed == nil && !live.saving
+        // The earlier replies must have been read: an Ask is told apart from them by what was there before it.
+        return !isDirty && !live.askBusy && !live.askChecking && live.unconfirmed == nil && !live.saving && live.review != nil
     }
 
     /// After 15 minutes with no new run on the desktop, the person may ask again, only through a confirm.
@@ -1548,18 +1560,25 @@ extension EditorModel {
         live.askBusy = true
         live.askLine = nil
         live.writeSerial += 1
-        let before = live.knownRuns
+        // After "Ask again anyway" the first request may still reply: keep what was there before IT, and with the
+        // same words wait for two new replies.
+        let before = again ? live.askBefore : live.knownRuns
+        let need = again && request == live.askRequest ? live.askNeed + 1 : 1
         let sentAt = Date()
         if again {
             live.clearAsk()
             live.askWatchTask?.cancel()
         }
+        // Kept from before the request leaves, so unpairing or closing while it is on its way never turns Ask back on.
+        let pending = MakeVideoAskPending(since: sentAt, before: before, request: request, need: need)
+        MakeVideoAskStore.put(pending, account: live.account, video: projectID)
         defer {
             live.writeSerial += 1
             live.askBusy = false
         }
         do {
             let run = try await liveClient().makeVideoAsk(projectID, request: request, selection: selected, comments: openComments)
+            MakeVideoAskStore.clear(account: live.account, video: projectID)
             guard stillLive(live) else { return }
             live.latestRun = run
             live.knownRuns.insert(run.id)
@@ -1568,6 +1587,7 @@ extension EditorModel {
             Connection.shared.note(error)
             guard stillLive(live) else { return }
             if Self.wasRefused(error) {
+                MakeVideoAskStore.clear(account: live.account, video: projectID)
                 live.askLine = "Kairos could not do that. " + Self.serverText(error)
                 return
             }
@@ -1576,7 +1596,7 @@ extension EditorModel {
             live.askSince = sentAt
             live.askBefore = before
             live.askRequest = request
-            MakeVideoAskStore.put(MakeVideoAskPending(since: sentAt, before: before, request: request), account: live.account, video: projectID)
+            live.askNeed = need
             await settleAsk(live: live)
             watchAsk()
         }
@@ -1597,10 +1617,11 @@ extension EditorModel {
 
     /// The run that is this Ask's: not there before it was sent, and with the same stripped request text.
     private static func askRun(in runs: [MakeVideoRunDTO], live: MakeVideoLive) -> MakeVideoRunDTO? {
-        runs.first { run in
+        let mine = runs.filter { run in
             !live.askBefore.contains(run.id)
                 && run.request.trimmingCharacters(in: .whitespacesAndNewlines) == live.askRequest
         }
+        return mine.count >= live.askNeed ? mine.first : nil
     }
 
     /// The answer never arrived: read the runs for one that was not there before.
