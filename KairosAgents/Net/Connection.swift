@@ -319,6 +319,8 @@ final class Connection {
     }
 
     private func tokenRefused() {
+        // An answer that arrives after this phone was unpaired says nothing about the sample state it is in now.
+        guard state != .sample else { return }
         stream.stop()
         client = nil
         Keychain.delete(account: Connection.tokenAccount)
