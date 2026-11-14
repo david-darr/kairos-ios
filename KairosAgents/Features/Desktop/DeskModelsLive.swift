@@ -759,10 +759,12 @@ final class DeskModelsLive {
             holds[hold] = nil
             return
         }
-        guard await checkRead(account, { await self.refreshInstalled(engine, account, via: "send:") }) else {
+        // The read key carries the model, so two models checked at the same moment cannot overtake each other.
+        guard await checkRead(account, { await self.refreshInstalled(engine, account, via: "send:" + name + ":") }) else {
             holds[hold] = nil
-            say(engine == .ollama && !ollamaState.reachable
-                ? "Ollama is not running on your desktop, so nothing was downloaded."
+            // The phone cannot tell a stopped Ollama from a desktop it could not reach, so it claims neither.
+            say(engine == .ollama
+                ? "Your desktop's list of Ollama models could not be read, so nothing was downloaded. Check that Ollama is running there, then try again."
                 : "Your desktop could not be read, so nothing was downloaded. Try again.")
             return
         }
@@ -963,7 +965,7 @@ final class DeskModelsLive {
     private func sendRegister(_ engine: ModelEngine, _ name: String, _ account: String, _ hold: String) async {
         let note = Self.noteKey(engine, name)
         // The list on the screen can be old, and register makes a new connection every time: read it again first.
-        guard await checkRead(account, { await self.readConnections(account, via: "send:") }) else {
+        guard await checkRead(account, { await self.readConnections(account, via: "send:" + name + ":") }) else {
             holds[hold] = nil
             if stillLive(account) { noteMap[note] = "Your models could not be read. Try again." }
             return
