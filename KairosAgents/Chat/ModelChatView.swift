@@ -109,6 +109,8 @@ private struct ModelChatScreen: View {
                 .environment(router)
                 .environment(chrome)
         }
+        // A design opened from one desktop or account closes when the phone unpairs or the account changes.
+        .onChange(of: ChatThumbAccount.key) { openDesign = nil }
         .task { await chat.load() }
         .readsWhileOpen(chat)
         .onAppear {

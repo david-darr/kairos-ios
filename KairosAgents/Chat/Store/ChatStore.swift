@@ -991,7 +991,11 @@ final class BotChatState {
             result.append(BotEntry(id: "live-mine-\(run.turnID)", kind: .mine, text: run.prompt, time: run.startedAt))
         }
         let text = TranscriptParsing.body(run.text).text
-        if !text.isEmpty, result.last(where: { $0.kind == .theirs })?.text != text {
+        // A saved reply has its design links taken out (they are drawn as cards). So once the turn has ended, the
+        // live copy is compared in that same form, or a reply that links a design would show twice. While the
+        // reply is still being written nothing extra is parsed.
+        let savedForm = run.isRunning ? text : TranscriptParsing.body(run.text, takeDesigns: true).text
+        if !text.isEmpty, result.last(where: { $0.kind == .theirs })?.text != savedForm {
             result.append(BotEntry(id: "live-\(run.turnID)", kind: .theirs, text: text, time: run.startedAt))
         }
         return result
