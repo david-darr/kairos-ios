@@ -566,6 +566,7 @@ nonisolated enum YouAccessSamples {
                 ("export API_KEY=madeup && run", "export API_KEY=•••• && run"),
                 ("login password=\"two words\" now", "login password=•••• now"),
                 ("use secret=madeup", "use secret=••••"),
+                ("export TOKEN='abc", "export TOKEN=••••"),
                 ("send abcdefghij0123456789ABCDEFGHIJ ok", "send •••• ok"),
                 ("aaaaaaaaaabbbbbbbbbbcccccccccc", "aaaaaaaaaabbbbbbbbbbcccccccccc"),
                 ("Edit(projects/bike-shop-2/Sources/Checkout.swift)", "Edit(projects/bike-shop-2/Sources/Checkout.swift)"),

@@ -87,9 +87,9 @@ nonisolated func youAccessMasked(_ text: String) -> String {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return }
         out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
     }
-    replace(#"([a-z][a-z0-9+.\-]*://)[^\s/@?#]+@"#, "$1")
+    replace(#"(?<![a-z0-9+.\-])([a-z][a-z0-9+.\-]*://)[^\s/@?#]+@"#, "$1")
     replace(#"(bearer\s+)[^\s'"]+"#, "$1" + dots)
-    replace(#"((?:token|key|secret|password)\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s&#'"]+)"#, "$1" + dots)
+    replace(#"((?:token|key|secret|password)\s*=\s*)(?:"[^"]*"?|'[^']*'?|[^\s&#'"]+)"#, "$1" + dots)
     replace(#"([?&][^\s=&#?]+=)[^\s&#]+"#, "$1" + dots)
     guard let long = try? NSRegularExpression(pattern: #"[A-Za-z0-9\-_+=]{24,}"#) else { return out }
     let whole = out as NSString
