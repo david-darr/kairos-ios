@@ -15,40 +15,55 @@ struct MakeView: View {
     @State private var cover: MakeRoute?
     @State private var viewer: MakeViewerStart?
     @FocusState private var typing: Bool
+    /// Paired: the kind the describe box asks the desktop for, and a real made file open in the viewer.
+    @State private var liveKind: MakeHomeKind = .design
+    @State private var liveFile: MakeHomeFileViewing?
+    private let live = MakeHomeLive.shared
+
+    /// Paired with a desktop: only the desktop's real work and items show, never a sample.
+    private var paired: Bool { MakeHomeLive.paired }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                describeBox.arrives(0)
+                if paired {
+                    liveSections
+                } else {
+                    describeBox.arrives(0)
 
-                if !store.jobs.isEmpty {
-                    VStack(spacing: 10) {
-                        ForEach(store.jobs) { job in
-                            MakeJobCard(job: job, item: store.item(job.resultID), store: store, open: { open(job) }, again: { again(job) })
-                                .transition(.scale(scale: 0.94).combined(with: .opacity))
+                    if !store.jobs.isEmpty {
+                        VStack(spacing: 10) {
+                            ForEach(store.jobs) { job in
+                                MakeJobCard(job: job, item: store.item(job.resultID), store: store, open: { open(job) }, again: { again(job) })
+                                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+                            }
                         }
                     }
+
+                    studioCard.arrives(1)
+
+                    shelf(.video, index: 2)
+                    shelf(.design, index: 3)
+                    shelf(.document, index: 4)
+                    shelf(.deck, index: 5)
+                    shelf(.sheet, index: 6)
+                    shelf(.image, index: 7)
                 }
-
-                studioCard.arrives(1)
-
-                shelf(.video, index: 2)
-                shelf(.design, index: 3)
-                shelf(.document, index: 4)
-                shelf(.deck, index: 5)
-                shelf(.sheet, index: 6)
-                shelf(.image, index: 7)
             }
             .padding(.horizontal, 16)
             .padding(.top, 4)
             .animation(Motion.bouncy, value: store.jobs)
+            .animation(Motion.bouncy, value: live.cards)
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .shrinksBar(chrome)
         .safeAreaInset(edge: .top, spacing: 0) {
             TabHeader(title: "Make") {
-                GlassIconButton(symbol: "film.stack", label: "Studio") { cover = .studio }
+                // Studio does not read the desktop yet. Until it does, a paired phone never opens the sample one.
+                if !live.isLive {
+                    GlassIconButton(symbol: "film.stack", label: "Studio") { cover = .studio }
+                }
                 GlassIconButton(symbol: "magnifyingglass", label: "Search") { router.sheet = .search }
             }
         }
@@ -61,6 +76,21 @@ struct MakeView: View {
         .sheet(item: $viewer) { start in
             DocumentViewer(documents: start.items.map(\.document), index: start.index)
                 .kSheet()
+        }
+        .sheet(item: $liveFile) { start in
+            DocsLiveViewer(files: start.files, index: start.index)
+                .kSheet()
+        }
+        .task(id: MakeHomeLive.connectionKey) {
+            live.followConnection()
+            guard live.isLive else { return }
+            await live.loadLive()
+            // While something is being made, read the desktop again every few seconds, as its own page does.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled else { return }
+                if live.needsPolling { await live.poll() }
+            }
         }
         .onAppear {
             switch debugState {
@@ -267,6 +297,206 @@ struct MakeView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle())
+        }
+    }
+
+    // MARK: Paired
+
+    @ViewBuilder
+    private var liveSections: some View {
+        if live.showing {
+            liveDescribe.arrives(0)
+
+            if let send = live.send {
+                MakeHomeSendCard(send: send, retry: retrySend, leave: { live.leaveSend() })
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+            }
+            if let problem = live.sendProblem {
+                MakeHomeLine(text: problem)
+            }
+
+            if !live.cards.isEmpty {
+                VStack(spacing: 10) {
+                    ForEach(live.cards) { job in
+                        MakeHomeJobCard(job: job, result: live.result(for: job), busy: live.againBusy.contains(job.id),
+                                        problem: live.jobProblems[job.id], canMake: live.send == nil && !live.notYours,
+                                        open: { openLive($0) }, makeAnother: { makeAnother(job) },
+                                        again: { Task { await live.again(job.id) } }, hide: { live.hide(job.id) })
+                            .transition(.scale(scale: 0.94).combined(with: .opacity))
+                    }
+                }
+            }
+
+            if live.load == .loading && live.items.isEmpty {
+                MakeHomeLine(text: "Reading what you made from your desktop.")
+            }
+            if case .failed(let why) = live.load {
+                MakeHomeLine(text: why, action: "Try again") { Task { await live.loadLive() } }
+            }
+            if let problem = live.videosProblem {
+                MakeHomeLine(text: problem, action: "Try again") { Task { await live.loadLive() } }
+            }
+
+            liveStudioCard.arrives(1)
+
+            liveShelf(.video, index: 2)
+            liveShelf(.design, index: 3)
+            liveShelf(.deck, index: 4)
+            liveShelf(.document, index: 5)
+
+            if live.load == .loaded && live.items.isEmpty && live.cards.isEmpty {
+                MakeHomeLine(text: "Nothing made yet. What you make here, and what your assistant makes for you, shows up here.")
+            }
+            if live.skipped > 0 {
+                HintLine(text: live.skipped == 1 ? "1 item could not be read by this app." : "\(live.skipped) items could not be read by this app.")
+            }
+        } else {
+            MakeHomeLine(text: "Reading what you made from your desktop.")
+        }
+    }
+
+    private var liveText: String { prompt.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var liveTooLong: Bool { liveText.unicodeScalars.count > MakeHomeWire.textLimit }
+
+    private var canMakeLive: Bool { !liveText.isEmpty && !liveTooLong && live.send == nil && !live.notYours }
+
+    @ViewBuilder
+    private var liveDescribe: some View {
+        if live.notYours {
+            MakeHomeLine(text: MakeHomeLive.notYoursLine)
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                TextField(liveKind.prompt, text: $prompt, axis: .vertical)
+                    .font(KFont.ui(17))
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(2...6)
+                    .focused($typing)
+                    .disabled(live.send != nil)
+
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(MakeHomeKind.allCases) { item in
+                            Button {
+                                Haptics.select()
+                                withAnimation(Motion.snappy) { liveKind = item }
+                            } label: {
+                                Chip(text: item.title, symbol: item.symbol, filled: liveKind == item)
+                                    .frame(minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(PressStyle())
+                            .disabled(live.send != nil)
+                            .accessibilityAddTraits(liveKind == item ? .isSelected : [])
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+
+                if liveTooLong {
+                    HintLine(text: "One request can be up to 4,000 characters.")
+                }
+
+                HStack(spacing: 10) {
+                    Text("Made on your desktop")
+                        .font(KFont.ui(13.5, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    Button(action: makeLive) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "sparkles").font(.system(size: 14, weight: .semibold))
+                            Text(live.send == nil ? "Make" : "Sending").font(KFont.ui(16, .semibold))
+                        }
+                        .foregroundStyle(canMakeLive ? Palette.onGold : Palette.inkFaint)
+                        .padding(.horizontal, 18)
+                        .frame(minHeight: 44)
+                        .background(canMakeLive ? AnyShapeStyle(Palette.gold) : AnyShapeStyle(Palette.ink.opacity(0.1)), in: Capsule())
+                    }
+                    .buttonStyle(PressStyle())
+                    .disabled(!canMakeLive)
+                    .accessibilityLabel("Make this \(liveKind.title.lowercased()) on your desktop")
+                }
+            }
+            .padding(16)
+            .kGlass(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .animation(Motion.snappy, value: canMakeLive)
+        }
+    }
+
+    /// One tap, one send: the button is off until the desktop answers.
+    private func makeLive() {
+        let text = liveText
+        guard canMakeLive else { return }
+        Haptics.thud()
+        typing = false
+        let kind = liveKind
+        Task { finishLive(await live.start(text: text, kind: kind), text: text) }
+    }
+
+    /// The unconfirmed tap again, with its own send id.
+    private func retrySend() {
+        guard let text = live.send?.text else { return }
+        Task { finishLive(await live.retrySend(), text: text) }
+    }
+
+    /// A new request with the same words and kind: a new tap, so a new send id, as the desktop's own page sends it.
+    private func makeAnother(_ job: MakeHomeJob) {
+        guard let ask = job.ask, let kind = job.kind, live.send == nil else { return }
+        Haptics.thud()
+        Task { finishLive(await live.start(text: ask, kind: kind, fresh: true), text: ask) }
+    }
+
+    private func finishLive(_ outcome: MakeHomeOutcome, text: String) {
+        guard outcome == .started else { return }
+        if liveText == text { prompt = "" }
+        chrome.say("Making it on your desktop")
+    }
+
+    private func openLive(_ item: MakeItem) {
+        switch live.opens[item.id] {
+        case .some(.design(let id)):
+            Haptics.tap()
+            cover = .design(id)
+        case .some(.video):
+            // The video editor does not read the desktop yet. Until it does, a paired phone never opens the sample one.
+            chrome.say("Open this video in Kairos on your desktop")
+        case .some(.file):
+            Haptics.tap()
+            liveFile = live.fileViewing(item)
+        case .none:
+            break
+        }
+    }
+
+    /// Studio does not read the desktop yet. Until it does, a paired phone gets one line, never the sample Studio.
+    private var liveStudioCard: some View {
+        HintLine(text: "Studio is not on this iPhone yet. Open it in Kairos on your desktop.")
+    }
+
+    @ViewBuilder
+    private func liveShelf(_ kind: MadeKind, index: Int) -> some View {
+        let items = live.items(kind)
+        if !items.isEmpty {
+            VStack(spacing: 10) {
+                sectionHead("\(MakeHomeLive.shelfTitle(kind))  \(items.count)", trailing: "All") {
+                    cover = kind == .design ? .designs : .made(kind)
+                }
+                ScrollView(.horizontal) {
+                    HStack(spacing: 10) {
+                        ForEach(items) { item in
+                            Button { openLive(item) } label: { MadeCard(item: item) }
+                                .buttonStyle(PressStyle(scale: 0.97))
+                                .disabled(live.opens[item.id] == nil)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .scrollClipDisabled()
+            }
+            .arrives(index)
         }
     }
 }
