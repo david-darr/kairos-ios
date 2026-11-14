@@ -285,8 +285,12 @@ final class LiveBackend: ChatBackend {
                                         time: message.ts.map { Date(timeIntervalSince1970: $0) })
             entry.files = parsed.files
             entry.sources = parsed.sources
+            entry.designs = parsed.designs
             entry.caption = "After background work"
             onEvent?(.followup(chatID: chatID, entry: entry))
+        case "design_changed":
+            // A design was made or edited. The chats on screen read their design list again (rate limited there).
+            onEvent?(.designChanged(chatID: packet.sessionId))
         default:
             guard packet.type.hasPrefix("bot"), let bot = try? KJSON.decode(BotLivePacketDTO.self, from: data),
                   let threadID = bot.sessionId else { return }

@@ -10,8 +10,13 @@ nonisolated enum TranscriptParsing {
         var text: String
         var files: [ChatFile]
         var sources: [SourceLink]
+        /// Designs the reply links, each drawn as a card.
+        var designs: [ChatThumbRef] = []
     }
 
+    /// `[Design: title](/designs/<12 hex>)`, the link a chat writes for a design (the desktop's `DESIGN_URL`).
+    private static let designLink = try? NSRegularExpression(
+        pattern: #"\[([^\]]*)\]\(/designs/([a-f0-9]{12})\)"#)
     private static let fileLink = try? NSRegularExpression(
         pattern: #"!?\[([^\]]*)\]\((/(?:generated-files|generated-images|chat-files)/[^)\s]+)\)"#)
     private static let bareLink = try? NSRegularExpression(
@@ -50,6 +55,21 @@ nonisolated enum TranscriptParsing {
             }
         }
 
+        var designs: [ChatThumbRef] = []
+        if let designLink {
+            var seenDesigns = Set<String>()
+            let matches = designLink.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            for match in matches {
+                guard let labelRange = Range(match.range(at: 1), in: text), let idRange = Range(match.range(at: 2), in: text) else { continue }
+                let id = String(text[idRange])
+                guard seenDesigns.insert(id).inserted else { continue }
+                designs.append(ChatThumbRef(id: id, title: ChatThumbWire.linkTitle(String(text[labelRange]))))
+            }
+            if !matches.isEmpty {
+                text = designLink.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+            }
+        }
+
         var sources: [SourceLink] = []
         var kept: [String] = []
         for paragraph in text.components(separatedBy: "\n\n") {
@@ -61,7 +81,7 @@ nonisolated enum TranscriptParsing {
             }
             if !trimmed.isEmpty { kept.append(paragraph.trimmingCharacters(in: .newlines)) }
         }
-        return Body(text: kept.joined(separator: "\n\n"), files: files, sources: Array(sources.prefix(6)))
+        return Body(text: kept.joined(separator: "\n\n"), files: files, sources: Array(sources.prefix(6)), designs: designs)
     }
 
     static func file(url: String, label: String) -> ChatFile {
@@ -111,6 +131,7 @@ nonisolated enum TranscriptParsing {
             entry.index = index
             entry.files = parsed.files
             entry.sources = parsed.sources
+            entry.designs = parsed.designs
             if let followup = message.backgroundFollowup, !followup.isNull, followup.bool != false {
                 entry.caption = "After background work"
             }
@@ -122,7 +143,7 @@ nonisolated enum TranscriptParsing {
             case "interrupted":
                 entry.failure = content.isEmpty ? "The response was interrupted." : "The response was interrupted. The partial reply was saved."
             default:
-                if content.isEmpty && parsed.files.isEmpty { entry.failure = "No text response was returned." }
+                if content.isEmpty && parsed.files.isEmpty && parsed.designs.isEmpty { entry.failure = "No text response was returned." }
             }
             result.append(entry)
         }
@@ -293,8 +314,9 @@ nonisolated enum TranscriptParsing {
                 if failed && text.isEmpty {
                     text = failureLine(kind: message.failureKind, model: message.failureModelName ?? botName, partial: false)
                 }
-                guard !text.isEmpty || !parsed.files.isEmpty else { continue }
-                result.append(BotEntry(id: message.id, kind: .theirs, text: text, time: time, files: parsed.files, failed: failed))
+                guard !text.isEmpty || !parsed.files.isEmpty || !parsed.designs.isEmpty else { continue }
+                result.append(BotEntry(id: message.id, kind: .theirs, text: text, time: time, files: parsed.files, failed: failed,
+                                       designs: parsed.designs))
             }
         }
         return result

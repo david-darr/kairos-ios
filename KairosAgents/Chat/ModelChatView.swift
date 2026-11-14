@@ -99,7 +99,7 @@ private struct ModelChatScreen: View {
             if files.isEmpty {
                 DocumentViewer(documents: SampleData.documents, index: 0).kSheet()
             } else {
-                FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData).kSheet()
+                FileViewer(files: files, index: min(start.id, files.count - 1), load: chat.fileData, thumbChat: chat.thumbKey).kSheet()
             }
         }
         .task { await chat.load() }
@@ -280,7 +280,11 @@ private struct ModelChatScreen: View {
                 MarkdownText(text: entry.text, streaming: entry.streaming)
             }
             if !entry.files.isEmpty {
-                FileStack(files: entry.files, load: chat.fileData) { open($0) }
+                FileStack(files: entry.files, load: chat.fileData, thumbChat: chat.thumbKey) { open($0) }
+            }
+            let designs = chat.designCards(for: entry)
+            if let key = chat.thumbKey, !designs.isEmpty {
+                ChatThumbCards(designs: designs, chat: key)
             }
             ForEach(entry.sources) { source in
                 SourceCard(site: source.site, title: source.title)

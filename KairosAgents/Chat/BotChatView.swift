@@ -191,6 +191,8 @@ private struct BotChatScreen: View {
             VStack(alignment: .leading, spacing: 6) {
                 if !entry.text.isEmpty { MessageBubble(message: ChatMessage(kind: .theirs(entry.text))) }
                 if !entry.files.isEmpty { SentFiles(files: entry.files) { open($0) } }
+                let designs = chat.designCards(for: entry)
+                if let key = chat.threadID, !designs.isEmpty { ChatThumbCards(designs: designs, chat: key) }
                 if entry.failed {
                     Text("This reply did not finish.")
                         .font(KFont.ui(12.5, relativeTo: .caption))
