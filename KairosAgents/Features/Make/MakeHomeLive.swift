@@ -80,6 +80,13 @@ final class MakeHomeLive {
     private(set) var opens: [String: MakeHomeOpen] = [:]
     private(set) var skipped = 0
     private(set) var videosProblem: String?
+    /// GET /api/designs could not be read this time (the designs already shown stay).
+    private(set) var designsProblem: String?
+    /// The designs and the videos have each been read once, so an empty shelf is really empty.
+    private(set) var designsRead = false
+    private(set) var videosRead = false
+    /// What each item with a picture on the desktop is a picture of, by item id.
+    private(set) var thumbSources: [String: MakeThumbSource] = [:]
     /// The desktop's own list of tasks still being made.
     private(set) var making: [MakeHomeJob] = []
     /// Tasks this phone started or retried, newest first, read one by one until they finish.
@@ -96,6 +103,11 @@ final class MakeHomeLive {
     @ObservationIgnored private var itemThreads: [String: String] = [:]
     @ObservationIgnored private var itemKinds: [String: MakeHomeKind] = [:]
     @ObservationIgnored private var itemTimes: [String: Date] = [:]
+    /// Every design of GET /api/designs, as last read.
+    @ObservationIgnored private var designRows: [MakeThumbDesignRow] = []
+    @ObservationIgnored private var designSkipped = 0
+    /// The most designs the shelf on Make home draws. The full list is one tap away.
+    static let designShelfLimit = 12
     /// The desktop's own page keeps a refused tap's send id for the same text, so a second tap of it can never
     /// start a task twice if the first one was saved before it was refused.
     @ObservationIgnored private var refusedSend: MakeHomeSend?
@@ -152,6 +164,13 @@ final class MakeHomeLive {
         opens = [:]
         skipped = 0
         videosProblem = nil
+        designsProblem = nil
+        designsRead = false
+        videosRead = false
+        thumbSources = [:]
+        designRows = []
+        designSkipped = 0
+        MakeThumbLive.shared.clear()
         making = []
         tracked = []
         hidden = []
@@ -294,8 +313,29 @@ final class MakeHomeLive {
                     videoError = error
                 }
                 guard stillLive(key), mine == readSerial else { return false }
+                // Every design of the account, including the ones made in other chats or on the canvas.
+                var designs: [MakeDesignMaybe<MakeDesignRowDTO>]?
+                var designError: Error?
+                do {
+                    designs = try await client().makeDesignList()
+                } catch {
+                    if error is CancellationError || Task.isCancelled {
+                        if mine == readSerial, load == .loading { load = .idle }
+                        return false
+                    }
+                    designError = error
+                }
+                guard stillLive(key), mine == readSerial else { return false }
                 guard writes == writeSerial else { continue }
+                if let designs {
+                    designRows = designs.compactMap(\.value).compactMap { MakeThumbDesignRow($0) }
+                    // A row that did not decode, or whose id is not 12 hex, is counted as one that could not be read.
+                    designSkipped = designs.count - designRows.count
+                    designsRead = true
+                }
                 show(list, videos: videos)
+                if videos != nil { videosRead = true }
+                designsProblem = designError.map { "Your designs could not be read. " + $0.plainWords }
                 videosProblem = videoError.map { "Your videos could not be read. " + $0.plainWords }
                 load = .loaded
                 return true
@@ -321,6 +361,7 @@ final class MakeHomeLive {
         var threads: [String: String] = [:]
         var kinds: [String: MakeHomeKind] = [:]
         var times: [String: Date] = [:]
+        var sources: [String: MakeThumbSource] = [:]
         var seen = Set<String>()
         for dto in list.items {
             guard seen.insert(dto.id).inserted else { continue }
@@ -329,15 +370,49 @@ final class MakeHomeLive {
             if let thread = dto.open?.sessionId { threads[dto.id] = thread }
             if let kind = MakeHomeKind.from(dto.kind) { kinds[dto.id] = kind }
             if let time = MakeHomeWire.time(dto.updatedAt) { times[dto.id] = time }
+            // The front desk names the board its picture comes from; /api/designs below may name it better.
+            if case .some(.design(let design)) = links[dto.id],
+               let found = MakeThumbWire.board(fromThumbURL: dto.thumbUrl?.string), found.design == design {
+                sources[dto.id] = MakeThumbSource(id: design, kind: .design(board: found.board),
+                                                  stamp: MakeThumbWire.stamp(times[dto.id]))
+            }
         }
-        var skippedNow = list.skipped
+        // Designs made in any chat or on the design canvas. One the front desk already returned is not added twice.
+        for row in designRows {
+            let id = "design:" + row.id
+            if seen.contains(id) {
+                if let board = row.firstBoard, links[id] == .design(row.id) {
+                    sources[id] = MakeThumbSource(id: row.id, kind: .design(board: board), stamp: MakeThumbWire.stamp(row.updated))
+                }
+                continue
+            }
+            seen.insert(id)
+            fresh.append(MakeItem(id: id, title: row.title, kind: .design, when: Self.when(row.updated), detail: row.detail,
+                                  size: "", fresh: false, source: "Make"))
+            links[id] = .design(row.id)
+            if let time = row.updated { times[id] = time }
+            if let board = row.firstBoard {
+                sources[id] = MakeThumbSource(id: row.id, kind: .design(board: board), stamp: MakeThumbWire.stamp(row.updated))
+            }
+        }
+        // Newest first within each shelf, whichever list a design came from.
+        fresh = fresh.enumerated().sorted { first, second in
+            let a = times[first.element.id] ?? .distantPast
+            let b = times[second.element.id] ?? .distantPast
+            return a == b ? first.offset < second.offset : a > b
+        }.map(\.element)
+        var skippedNow = list.skipped + designSkipped
         if let videos {
             skippedNow += videos.skipped
             for dto in videos.videos {
                 guard seen.insert("video:" + dto.id).inserted else { continue }
                 let item = Self.videoItem(dto)
                 fresh.append(item)
-                if MakeHomeWire.isHex(dto.id, 12) { links[item.id] = .video(dto.id) }
+                if MakeHomeWire.isHex(dto.id, 12) {
+                    links[item.id] = .video(dto.id)
+                    sources[item.id] = MakeThumbSource(id: dto.id, kind: .video(aspects: MakeThumbWire.videoAspects(dto.aspects)),
+                                                       stamp: MakeThumbWire.stamp(MakeHomeWire.time(dto.updated)))
+                }
             }
         } else {
             // The videos were not read this time: the ones already shown stay.
@@ -345,8 +420,10 @@ final class MakeHomeLive {
                 guard seen.insert(item.id).inserted else { continue }
                 fresh.append(item)
                 if let link = opens[item.id] { links[item.id] = link }
+                if let source = thumbSources[item.id] { sources[item.id] = source }
             }
         }
+        thumbSources = sources
         items = fresh
         opens = links
         itemThreads = threads
@@ -676,7 +753,7 @@ struct MakeHomeJobCard: View {
 
             if job.state == .ready, let result {
                 HStack(spacing: 12) {
-                    MadeArt(item: result)
+                    MakeThumbArt(item: result)
                         .frame(width: 96, height: 72)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     VStack(alignment: .leading, spacing: 3) {
