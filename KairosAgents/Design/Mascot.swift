@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Round, squircle and tall are the desktop's shapes. Dome, wide, hex, scallop and ghost are new
-/// on the phone (David, 2026-11-12); the desktop cannot store them yet.
+/// Round, squircle and tall are the desktop's original shapes. Dome, wide, hex, scallop and ghost came to the phone
+/// first (David, 2026-11-12); the desktop stores all eight from its redesign branch (feat/ios-foundation, 2026-11-17).
 nonisolated enum MascotShape: String, Hashable, Sendable, CaseIterable {
     case round, squircle, tall, dome, wide, hex, scallop, ghost
 }

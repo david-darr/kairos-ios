@@ -17,8 +17,8 @@ import Foundation
 nonisolated enum BotAvatarRules {
     /// The six body colours a desktop bot can have, in the desktop's order (agent_service.COLORS).
     static let colors: [UInt32] = [0xD9B260, 0xB9D2E3, 0xE8C39E, 0xD99A92, 0xB5C7A5, 0xCDBFD9]
-    /// The three shapes the desktop can store (agent_service.AJAR_SHAPES).
-    static let shapes: [MascotShape] = [.round, .squircle, .tall]
+    /// The eight shapes the desktop can store, in its order (agent_service.AJAR_SHAPES; the five newer ones since 2026-11-17).
+    static let shapes: [MascotShape] = [.round, .squircle, .tall, .dome, .wide, .hex, .scallop, .ghost]
 
     /// "#D9B260" or "d9b260" as a number. nil when the text is not six hex digits.
     static func hex(_ text: String?) -> UInt32? {

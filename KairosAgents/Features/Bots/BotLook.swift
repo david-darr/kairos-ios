@@ -51,7 +51,7 @@ struct MascotPicker: View {
     @Binding var accessory: MascotAccessory
     var previewSize: CGFloat = 150
     var showPreview = true
-    /// The shapes offered. A paired bot can only be stored in the desktop's three.
+    /// The shapes offered. A paired bot can only be stored in the desktop's shapes (BotAvatarRules.shapes).
     var shapes: [MascotShape] = MascotShape.allCases
 
     private let shapeColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
@@ -238,7 +238,7 @@ struct BotLookScreen: View {
     }
 }
 
-/// Settings > Look and name while paired: name, job and a look the desktop can store (its three shapes, the six
+/// Settings > Look and name while paired: name, job and a look the desktop can store (its eight shapes, the six
 /// colours and the six accessories). A form over the bot record (BotSetForm): it remembers the desktop values and
 /// revision it was filled from and sends only what the person changed since, with that revision. Kip stays locked.
 private struct BotSetLookScreen: View {
@@ -317,7 +317,6 @@ private struct BotSetLookScreen: View {
                 if !edited.isEmpty {
                     HintLine(text: "Changes are not saved yet.", symbol: "circle.dotted")
                 }
-                HintLine(text: "Your desktop keeps three shapes: round, squircle and tall.", symbol: "info.circle")
             }
         }
         // Read each time the page appears and when the connection becomes ready.
