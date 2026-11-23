@@ -5,6 +5,8 @@ inbox-scout -kDebugView bots.inbox-scout
 inbox-scout-light -kDebugView bots.inbox-scout -kAppearance light
 settings -kDebugView bots.settings
 settings-light -kDebugView bots.settings -kAppearance light
+allsettings -kDebugView bots.allsettings
+allsettings-light -kDebugView bots.allsettings -kAppearance light
 notifications -kDebugView bots.notifications
 notifications-light -kDebugView bots.notifications -kAppearance light
 activity -kDebugView bots.activity

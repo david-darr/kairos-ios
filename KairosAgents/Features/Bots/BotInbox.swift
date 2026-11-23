@@ -124,12 +124,23 @@ struct BotInboxSection: View {
 
     // MARK: Paired
 
+    /// What still waits on you while paired: unsettled cards plus rows not answered yet. It drops as each is answered.
+    static func livePending(_ botID: String) -> Int {
+        let cards = BotsStore.shared.needs.filter { $0.botID == botID }
+        return livePending(cards: cards, rows: BotsInboxLive.shared.needsRows(botID))
+    }
+
+    private static func livePending(cards: [NeedsCard], rows: [BotInboxRowDTO]) -> Int {
+        let answered = BotsInboxLive.shared.answered
+        return cards.filter { $0.settled == nil }.count + rows.filter { answered[$0.id] == nil }.count
+    }
+
     /// The desktop's waiting cards (approvals and questions in a conversation), then its questions and
     /// results to review. Empty, still reading and could not be read are three different lines.
     @ViewBuilder
     private func liveNeedsYou(_ cards: [NeedsCard]) -> some View {
         let rows = live.needsRows(botID)
-        let pending = cards.filter { $0.settled == nil }.count + rows.filter { live.answered[$0.id] == nil }.count
+        let pending = Self.livePending(cards: cards, rows: rows)
         let cardState = store.cardsLoad[botID] ?? .idle
         let rowState = live.inboxLoad
         VStack(alignment: .leading, spacing: 10) {
@@ -923,7 +934,8 @@ struct InboxRowCard: View {
         guard !busy, !writing else { return }
         if action == "reply" {
             if review { Haptics.warning() } else { Haptics.success() }
-        } else {
+        } else if action != "close" {
+            // Close comes through its danger sheet, which already gave its own buzz.
             Haptics.tap()
         }
         writing = true

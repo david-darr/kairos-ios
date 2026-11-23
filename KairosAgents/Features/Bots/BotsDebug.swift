@@ -9,6 +9,7 @@ enum BotsDebug {
         case "inbox": return page(BotPanelRoot(botID: "kip", startTab: .inbox, presented: true))
         case "inbox-scout": return page(BotPanelRoot(botID: "scout", startTab: .inbox, presented: true))
         case "settings": return page(BotPanelRoot(botID: "scout", startTab: .access, presented: true))
+        case "allsettings": return page(BotsDestination(route: .allSettings("scout")))
         case "notifications": return page(BotNotificationsScreen(botID: "kip"))
         case "activity": return page(BotActivityScreen(botID: "kip"))
         case "report": return page(BotReportScreen(botID: "kip"))

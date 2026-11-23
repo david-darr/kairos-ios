@@ -41,6 +41,8 @@ struct BotPanelRoot: View {
     @State private var started = false
     @State private var goto: BotsRoute?
     @State private var confirmArchive = false
+    /// The Routines section's "Bring it back", kept here so it survives switching sections.
+    @State private var removedRoutine: Routine?
 
     var body: some View {
         let bot = store.bot(botID)
@@ -52,7 +54,7 @@ struct BotPanelRoot: View {
                 Group {
                     switch shown {
                     case .inbox: section(.inbox) { BotInboxSection(botID: botID) }
-                    case .routines: section(.routines) { RoutinesList(botID: botID) }
+                    case .routines: section(.routines) { RoutinesList(botID: botID, removedHolder: $removedRoutine) }
                     case .access: section(.access) { accessSection }
                     }
                 }
@@ -130,7 +132,7 @@ struct BotPanelRoot: View {
 
     /// "Inbox 2" while something waits on you.
     private func switchTitle(_ item: BotPanelView.Tab) -> String {
-        let needs = store.needsCount(botID)
+        let needs = store.liveMode ? BotInboxSection.livePending(botID) : store.needsCount(botID)
         return item == .inbox && needs > 0 ? "\(item.rawValue) \(needs)" : item.rawValue
     }
 

@@ -69,13 +69,7 @@ struct RoutinesScreen: View {
 
     var body: some View {
         BotsPage("Routines and triggers", subtitle: store.bot(botID).name, live: isLive, trailing: {
-            Menu {
-                Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
-                if !isLive {
-                    Button { goto = .triggerEditor(botID, nil, webhook: false) } label: { Label("When something happens in an app", systemImage: "app.badge") }
-                    Button { goto = .triggerEditor(botID, nil, webhook: true) } label: { Label("When another app calls", systemImage: "arrow.down.left.circle") }
-                }
-            } label: {
+            RoutineAddMenu(botID: botID, isLive: isLive, goto: $goto) {
                 Image(systemName: "plus").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
                     .frame(width: 44, height: 44).contentShape(Circle())
             }
@@ -88,14 +82,38 @@ struct RoutinesScreen: View {
     }
 }
 
+/// The choices for a new routine or trigger, one menu for the Routines page and the panel's Routines
+/// section. Paired, only a routine: triggers are made on the desktop.
+struct RoutineAddMenu<MenuLabel: View>: View {
+    let botID: String
+    let isLive: Bool
+    @Binding var goto: BotsRoute?
+    @ViewBuilder let label: () -> MenuLabel
+
+    var body: some View {
+        Menu {
+            Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
+            if !isLive {
+                Button { goto = .triggerEditor(botID, nil, webhook: false) } label: { Label("When something happens in an app", systemImage: "app.badge") }
+                Button { goto = .triggerEditor(botID, nil, webhook: true) } label: { Label("When another app calls", systemImage: "arrow.down.left.circle") }
+            }
+        } label: {
+            label()
+        }
+    }
+}
+
 /// One bot's routines and triggers, sample or from the paired desktop. Shown on its own page
 /// and as the Routines section of the bot's panel.
 struct RoutinesList: View {
     let botID: String
+    /// Set by the bot's panel, so "Bring it back" outlives a switch to another section (the delete on the
+    /// desktop has already happened). The Routines page leaves it nil and keeps its own.
+    var removedHolder: Binding<Routine?>? = nil
     let store = BotsStore.shared
     let live = BotsRoutinesLive.shared
     @State private var deleting: Routine?
-    @State private var removed: Routine?
+    @State private var ownRemoved: Routine?
     @State private var running: Routine?
     @State private var watching = true
     @State private var morningBrief = true
@@ -105,6 +123,14 @@ struct RoutinesList: View {
 
     /// Paired: every routine and trigger here is the desktop's, never a sample.
     private var isLive: Bool { !Connection.shared.usesSampleData }
+
+    /// The routine just deleted, while it can still be brought back.
+    private var removed: Routine? {
+        get { removedHolder?.wrappedValue ?? ownRemoved }
+        nonmutating set {
+            if let removedHolder { removedHolder.wrappedValue = newValue } else { ownRemoved = newValue }
+        }
+    }
 
     var body: some View {
         let routines = (isLive ? live.routines(for: botID) : store.routines(for: botID)).sorted { ($0.on ? 0 : 1, $0.hour) < ($1.on ? 0 : 1, $1.hour) }
@@ -153,7 +179,18 @@ struct RoutinesList: View {
                     HintLine(text: live.skippedRoutines == 1 ? "1 routine could not be read by this app." : "\(live.skippedRoutines) routines could not be read by this app.", symbol: "info.circle")
                         .padding(.horizontal, 4)
                 }
-                PillButton(title: "Add a routine", symbol: "plus", wide: true) { goto = .routineEditor(botID, nil) }
+                RoutineAddMenu(botID: botID, isLive: isLive, goto: $goto) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
+                        Text(isLive ? "Add a routine" : "Add a routine or trigger").font(KFont.ui(15, .semibold, relativeTo: .subheadline)).lineLimit(1)
+                    }
+                    .foregroundStyle(Palette.ink)
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Palette.ink.opacity(0.1), in: Capsule())
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(PressStyle())
             }
 
             VStack(alignment: .leading, spacing: 8) {
