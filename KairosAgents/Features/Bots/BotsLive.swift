@@ -140,8 +140,9 @@ extension BotsStore {
             }
             sampleStash = nil
             liveNeedsYou = [:]
-            needsReadAt = [:]
-            cardsReadAt = [:]
+            needsReadSeq = [:]
+            needsAnsweredSeq = [:]
+            cardsReadSeq = [:]
             details = [:]
             detailLoad = [:]
             cardsLoad = [:]
@@ -161,8 +162,9 @@ extension BotsStore {
         teams = []
         needs = []
         liveNeedsYou = [:]
-        needsReadAt = [:]
-        cardsReadAt = [:]
+        needsReadSeq = [:]
+        needsAnsweredSeq = [:]
+        cardsReadSeq = [:]
         details = [:]
         detailLoad = [:]
         cardsLoad = [:]
@@ -259,11 +261,12 @@ extension BotsStore {
         do {
             try Task.checkCancellation()
             let client = try liveClient()
+            let sent = nextReadSeq()
             let roster = try await client.agentRoster()
             let map = try? await client.botTeamMap()
             let conversations = try? await client.agentConversations()
             guard current("roster", read, first: first) else { return }
-            showRoster(roster, map: map, conversations: conversations)
+            showRoster(roster, map: map, conversations: conversations, sent: sent)
             rosterLoad = .loaded
         } catch {
             guard latest("roster", read) else { return }
@@ -282,15 +285,16 @@ extension BotsStore {
     func refreshNeeds() async {
         guard liveMode, rosterLoad == .loaded else { return }
         guard let read = await beginRead("needs") else { return }
+        let sent = nextReadSeq()
         guard let roster = try? await liveClient().agentRoster(), current("needs", read, first: false) else { return }
-        let now = Date()
-        for agent in roster {
+        // Per bot, a count read sent before a newer read, or before an answer that went through, is not shown.
+        for agent in roster where rosterCountFresh(agent.id, sent: sent) {
             liveNeedsYou[agent.id] = agent.needsYou ?? 0
-            needsReadAt[agent.id] = now
+            needsReadSeq[agent.id] = sent
         }
     }
 
-    private func showRoster(_ roster: [AgentDTO], map: BotTeamMapDTO?, conversations: AgentConversationsDTO?) {
+    private func showRoster(_ roster: [AgentDTO], map: BotTeamMapDTO?, conversations: AgentConversationsDTO?, sent: Int) {
         let sorted = roster.sorted { a, b in
             switch (a.order, b.order) {
             case let (x?, y?) where x != y: return x < y
@@ -303,10 +307,19 @@ extension BotsStore {
         bots = shown.map(Self.liveBot)
         archived = sorted.filter { $0.hidden == true }.map(Self.liveBot)
         var counts: [String: Int] = [:]
-        for agent in sorted { counts[agent.id] = agent.needsYou ?? 0 }
+        var seqs: [String: Int] = [:]
+        for agent in sorted {
+            if rosterCountFresh(agent.id, sent: sent) {
+                counts[agent.id] = agent.needsYou ?? 0
+                seqs[agent.id] = sent
+            } else {
+                // A newer read, or an answer that went through, already gave this bot's count: it stays.
+                counts[agent.id] = liveNeedsYou[agent.id] ?? agent.needsYou ?? 0
+                seqs[agent.id] = needsReadSeq[agent.id] ?? sent
+            }
+        }
         liveNeedsYou = counts
-        let now = Date()
-        needsReadAt = Dictionary(uniqueKeysWithValues: counts.keys.map { ($0, now) })
+        needsReadSeq = seqs
 
         if let conversations {
             // The desktop's pins, read with the roster, keep Home's pins (the one list) current.
@@ -373,15 +386,23 @@ extension BotsStore {
         guard let read = await beginRead(key) else { return }
         do {
             try Task.checkCancellation()
-            let detail = try await liveClient().agentDetail(botID)
+            let client = try liveClient()
+            let sent = nextReadSeq()
+            let detail = try await client.agentDetail(botID)
             guard current(key, read, first: first) else { return }
             details[botID] = detail
             detailLoad[botID] = .loaded
             if let agent = detail.agent {
                 let fresh = Self.liveBot(agent)
                 if let index = bots.firstIndex(where: { $0.id == botID }) { bots[index] = fresh }
-                liveNeedsYou[botID] = agent.needsYou ?? liveNeedsYou[botID] ?? 0
-                if agent.needsYou != nil { needsReadAt[botID] = Date() }
+                if let count = agent.needsYou {
+                    if rosterCountFresh(botID, sent: sent) {
+                        liveNeedsYou[botID] = count
+                        needsReadSeq[botID] = sent
+                    }
+                } else if liveNeedsYou[botID] == nil {
+                    liveNeedsYou[botID] = 0
+                }
             }
         } catch {
             guard latest(key, read) else { return }
@@ -404,7 +425,9 @@ extension BotsStore {
         guard let read = await beginRead(key) else { return }
         do {
             try Task.checkCancellation()
-            let list = try await liveClient().botCards(botId: botID, status: "pending")
+            let client = try liveClient()
+            let sent = nextReadSeq()
+            let list = try await client.botCards(botId: botID, status: "pending")
             guard current(key, read, first: first) else {
                 readCardsLater(botID, key: key, read: read)
                 return
@@ -428,7 +451,7 @@ extension BotsStore {
                 needs.append(contentsOf: kept.isEmpty ? fresh : fresh.filter { !kept.contains($0.live?.id ?? "") })
             }
             cardsLoad[botID] = .loaded
-            cardsReadAt[botID] = Date()
+            cardsReadSeq[botID] = sent
             if !gone.isEmpty {
                 say(gone.count == 1 ? "Your desktop is no longer waiting on that request."
                                     : "Your desktop is no longer waiting on those requests.")
@@ -703,6 +726,7 @@ extension BotsStore {
                     await loadCards(botID)
                 } else {
                     liveNeedsYou[botID] = max(0, (liveNeedsYou[botID] ?? 1) - 1)
+                    noteAnswered(botID)
                 }
             } catch {
                 endWrite()

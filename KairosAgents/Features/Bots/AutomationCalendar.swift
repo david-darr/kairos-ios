@@ -216,8 +216,8 @@ struct CalendarDayView: View {
                 .padding(.horizontal, 8)
                 .frame(width: max(40, width - 4), height: max(44, length), alignment: .topLeading)
                 .padding(.top, 0)
-                .background(Color(hex: bot.isKip ? Palette.botGold : bot.colorHex).opacity(entry.routine.on ? 0.92 : 0.45), in: RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous).strokeBorder(Palette.night.opacity(0.15), lineWidth: 1))
+                .background(Color(hex: bot.isKip ? Palette.botGold : bot.colorHex).opacity(entry.routine.on ? 0.92 : 0.45), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.inset, style: .continuous).strokeBorder(Palette.night.opacity(0.15), lineWidth: 1))
             }
             .buttonStyle(PressStyle(scale: 0.96))
             .offset(x: 52 + CGFloat(lane) * width, y: top)
@@ -818,7 +818,7 @@ struct AutomationsScreen: View {
             TextField("Every weekday at 9, summarise my inbox", text: $ask, axis: .vertical)
                 .font(KFont.ui(16)).foregroundStyle(Palette.ink).lineLimit(1...3)
                 .padding(12)
-                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
             HStack(spacing: 8) {
                 Menu {
                     ForEach(store.bots) { bot in Button(bot.name) { askBot = bot.name } }

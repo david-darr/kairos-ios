@@ -26,7 +26,9 @@ struct Ground: View {
 nonisolated enum Radius {
     /// Small tiles and swatch cells.
     static let tile: CGFloat = 14
-    /// Text fields and boxes inside a card.
+    /// Boxes nested inside a card, and calendar entries.
+    static let inset: CGFloat = 12
+    /// Text fields and boxes that sit on the page, not inside a card.
     static let field: CGFloat = 18
     /// Cards.
     static let card: CGFloat = 20
@@ -348,6 +350,8 @@ struct HeaderFade: View {
 struct GlassSwitch<Item: Hashable>: View {
     let items: [Item]
     @Binding var selection: Item
+    /// Each item's least height. The Bots screens pass 44, the full touch target.
+    var minHeight: CGFloat = 38
     let title: (Item) -> String
     @Namespace private var ns
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -375,7 +379,7 @@ struct GlassSwitch<Item: Hashable>: View {
                         .lineLimit(1)
                         .fixedSize()
                         .padding(.horizontal, 16)
-                        .frame(minHeight: 44)
+                        .frame(minHeight: minHeight)
                         .background {
                             if on { Capsule().fill(Palette.ink.opacity(0.15)).matchedGeometryEffect(id: "on", in: ns) }
                         }

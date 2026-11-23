@@ -449,7 +449,7 @@ struct RoutineRow: View {
                     }
                 }
                 .padding(10)
-                .background(Palette.gold.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                .background(Palette.gold.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
             }
         }
         .padding(14)
@@ -1302,7 +1302,7 @@ struct TriggerEditorScreen: View {
                         if expanded == index {
                             Text(calls[index].2).font(.system(size: 13, design: .monospaced)).foregroundStyle(Palette.inkDim)
                                 .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
                         }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)

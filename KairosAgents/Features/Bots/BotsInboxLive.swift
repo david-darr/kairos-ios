@@ -174,8 +174,9 @@ final class BotsInboxLive {
     // Needs you: every bot's open inbox rows. The screens keep one bot's.
     var inboxRows: [BotInboxRowDTO] = []
     var inboxLoad: BotsLiveLoad = .idle
-    /// When the rows were last read, so a badge can tell whether they or the roster's count is newer.
-    var inboxReadAt: Date?
+    /// Where in the order reads are sent (BotsStore.nextReadSeq) the shown rows' read went out, so a badge can
+    /// tell whether they or the roster's count is newer.
+    var inboxReadSeq: Int?
     var inboxSkipped = 0
     /// Rows whose answer is on its way.
     var busyRows: Set<String> = []
@@ -234,7 +235,7 @@ final class BotsInboxLive {
     private func reset() {
         inboxRows = []
         inboxLoad = .idle
-        inboxReadAt = nil
+        inboxReadSeq = nil
         inboxSkipped = 0
         busyRows = []
         answered = [:]
@@ -291,7 +292,7 @@ final class BotsInboxLive {
         set: (BotsLiveLoad) -> Void,
         failed: String,
         fetch: (APIClient) async throws -> T,
-        show: (T) -> Void
+        show: (_ answer: T, _ sent: Int) -> Void
     ) async {
         guard isLive else { return }
         let account = self.account
@@ -305,11 +306,14 @@ final class BotsInboxLive {
         let writes = writeSerial[group] ?? 0
         do {
             try Task.checkCancellation()
-            let answer = try await fetch(try liveClient())
+            let client = try liveClient()
+            // Its place in the order reads are sent, taken as it goes out: the newer-sent read wins a badge.
+            let sent = BotsStore.shared.nextReadSeq()
+            let answer = try await fetch(client)
             guard stillLive(account), reads[key] == serial else { return }
             // A first read is shown anyway: nothing is on screen yet for it to put back.
             guard state != .loaded || (writes == (writeSerial[group] ?? 0) && (writing[group] ?? 0) == 0) else { return }
-            show(answer)
+            show(answer, sent)
             set(.loaded)
         } catch {
             guard stillLive(account), reads[key] == serial else { return }
@@ -328,10 +332,10 @@ final class BotsInboxLive {
         await read("inbox", group: "inbox", state: inboxLoad, set: { inboxLoad = $0 },
                    failed: "Questions and reviews could not be read.",
                    fetch: { try await $0.botInboxRows() },
-                   show: { answer in
+                   show: { answer, sent in
                        let list = BotLossyList(answer.rows)
                        withAnimation(Motion.snappy) { inboxRows = list.items }
-                       inboxReadAt = Date()
+                       inboxReadSeq = sent
                        inboxSkipped = list.skipped
                        // The rows now show what the desktop has: a refused row may be answered again by a tap.
                        refusedRows = [:]
@@ -355,7 +359,7 @@ final class BotsInboxLive {
         await read("work", group: "work", state: workLoad, set: { workLoad = $0 },
                    failed: "Working and Done could not be read.",
                    fetch: { try await $0.botWorkCards() },
-                   show: { answer in
+                   show: { answer, _ in
                        let list = BotLossyList(answer)
                        withAnimation(Motion.snappy) { work = list.items }
                        workSkipped = list.skipped
@@ -366,7 +370,7 @@ final class BotsInboxLive {
         await read("notices", group: "notices", state: noticesLoad, set: { noticesLoad = $0 },
                    failed: "Notifications could not be read.",
                    fetch: { try await $0.botNotificationRows() },
-                   show: { answer in
+                   show: { answer, _ in
                        let list = BotLossyList(answer.rows)
                        withAnimation(Motion.snappy) { notices = list.items }
                        noticesSkipped = list.skipped
@@ -378,7 +382,7 @@ final class BotsInboxLive {
                    set: { activityLoad[botID] = $0 },
                    failed: "Activity could not be read.",
                    fetch: { try await $0.botActivity(botID) },
-                   show: { answer in
+                   show: { answer, _ in
                        let list = BotLossyList(answer.entries)
                        activity[botID] = list.items
                        activitySkipped[botID] = list.skipped
@@ -393,7 +397,7 @@ final class BotsInboxLive {
                    set: { reportLoad[key] = $0 },
                    failed: "The report could not be read.",
                    fetch: { try await $0.botReport(botID, days: days) },
-                   show: { reports[key] = $0 })
+                   show: { answer, _ in reports[key] = answer })
     }
 
     // MARK: What the screens ask
@@ -570,6 +574,7 @@ final class BotsInboxLive {
             if let botID = row.sender?.id {
                 let bots = BotsStore.shared
                 bots.liveNeedsYou[botID] = max(0, (bots.liveNeedsYou[botID] ?? 1) - 1)
+                bots.noteAnswered(botID)
             }
             Haptics.success()
             // The screen stops saying "Sending" now; the re-reads follow on their own.

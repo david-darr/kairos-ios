@@ -98,12 +98,13 @@ struct BotsPage<Content: View, Trailing: View>: View {
         }
         .overlay(alignment: .leading) {
             if unsaved {
-                // The system swipe back is off while there are edits: a swipe from the edge asks instead.
+                // The system swipe back is off while there are edits (the back button is hidden, and the
+                // navigation controller's swipe does not begin then), so this is the only swipe back: it asks.
                 Color.clear
                     .frame(width: 18)
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 16).onEnded { value in
-                        if value.translation.width > 60 { discarding = true }
+                        if value.translation.width > 60, !discarding { discarding = true }
                     })
                     .accessibilityHidden(true)
             }
@@ -551,7 +552,8 @@ struct HoldToConfirm: View {
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
         .shadow(color: .black.opacity(0.3), radius: 14, y: 8)
         .contentShape(Capsule())
-        .onLongPressGesture(minimumDuration: Motion.holdToConfirm, maximumDistance: 40) {
+        // A finger that moves more than about 10 points (a scroll or a sheet drag that began on the pill) cancels.
+        .onLongPressGesture(minimumDuration: Motion.holdToConfirm, maximumDistance: 10) {
             complete()
         } onPressingChanged: { pressing in
             guard !done else { return }
@@ -565,6 +567,7 @@ struct HoldToConfirm: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(done ? "Confirmed" : title)
+        .accessibilityHint(done ? "" : "Double-tap to confirm.")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { complete() }
     }

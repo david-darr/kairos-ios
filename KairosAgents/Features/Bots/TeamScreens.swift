@@ -1249,7 +1249,7 @@ struct TeamMapScreen: View {
                 TextField("Tag @bots, a team or @everyone", text: $message, axis: .vertical)
                     .font(KFont.ui(16)).foregroundStyle(Palette.ink).lineLimit(1...4)
                     .padding(12)
-                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
                 Button {
                     send()
                 } label: {

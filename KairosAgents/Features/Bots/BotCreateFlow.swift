@@ -55,7 +55,7 @@ struct BotCreateSheet: View {
                 .padding(.top, 24)
 
                 if isAdvanced {
-                    GlassSwitch(items: Part.allCases, selection: $part) { $0.rawValue }
+                    GlassSwitch(items: Part.allCases, selection: $part, minHeight: 44) { $0.rawValue }
                     advancedPart
                 } else {
                     simple
@@ -224,10 +224,10 @@ struct BotCreateSheet: View {
                         PillButton(title: "Remove", look: .danger) { _ = withAnimation(Motion.snappy) { draft.routines.remove(at: index) } }
                     }
                     TextField("Name", text: $draft.routines[index].name).font(KFont.ui(16)).foregroundStyle(Palette.ink)
-                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
                     TextField("What to do", text: $draft.routines[index].instructions, axis: .vertical).font(KFont.ui(16)).foregroundStyle(Palette.ink)
                         .lineLimit(1...4)
-                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
                     GoldSegmented(items: [RepeatMode.daily, RepeatMode.interval], selection: $draft.routines[index].mode) { $0 == .daily ? "Every day at" : "Every few hours" }
                     if draft.routines[index].mode == .daily {
                         HStack {

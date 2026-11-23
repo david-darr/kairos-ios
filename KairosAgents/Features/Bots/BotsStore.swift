@@ -53,9 +53,13 @@ final class BotsStore: BotsProviding {
     var liveMode = false
     var rosterLoad: BotsLiveLoad = .idle
     var liveNeedsYou: [String: Int] = [:]
-    /// When each bot's roster count (liveNeedsYou) and its Needs you cards were last read.
-    var needsReadAt: [String: Date] = [:]
-    var cardsReadAt: [String: Date] = [:]
+    /// Where in the order reads are sent (nextReadSeq, taken as each read goes out) the read each bot's roster
+    /// count (liveNeedsYou) and its Needs you cards came from: the newer-sent read wins, whenever it lands.
+    var needsReadSeq: [String: Int] = [:]
+    var cardsReadSeq: [String: Int] = [:]
+    /// Per bot, when an answer to one of its cards or rows went through: a roster count sent before it is not shown.
+    @ObservationIgnored var needsAnsweredSeq: [String: Int] = [:]
+    @ObservationIgnored private var readSeq = 0
     var details: [String: AgentDetailDTO] = [:]
     var detailLoad: [String: BotsLiveLoad] = [:]
     var cardsLoad: [String: BotsLiveLoad] = [:]
@@ -122,15 +126,32 @@ final class BotsStore: BotsProviding {
 
     func team(of botID: String) -> BotTeam? { teams.first { $0.members.contains(botID) } }
 
+    /// The next number in the order reads are sent in. Taken just before a read goes out, never when it lands.
+    func nextReadSeq() -> Int {
+        readSeq += 1
+        return readSeq
+    }
+
+    /// A roster count read sent at `sent` may be shown for this bot: no newer-sent read gave its count, and no
+    /// answer of its went through after it was sent.
+    func rosterCountFresh(_ botID: String, sent: Int) -> Bool {
+        sent > max(needsReadSeq[botID] ?? 0, needsAnsweredSeq[botID] ?? 0)
+    }
+
+    /// An answer to one of this bot's cards or rows went through: a roster read already on its way is older.
+    func noteAnswered(_ botID: String) {
+        needsAnsweredSeq[botID] = nextReadSeq()
+    }
+
     /// How many things wait on the person for one bot: the one count every badge shows (Home's face, the chat
-    /// header, All bots and the panel's Inbox). Paired, whichever was read last: the bot's own inbox (it drops as
-    /// each is answered; as old as the older of its cards and rows) or the roster's count.
+    /// header, All bots and the panel's Inbox). Paired, whichever read was sent last: the bot's own inbox (it
+    /// drops as each is answered; as old as the older of its cards and rows) or the roster's count.
     func needsCount(_ botID: String) -> Int {
         if liveMode {
             let inbox = BotsInboxLive.shared
             if cardsLoad[botID] == .loaded && inbox.inboxLoad == .loaded {
-                let inboxAt = min(cardsReadAt[botID] ?? .distantPast, inbox.inboxReadAt ?? .distantPast)
-                if inboxAt >= (needsReadAt[botID] ?? .distantPast) {
+                let inboxSeq = min(cardsReadSeq[botID] ?? 0, inbox.inboxReadSeq ?? 0)
+                if inboxSeq > (needsReadSeq[botID] ?? 0) {
                     return BotInboxSection.livePending(botID)
                 }
             }

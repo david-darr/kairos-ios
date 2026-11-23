@@ -49,7 +49,7 @@ struct BotPanelRoot: View {
         ScrollView {
             VStack(spacing: 16) {
                 hero(bot)
-                GlassSwitch(items: BotPanelView.Tab.allCases, selection: $tab) { switchTitle($0) }
+                GlassSwitch(items: BotPanelView.Tab.allCases, selection: $tab, minHeight: 44) { switchTitle($0) }
                     .fixedSize()
                 Group {
                     switch shown {

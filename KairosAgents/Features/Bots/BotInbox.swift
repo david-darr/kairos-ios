@@ -370,7 +370,7 @@ private struct ApprovalBody: View {
             .foregroundStyle(Palette.inkFaint)
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+            .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
 
             if let settled = card.settled {
                 CardSettledLine(card: card, settled: settled)
@@ -421,7 +421,7 @@ private struct ApprovalBody: View {
                 .lineLimit(1...4)
                 .focused($focused)
                 .padding(12)
-                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
             HStack(spacing: 8) {
                 PillButton(title: "Cancel", wide: true) { withAnimation(Motion.snappy) { replying = false } }
                 PillButton(title: "Send reply", look: .filled, wide: true) {
@@ -538,7 +538,7 @@ private struct QuestionBody: View {
             .foregroundStyle(Palette.ink)
             .padding(.horizontal, 14)
             .frame(minHeight: 52)
-            .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+            .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
             }
         }
     }
@@ -576,9 +576,9 @@ private struct QuestionBody: View {
             }
             .padding(.horizontal, 14)
             .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-            .background(on ? Palette.gold.opacity(0.16) : Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.field, style: .continuous).strokeBorder(on ? Palette.gold : Color.clear, lineWidth: 1.5))
-            .contentShape(RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+            .background(on ? Palette.gold.opacity(0.16) : Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.inset, style: .continuous).strokeBorder(on ? Palette.gold : Color.clear, lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
         }
         .buttonStyle(PressStyle(scale: 0.98))
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -685,7 +685,7 @@ private struct ReviewBody: View {
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1...4)
                     .padding(12)
-                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
                 HStack(spacing: 8) {
                     PillButton(title: "Cancel", wide: true) { withAnimation(Motion.snappy) { asking = false } }
                     PillButton(title: "Request changes", look: .filled, wide: true) {
@@ -903,7 +903,7 @@ struct InboxRowCard: View {
                 .lineLimit(1...4)
                 .focused($focused)
                 .padding(12)
-                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.inset, style: .continuous))
             HStack(spacing: 8) {
                 PillButton(title: "Cancel", wide: true) {
                     text = ""

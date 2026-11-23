@@ -108,6 +108,8 @@ struct RootView: View {
 }
 
 /// Screens hide the system bar and draw their own header, so keep the swipe from the left edge working.
+/// A screen that hides its back button (a page with unsaved edits) keeps the swipe off: it handles going back
+/// itself, so the edits are never thrown away by a swipe.
 extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
     override open func viewDidLoad() {
         super.viewDidLoad()
@@ -115,6 +117,6 @@ extension UINavigationController: @retroactive UIGestureRecognizerDelegate {
     }
 
     public func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        viewControllers.count > 1
+        viewControllers.count > 1 && topViewController?.navigationItem.hidesBackButton != true
     }
 }

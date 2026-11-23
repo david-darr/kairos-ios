@@ -342,7 +342,7 @@ struct PackagesScreen: View {
         BotsPage("Packages") {
             HStack {
                 Spacer()
-                GlassSwitch(items: ["Explore", "Import", "Share"], selection: $tab) { $0 }.fixedSize()
+                GlassSwitch(items: ["Explore", "Import", "Share"], selection: $tab, minHeight: 44) { $0 }.fixedSize()
                 Spacer()
             }
             if tab == "Import" { importTab } else if tab == "Share" { shareTab } else { exploreTab }

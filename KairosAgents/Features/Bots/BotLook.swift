@@ -224,12 +224,14 @@ struct BotLookScreen: View {
 
     private var changed: Bool {
         let bot = store.bot(botID)
-        return name != bot.name || job != bot.role || colorHex != bot.colorHex || shape != bot.shape || accessory != bot.accessory
+        // Against what Save keeps: the name is saved trimmed, so a trailing space is not a change.
+        return name.trimmingCharacters(in: .whitespaces) != bot.name || job != bot.role || colorHex != bot.colorHex || shape != bot.shape || accessory != bot.accessory
     }
 
     private func save() {
         var bot = store.bot(botID)
         bot.name = name.trimmingCharacters(in: .whitespaces)
+        name = bot.name
         bot.role = job
         bot.colorHex = colorHex
         bot.shape = shape
