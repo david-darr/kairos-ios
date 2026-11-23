@@ -325,7 +325,7 @@ struct RequestCard: View {
 
     private func choiceButton(_ choice: PendingRequest.Choice, filled: Bool) -> some View {
         Button {
-            Haptics.success()
+            if choice.allows { Haptics.success() } else { Haptics.warning() }
             sent = true
             onChoice(choice)
         } label: {

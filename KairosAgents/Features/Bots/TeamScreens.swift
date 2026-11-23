@@ -133,7 +133,8 @@ struct TeamScreen: View {
                     .background(Palette.gold.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             PillButton(title: paused ? "Resume team" : "Pause team", symbol: paused ? "play.fill" : "pause.fill", look: paused ? .filled : .plain, wide: true) {
-                Haptics.thud()
+                // A paired pause asks first, and its confirm sheet gives the buzz.
+                if !isLive || paused { Haptics.thud() }
                 if isLive {
                     pauseLive(team, paused: paused)
                 } else {

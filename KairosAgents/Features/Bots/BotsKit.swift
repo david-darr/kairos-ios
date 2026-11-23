@@ -718,7 +718,7 @@ struct ConfirmSheet: View {
             VStack(spacing: 16) {
                 SheetTitle(title: title, detail: detail)
                 PillButton(title: confirm, look: danger ? .danger : .filled, wide: true) {
-                    Haptics.thud()
+                    if danger { Haptics.thud() } else { Haptics.select() }
                     action()
                     dismiss()
                 }

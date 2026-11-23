@@ -346,6 +346,7 @@ private struct ApprovalBody: View {
     @State private var replying = false
     @State private var reply = ""
     @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -370,35 +371,33 @@ private struct ApprovalBody: View {
                     PillButton(title: "Reject", look: .plain, wide: true) { settle(.denied) }
                     PillButton(title: "Allow", look: .filled, wide: true) { settle(.allowedOnce) }
                 }
-                HStack(spacing: 8) {
-                    if card.live == nil {
-                        PillButton(title: "Reply", symbol: "arrowshape.turn.up.left", wide: true) {
-                            withAnimation(Motion.snappy) { replying = true }
-                            focused = true
+                if card.live == nil || moreWays {
+                    HStack(spacing: 8) {
+                        if card.live == nil {
+                            PillButton(title: "Reply", symbol: "arrowshape.turn.up.left", wide: true) {
+                                withAnimation(Motion.snappy) { replying = true }
+                                focused = true
+                            }
+                        }
+                        if moreWays {
+                            Menu {
+                                if store.offers(card, .allowedChat) {
+                                    Button("Allow for this chat") { settle(.allowedChat) }
+                                }
+                                if teamAllow {
+                                    Button("Allow for the team") { settle(.allowedTeam) }
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text("More ways to allow").font(KFont.ui(15, .semibold, relativeTo: .subheadline)).lineLimit(1)
+                                    Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold))
+                                }
+                                .foregroundStyle(Palette.ink)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(Palette.ink.opacity(0.1), in: Capsule())
+                            }
                         }
                     }
-                    if card.live == nil || store.offers(card, .allowedChat) || store.offers(card, .allowedTeam) {
-                    Menu {
-                        Button("Allow once") { settle(.allowedOnce) }
-                        if store.offers(card, .allowedChat) {
-                            Button("Allow for this chat") { settle(.allowedChat) }
-                        }
-                        if teamAllow {
-                            Button("Allow for the team") { settle(.allowedTeam) }
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("More ways to allow").font(KFont.ui(15, .semibold, relativeTo: .subheadline))
-                            Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold))
-                        }
-                        .foregroundStyle(Palette.ink)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .background(Palette.ink.opacity(0.1), in: Capsule())
-                    }
-                    }
-                }
-                if teamAllow {
-                    PillButton(title: "Allow for the team", symbol: "person.3", wide: true) { settle(.allowedTeam) }
                 }
             }
         }
@@ -431,12 +430,17 @@ private struct ApprovalBody: View {
         card.live == nil ? store.team(of: card.botID) != nil : store.offers(card, .allowedTeam)
     }
 
+    /// The other scopes beyond Allow (once): for this chat, and for the team.
+    private var moreWays: Bool { store.offers(card, .allowedChat) || teamAllow }
+
     private func settle(_ result: Settled) {
-        Haptics.success()
-        if card.live != nil {
-            store.respondLive(card, result)
-        } else {
-            store.settle(card.id, result)
+        if result == .denied { Haptics.warning() } else { Haptics.success() }
+        withAnimation(reduceMotion ? nil : Motion.snappy) {
+            if card.live != nil {
+                store.respondLive(card, result)
+            } else {
+                store.settle(card.id, result)
+            }
         }
     }
 }
@@ -450,6 +454,7 @@ private struct QuestionBody: View {
     @State private var picks: [Int: Set<Int>] = [:]
     @State private var custom: [Int: String] = [:]
     @State private var warn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -542,7 +547,7 @@ private struct QuestionBody: View {
             withAnimation(Motion.snappy) { picks[current] = set; warn = false }
             if !question.multi, current < questions.count - 1 {
                 Task {
-                    try? await Task.sleep(for: .milliseconds(280))
+                    try? await Task.sleep(for: Motion.autoAdvance)
                     withAnimation(Motion.snappy) { current += 1 }
                 }
             }
@@ -572,16 +577,20 @@ private struct QuestionBody: View {
     private var controls: some View {
         HStack(spacing: 8) {
             if current > 0 {
-                PillButton(title: "Back", wide: true) { current -= 1 }
-            } else {
-                PillButton(title: "Skip", wide: true) {
-                    Haptics.tap()
-                    if card.live != nil {
-                        store.respondLive(card, .skipped)
-                    } else {
-                        store.settle(card.id, .skipped)
-                    }
+                Button { current -= 1 } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Palette.ink)
+                        .frame(width: 44, height: 44)
+                        .background(Palette.ink.opacity(0.1), in: Circle())
+                        .contentShape(Circle())
                 }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel("Back")
+            }
+            PillButton(title: "Skip") {
+                Haptics.tap()
+                settle(.skipped)
             }
             if current < questions.count - 1 {
                 PillButton(title: "Next", look: .filled, wide: true) { current += 1 }
@@ -589,11 +598,7 @@ private struct QuestionBody: View {
                 PillButton(title: questions.count > 1 ? "Send answers" : "Send answer", look: .filled, wide: true) {
                     if questions.indices.allSatisfy(isAnswered) {
                         Haptics.success()
-                        if card.live != nil {
-                            store.respondLive(card, .answered, answers: liveAnswers)
-                        } else {
-                            store.settle(card.id, .answered)
-                        }
+                        settle(.answered)
                     } else {
                         Haptics.thud()
                         withAnimation(Motion.snappy) {
@@ -602,6 +607,18 @@ private struct QuestionBody: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private func settle(_ result: Settled) {
+        withAnimation(reduceMotion ? nil : Motion.snappy) {
+            if card.live == nil {
+                store.settle(card.id, result)
+            } else if result == .answered {
+                store.respondLive(card, result, answers: liveAnswers)
+            } else {
+                store.respondLive(card, result)
             }
         }
     }
@@ -644,6 +661,7 @@ private struct ReviewBody: View {
     let store = BotsStore.shared
     @State private var changes = ""
     @State private var asking = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -661,8 +679,14 @@ private struct ReviewBody: View {
                 HStack(spacing: 8) {
                     PillButton(title: "Cancel", wide: true) { withAnimation(Motion.snappy) { asking = false } }
                     PillButton(title: "Request changes", look: .filled, wide: true) {
-                        guard !changes.isEmpty else { store.say("Write what should change first."); return }
-                        store.settle(card.id, .replied(changes))
+                        let wanted = changes.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !wanted.isEmpty else { store.say("Write what should change first."); return }
+                        guard !BotsInboxWire.isApprovalWord(wanted) else {
+                            store.say("Say what should change. A word like ok would approve it instead.")
+                            return
+                        }
+                        Haptics.warning()
+                        withAnimation(reduceMotion ? nil : Motion.snappy) { store.settle(card.id, .replied(wanted)) }
                     }
                 }
             } else {
@@ -670,7 +694,7 @@ private struct ReviewBody: View {
                     PillButton(title: "Request changes", wide: true) { withAnimation(Motion.snappy) { asking = true } }
                     PillButton(title: "Approve", look: .filled, wide: true) {
                         Haptics.success()
-                        store.settle(card.id, .allowedOnce)
+                        withAnimation(reduceMotion ? nil : Motion.snappy) { store.settle(card.id, .allowedOnce) }
                     }
                 }
             }
@@ -770,17 +794,13 @@ struct InboxRowCard: View {
     @State private var writing = false
     @State private var confirm: Pending?
     @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// What the confirm sheet sends, with the row as it was when the sheet opened: a row that changed under the
     /// sheet is refused by the desktop (its revision no longer matches) instead of answered unseen.
     enum Pending: Identifiable {
-        case reply(BotInboxRowDTO), close(BotInboxRowDTO)
-        var id: String {
-            switch self {
-            case .reply: "reply"
-            case .close: "close"
-            }
-        }
+        case close(BotInboxRowDTO)
+        var id: String { "close" }
     }
 
     private var review: Bool { BotsInboxWire.lane(row.id) == "review" }
@@ -852,12 +872,9 @@ struct InboxRowCard: View {
             }
         }
         .animation(Motion.snappy, value: replying)
+        .animation(reduceMotion ? nil : Motion.snappy, value: settled)
         .sheet(item: $confirm) { pending in
             switch pending {
-            case .reply(let seen):
-                ConfirmSheet(title: "Send this reply?", detail: "\(botName) gets your reply: \(trimmed)", confirm: "Send reply", danger: false) {
-                    send("reply", seen)
-                }
             case .close(let seen):
                 ConfirmSheet(title: "Close this question?", detail: "\(botName) gets no answer, and the question cannot be answered after this.", confirm: "Close question") {
                     send("close", seen)
@@ -893,10 +910,8 @@ struct InboxRowCard: View {
                             store.say("Say what should change. A word like ok would approve it instead.")
                             return
                         }
-                        send("reply")
-                    } else {
-                        confirm = .reply(row)
                     }
+                    send("reply")
                 }
             }
         }
@@ -906,7 +921,11 @@ struct InboxRowCard: View {
 
     private func send(_ action: String, _ seen: BotInboxRowDTO? = nil) {
         guard !busy, !writing else { return }
-        Haptics.tap()
+        if action == "reply" {
+            if review { Haptics.warning() } else { Haptics.success() }
+        } else {
+            Haptics.tap()
+        }
         writing = true
         let sent = action == "reply" ? trimmed : ""
         let target = seen ?? row

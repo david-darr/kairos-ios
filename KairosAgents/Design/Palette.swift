@@ -127,6 +127,8 @@ nonisolated enum Motion {
     static let bouncy = Animation.spring(response: 0.46, dampingFraction: 0.72)
     static let sheet = Animation.spring(response: 0.5, dampingFraction: 0.86)
     static let gentle = Animation.easeInOut(duration: 0.24)
+    /// The pause after a single choice before a card moves to its next question.
+    static let autoAdvance: Duration = .milliseconds(280)
 }
 
 enum Haptics {
@@ -134,4 +136,6 @@ enum Haptics {
     static func thud() { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
     static func select() { UISelectionFeedbackGenerator().selectionChanged() }
     static func success() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+    /// For a no: Reject, Request changes.
+    static func warning() { UINotificationFeedbackGenerator().notificationOccurred(.warning) }
 }
