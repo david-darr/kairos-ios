@@ -372,6 +372,8 @@ nonisolated struct PlanWindow: Identifiable, Hashable, Sendable {
     var name: String
     var percent: Int
     var resets: String
+    /// Sample only: when this window resets later today, in minutes after midnight. nil when it is not today.
+    var resetAt: Int? = nil
 }
 
 nonisolated struct BotConversation: Identifiable, Hashable, Sendable {

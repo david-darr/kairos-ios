@@ -14,6 +14,13 @@ private struct CalendarEntry: Identifiable {
     var place: Double { slot ?? Double(hour) + Double(minute) / 60 }
 }
 
+/// Sample: the first plan window that resets later today (of one provider, when given), with its time.
+private func sampleReset(_ windows: [PlanWindow], provider: String? = nil) -> (window: PlanWindow, hour: Int, minute: Int)? {
+    guard let window = windows.first(where: { $0.resetAt != nil && (provider == nil || $0.provider == provider) }),
+          let at = window.resetAt else { return nil }
+    return (window, at / 60, at % 60)
+}
+
 /// One day of scheduled runs. Week strip on top, an hour grid below, a month sheet behind the title.
 struct CalendarDayView: View {
     let botID: String?
@@ -241,18 +248,23 @@ struct CalendarDayView: View {
         .accessibilityHidden(true)
     }
 
+    /// Sample: when the sample plan usage says a window resets today. Nothing when none does.
+    @ViewBuilder
     private var resetMarker: some View {
-        let y = CGFloat(14 - firstHour) * hourHeight
-        return HStack(spacing: 6) {
-            Image(systemName: "arrow.counterclockwise").font(.system(size: 10, weight: .bold))
-            Text("Claude resets 2:00 PM").font(KFont.ui(11.5, .medium, relativeTo: .caption2))
+        if let reset = sampleReset(store.planWindows) {
+            let place = min(Double(lastHour) + 0.75, max(Double(firstHour), Double(reset.hour) + Double(reset.minute) / 60))
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.counterclockwise").font(.system(size: 10, weight: .bold))
+                Text("\(reset.window.provider) resets \(clockText(reset.hour, reset.minute))").font(KFont.ui(11.5, .medium, relativeTo: .caption2))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Palette.working)
+            .padding(.horizontal, 8)
+            .frame(height: 20)
+            .background(Palette.working.opacity(0.14), in: Capsule())
+            .offset(x: 52, y: (CGFloat(place) - CGFloat(firstHour)) * hourHeight - 10)
+            .allowsHitTesting(false)
         }
-        .foregroundStyle(Palette.working)
-        .padding(.horizontal, 8)
-        .frame(height: 20)
-        .background(Palette.working.opacity(0.14), in: Capsule())
-        .offset(x: 52, y: y - 10)
-        .allowsHitTesting(false)
     }
 
     /// Paired: when the first usage limit that resets on this day does, from the desktop.
@@ -302,8 +314,13 @@ struct CalendarDayView: View {
                     }
                     hour += step
                 }
-            case .custom, .limitReset:
-                out.append(CalendarEntry(id: "\(routine.id)", routine: routine, hour: routine.mode == .limitReset ? 14 : routine.hour, minute: 0))
+            case .custom:
+                out.append(CalendarEntry(id: "\(routine.id)", routine: routine, hour: routine.hour, minute: 0))
+            case .limitReset:
+                // At the reset the sample plan usage gives for its limit; not drawn when there is none today.
+                if let reset = sampleReset(store.planWindows, provider: routine.limitName) {
+                    out.append(CalendarEntry(id: "\(routine.id)", routine: routine, hour: reset.hour, minute: reset.minute))
+                }
             default:
                 if routine.hour >= firstHour && routine.hour <= lastHour {
                     out.append(CalendarEntry(id: "\(routine.id)", routine: routine, hour: routine.hour, minute: routine.minute))
@@ -617,12 +634,16 @@ struct AutomationDetailSheet: View {
                 BotsSection(title: "Instructions") {
                     Text(live.instructions).font(KFont.ui(15)).foregroundStyle(Palette.ink).frame(maxWidth: .infinity, alignment: .leading).padding(14)
                 }
-                BotsSection(title: "Recent runs") {
-                    runRow(live.lastRun, live.failedInARow > 0 ? "Failed" : "Done")
-                    RowLine()
-                    runRow("Yesterday", "Done")
-                    RowLine()
-                    runRow("2 days ago", "Missed")
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionLabel(text: "Recent runs").padding(.horizontal, 4)
+                    if let run = sampleRun(live) {
+                        runRow(run.when, run.word, color: run.word == "Running" ? Palette.inkFaint : nil)
+                            .kCard(radius: 20)
+                    } else {
+                        Text("It has not run yet.").font(KFont.ui(15)).foregroundStyle(Palette.inkDim).padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .kCard(radius: 20)
+                    }
                 }
                 HStack(spacing: 8) {
                     PillButton(title: "Run now", symbol: "bolt.fill", look: .filled, wide: true) {
@@ -650,6 +671,17 @@ struct AutomationDetailSheet: View {
                 dismiss()
             }
         }
+    }
+
+    /// Sample: the one run the routine's own last-run line tells of, or nil when it has not run.
+    private func sampleRun(_ routine: Routine) -> (when: String, word: String)? {
+        let text = routine.lastRun
+        if text == "Running now" { return ("Now", "Running") }
+        if text == "Last run failed" { return ("Last run", "Failed") }
+        guard text.hasPrefix("Last ran ") else { return nil }
+        let when = String(text.dropFirst("Last ran ".count))
+        guard let first = when.first else { return nil }
+        return (String(first).uppercased() + String(when.dropFirst()), routine.failedInARow > 0 ? "Failed" : "Done")
     }
 
     private func runRow(_ when: String, _ word: String, color: Color? = nil) -> some View {
@@ -810,11 +842,13 @@ struct AutomationsScreen: View {
         if isLive {
             liveLimitWarning
         } else if let window = store.planWindows.first(where: { $0.percent >= 60 }) {
-            let due = store.routines.filter { $0.on && $0.hour < 14 && $0.mode != .limitReset }.prefix(3)
+            let resetHour = window.resetAt.map { $0 / 60 }
+            let due = store.routines.filter { routine in routine.on && routine.mode != .limitReset && resetHour.map { routine.hour < $0 } ?? true }.prefix(3)
+            let resets = window.resetAt.map { "resets \(clockText($0 / 60, $0 % 60))" } ?? (window.resets.prefix(1).lowercased() + window.resets.dropFirst())
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "gauge.with.dots.needle.67percent").foregroundStyle(Palette.goldText)
-                    Text("\(window.provider): \(window.percent)% used, resets 2:00 PM").font(KFont.ui(15, .semibold)).foregroundStyle(Palette.ink)
+                    Text("\(window.provider): \(window.percent)% used, \(resets)").font(KFont.ui(15, .semibold)).foregroundStyle(Palette.ink)
                 }
                 Text("These are due first.").font(KFont.ui(13.5)).foregroundStyle(Palette.inkDim)
                 ForEach(Array(due)) { routine in

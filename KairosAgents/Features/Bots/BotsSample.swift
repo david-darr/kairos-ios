@@ -175,8 +175,13 @@ nonisolated enum BotsSample {
         SavedLogin(site: "rental-vans.example", username: "orders", twoFactor: false, lastUsed: "Never used", allBots: true),
     ]
 
+    /// When the sample 5 hour window resets today, in minutes after midnight. The calendar's reset marker,
+    /// the usage warning and Plan usage all read it from here.
+    static let fiveHourReset = 14 * 60
+
     static let planWindows: [PlanWindow] = [
-        PlanWindow(provider: "Claude", name: "5 hour window", percent: 64, resets: "Resets at 2:00 PM"),
+        PlanWindow(provider: "Claude", name: "5 hour window", percent: 64,
+                   resets: "Resets at \(clockText(fiveHourReset / 60, fiveHourReset % 60))", resetAt: fiveHourReset),
         PlanWindow(provider: "Claude", name: "This week", percent: 41, resets: "Resets Monday"),
         PlanWindow(provider: "Codex", name: "This week", percent: 22, resets: "Resets Thursday"),
     ]

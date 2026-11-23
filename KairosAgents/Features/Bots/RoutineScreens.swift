@@ -58,32 +58,24 @@ nonisolated enum RoutineTiming {
 
 // MARK: - Routines list
 
-/// The Routines and triggers page: the list below, with a page header and a New menu.
+/// The Routines and triggers page: the list below under a page header. The list's own
+/// "Add a routine" control is the one way to add here.
 struct RoutinesScreen: View {
     let botID: String
     let store = BotsStore.shared
-    @State private var goto: BotsRoute?
 
     /// Paired: every routine and trigger here is the desktop's, never a sample.
     private var isLive: Bool { !Connection.shared.usesSampleData }
 
     var body: some View {
-        BotsPage("Routines and triggers", subtitle: store.bot(botID).name, live: isLive, trailing: {
-            RoutineAddMenu(botID: botID, isLive: isLive, goto: $goto) {
-                Image(systemName: "plus").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
-                    .frame(width: 44, height: 44).contentShape(Circle())
-            }
-            .kGlass(Circle(), interactive: true)
-            .accessibilityLabel(isLive ? "New routine" : "New routine or trigger")
-        }) {
+        BotsPage("Routines and triggers", subtitle: store.bot(botID).name, live: isLive) {
             RoutinesList(botID: botID)
         }
-        .navigationDestination(item: $goto) { BotsDestination(route: $0) }
     }
 }
 
-/// The choices for a new routine or trigger, one menu for the Routines page and the panel's Routines
-/// section. Paired, only a routine: triggers are made on the desktop.
+/// The add control for a bot's routines list. Sample: a menu of a routine or a trigger. Paired, only a
+/// routine can be made here (triggers are made on the desktop), so it goes straight to the new routine.
 struct RoutineAddMenu<MenuLabel: View>: View {
     let botID: String
     let isLive: Bool
@@ -91,14 +83,16 @@ struct RoutineAddMenu<MenuLabel: View>: View {
     @ViewBuilder let label: () -> MenuLabel
 
     var body: some View {
-        Menu {
-            Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
-            if !isLive {
+        if isLive {
+            Button { goto = .routineEditor(botID, nil) } label: { label() }
+        } else {
+            Menu {
+                Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
                 Button { goto = .triggerEditor(botID, nil, webhook: false) } label: { Label("When something happens in an app", systemImage: "app.badge") }
                 Button { goto = .triggerEditor(botID, nil, webhook: true) } label: { Label("When another app calls", systemImage: "arrow.down.left.circle") }
+            } label: {
+                label()
             }
-        } label: {
-            label()
         }
     }
 }
@@ -115,6 +109,8 @@ struct RoutinesList: View {
     @State private var deleting: Routine?
     @State private var ownRemoved: Routine?
     @State private var running: Routine?
+    /// The routine whose details sheet is open.
+    @State private var opened: Routine?
     @State private var watching = true
     @State private var morningBrief = true
     @State private var briefHour = 8
@@ -172,7 +168,7 @@ struct RoutinesList: View {
                     EmptyNote(text: "No routines yet. Add one and this bot works on its own, on a schedule.", symbol: "clock").kCard(radius: 20)
                 }
                 ForEach(Array(routines.enumerated()), id: \.element.id) { index, routine in
-                    RoutineRow(routine: routine, showFace: false, onDelete: { deleting = routine }, onRun: { running = routine })
+                    RoutineRow(routine: routine, showFace: false, onOpen: { opened = routine }, onDelete: { deleting = routine }, onRun: { running = routine })
                         .arrives(index)
                 }
                 if isLive && live.skippedRoutines > 0 {
@@ -231,6 +227,9 @@ struct RoutinesList: View {
             .kCard(radius: 20)
         }
         .navigationDestination(item: $goto) { BotsDestination(route: $0) }
+        .sheet(item: $opened) { routine in
+            AutomationDetailSheet(routine: routine) { goto = .routineEditor(routine.botID, routine.id) }
+        }
         .sheet(item: $deleting) { routine in
             ConfirmSheet(title: "Delete this routine?", detail: "\"\(routine.name)\" will stop. You can bring it back for a little while.", confirm: "Delete routine") {
                 if isLive {
@@ -381,6 +380,8 @@ struct RoutinesList: View {
 struct RoutineRow: View {
     let routine: Routine
     var showFace = false
+    /// Tapping the name and schedule opens the routine's details.
+    var onOpen: () -> Void = {}
     var onDelete: () -> Void = {}
     /// Paired: Run now asks first through this.
     var onRun: () -> Void = {}
@@ -395,7 +396,10 @@ struct RoutineRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
                 if showFace { BotFace(bot: store.bot(routine.botID), size: 40) }
-                NavigationLink(value: BotsRoute.routineEditor(routine.botID, routine.id)) {
+                Button {
+                    Haptics.tap()
+                    onOpen()
+                } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(routine.name).font(KFont.ui(16.5, .medium)).foregroundStyle(routine.on ? Palette.ink : Palette.inkFaint)
                         Text(routine.on ? "\(sentence)\(next.map { " · next \($0)" } ?? "")" : "\(sentence) · paused")
@@ -446,7 +450,7 @@ struct RoutineRow: View {
     private var menu: some View {
         Menu { menuItems } label: {
             Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.inkDim)
-                .frame(width: 36, height: 44).contentShape(Rectangle())
+                .frame(width: 44, height: 44).contentShape(Rectangle())
         }
         .accessibilityLabel("Options for \(routine.name)")
     }

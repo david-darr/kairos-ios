@@ -31,10 +31,6 @@ struct BotSettingsList: View {
                     NavigationLink(value: BotsRoute.routines(botID)) {
                         NavRow(title: "Routines and triggers", symbol: "clock.arrow.circlepath", value: routinesValue(paired))
                     }
-                    RowLine(inset: 54)
-                    NavigationLink(value: BotsRoute.calendar(botID)) {
-                        NavRow(title: "Automation calendar", symbol: "calendar.day.timeline.left")
-                    }
                 }
                 .buttonStyle(PressStyle(scale: 0.98))
                 .kCard(radius: 20)
