@@ -66,6 +66,8 @@ final class AppRouter {
 
     func push(_ route: Route, on tab: AppTab? = nil) {
         let target = tab ?? self.tab
+        // The All bots cover sits over Home: anything pushed on Home must show, so the cover closes.
+        if target == .home { allBotsShown = false }
         select(target)
         paths[target, default: []].append(route)
     }

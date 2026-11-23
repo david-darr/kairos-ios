@@ -228,18 +228,13 @@ struct RoutinesList: View {
         }
         .navigationDestination(item: $goto) { BotsDestination(route: $0) }
         .sheet(item: $opened) { routine in
-            AutomationDetailSheet(routine: routine) { goto = .routineEditor(routine.botID, routine.id) }
+            AutomationDetailSheet(routine: routine, edit: { goto = .routineEditor(routine.botID, routine.id) }, onDelete: { gone, say in
+                delete(gone, say: say)
+            })
         }
         .sheet(item: $deleting) { routine in
             ConfirmSheet(title: "Delete this routine?", detail: "\"\(routine.name)\" will stop. You can bring it back for a little while.", confirm: "Delete routine") {
-                if isLive {
-                    live.delete(routine, onDeleted: { gone in showRemoved(gone) }, say: store.say)
-                    return
-                }
-                withAnimation(Motion.snappy) {
-                    store.routines.removeAll { $0.id == routine.id }
-                }
-                showRemoved(routine)
+                delete(routine, say: store.say)
             }
         }
         .sheet(item: $running) { routine in
@@ -267,6 +262,21 @@ struct RoutinesList: View {
                 store.say("The morning time was not sent while another change was on its way. Pick it again.")
             }
         }
+    }
+
+    /// The one delete here, from the list's menu or the details sheet: "Bring it back" shows after it.
+    private func delete(_ routine: Routine, say: @escaping (String) -> Void) {
+        if isLive {
+            live.delete(routine, onDeleted: { gone in
+                if opened?.id == gone.id { opened = nil }
+                showRemoved(gone)
+            }, say: say)
+            return
+        }
+        withAnimation(Motion.snappy) {
+            store.routines.removeAll { $0.id == routine.id }
+        }
+        showRemoved(routine)
     }
 
     private func showRemoved(_ routine: Routine) {

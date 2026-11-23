@@ -562,6 +562,11 @@ final class BotsInboxLive {
             default: settled = "You replied: \(text)"
             }
             withAnimation(Motion.bouncy) { answered[row.id] = BotAnsweredRow(row: row, text: settled) }
+            // The roster's count drops with it, as a card answer's does, so a badge read from it agrees.
+            if let botID = row.sender?.id {
+                let bots = BotsStore.shared
+                bots.liveNeedsYou[botID] = max(0, (bots.liveNeedsYou[botID] ?? 1) - 1)
+            }
             Haptics.success()
             // The screen stops saying "Sending" now; the re-reads follow on their own.
             Task {

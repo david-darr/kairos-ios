@@ -151,6 +151,21 @@ final class ChatStore {
         }
     }
 
+    /// The desktop's bot pins, read by the Bots area with its roster: Home's list follows, keeping its order.
+    func adoptPins(_ pins: Set<String>, order: [String]) {
+        guard !isSample else { return }
+        let kept = pinnedIDs.filter { pins.contains($0) }
+        let fresh = kept + order.filter { pins.contains($0) && !kept.contains($0) }
+        if fresh != pinnedIDs { pinnedIDs = fresh }
+    }
+
+    /// Swap two pinned bots on Home. Only the sample can reorder pins; the desktop keeps its own order.
+    func swapPins(_ first: String, _ second: String) {
+        guard isSample, let a = pinnedIDs.firstIndex(of: first), let b = pinnedIDs.firstIndex(of: second) else { return }
+        pinnedIDs.swapAt(a, b)
+        (backend as? SampleBackend)?.pinOrder(pinnedIDs)
+    }
+
     /// Pin or unpin a team on Home. Kept on this phone: the desktop has no pin for a team.
     func togglePin(team id: String) {
         if pinnedTeamIDs.contains(id) { pinnedTeamIDs.removeAll { $0 == id } } else { pinnedTeamIDs.append(id) }

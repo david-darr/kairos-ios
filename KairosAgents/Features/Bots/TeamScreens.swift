@@ -359,6 +359,7 @@ struct TeamScreen: View {
                 if isLive { pauseLive(team, paused: paused) } else { store.setPaused(team.id, !team.paused) }
             } label: { Label(paused ? "Resume team" : "Pause team", systemImage: paused ? "play" : "pause") }
                 .disabled(isLive && live.waits(team.id))
+            homePinButton(team)
             Button { sheet = .rename } label: { Label("Rename", systemImage: "pencil") }
             Button(role: .destructive) { sheet = .delete } label: { Label("Delete team", systemImage: "trash") }
         } label: {
@@ -367,6 +368,19 @@ struct TeamScreen: View {
         }
         .kGlass(Circle(), interactive: true)
         .accessibilityLabel("Team options")
+    }
+
+    /// A team's Home pin, kept on this phone (the desktop has no pin for a team).
+    private func homePinButton(_ team: BotTeam) -> some View {
+        let home = ChatStore.shared
+        let pinned = home.isPinned(team: team.id)
+        return Button {
+            Haptics.select()
+            withAnimation(Motion.snappy) { home.togglePin(team: team.id) }
+            store.say(pinned ? "\(team.name) is unpinned" : "\(team.name) is pinned")
+        } label: {
+            Label(pinned ? "Unpin from Home" : "Pin to Home", systemImage: pinned ? "pin.slash" : "pin")
+        }
     }
 }
 

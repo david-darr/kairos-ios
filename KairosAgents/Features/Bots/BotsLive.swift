@@ -9,7 +9,6 @@ nonisolated enum BotsLiveLoad: Equatable, Sendable {
 /// The sample roster, kept aside while the phone shows the paired desktop's bots.
 struct BotsSampleStash {
     var bots: [Bot]
-    var pinned: [String]
     var archived: [Bot]
     var chiefs: Set<String>
     var teams: [BotTeam]
@@ -128,13 +127,12 @@ extension BotsStore {
         }
         guard want != liveMode else { return }
         if want {
-            sampleStash = BotsSampleStash(bots: bots, pinned: pinned, archived: archived, chiefs: chiefs, teams: teams, needs: needs)
+            sampleStash = BotsSampleStash(bots: bots, archived: archived, chiefs: chiefs, teams: teams, needs: needs)
             resetLive()
             liveMode = true
         } else {
             if let stash = sampleStash {
                 bots = stash.bots
-                pinned = stash.pinned
                 archived = stash.archived
                 chiefs = stash.chiefs
                 teams = stash.teams
@@ -156,7 +154,6 @@ extension BotsStore {
     /// Every live bot, card and load state goes, ready to read the current account's.
     private func resetLive() {
         bots = []
-        pinned = []
         archived = []
         chiefs = []
         teams = []
@@ -276,6 +273,15 @@ extension BotsStore {
         }
     }
 
+    /// Home's poll: only the roster's needs-you counts, read again so every badge stays current. Quiet when it
+    /// fails; the next poll reads again.
+    func refreshNeeds() async {
+        guard liveMode, rosterLoad == .loaded else { return }
+        guard let read = await beginRead("needs") else { return }
+        guard let roster = try? await liveClient().agentRoster(), current("needs", read, first: false) else { return }
+        for agent in roster { liveNeedsYou[agent.id] = agent.needsYou ?? 0 }
+    }
+
     private func showRoster(_ roster: [AgentDTO], map: BotTeamMapDTO?, conversations: AgentConversationsDTO?) {
         let sorted = roster.sorted { a, b in
             switch (a.order, b.order) {
@@ -293,8 +299,9 @@ extension BotsStore {
         liveNeedsYou = counts
 
         if let conversations {
+            // The desktop's pins, read with the roster, keep Home's pins (the one list) current.
             let pins = Set((conversations.agents ?? []).filter { $0.pinned == true }.map(\.id))
-            pinned = shown.map(\.id).filter { pins.contains($0) }
+            ChatStore.shared.adoptPins(pins, order: shown.map(\.id))
         }
 
         if let map {
@@ -344,44 +351,6 @@ extension BotsStore {
 
     static func liveApproval(_ agent: AgentDTO) -> ApprovalLevel? {
         ApprovalLevel(rawValue: agent.approvalMode ?? "ask")
-    }
-
-    /// Pin or unpin a bot. Shown at once; put back if the desktop refuses; re-read when the answer is lost.
-    func pinLive(_ botID: String) {
-        guard liveMode else { return }
-        guard BotsLiveSession.account == Self.accountKey else {
-            say("Still reading your desktop. Try again in a moment.")
-            return
-        }
-        let account = BotsLiveSession.account
-        // The client of the pairing this was tapped under, taken now: a later pairing never gets this request.
-        guard let client = Connection.shared.client else {
-            say(APIError.notPaired.plain)
-            return
-        }
-        let wasPinned = pinned.contains(botID)
-        let name = bot(botID).name
-        if wasPinned { pinned.removeAll { $0 == botID } } else { pinned.append(botID) }
-        beginWrite()
-        Task {
-            do {
-                _ = try await client.agentOrganize(botID, action: wasPinned ? "unpin" : "pin")
-                endWrite()
-                guard stillLive(account) else { return }
-                say(wasPinned ? "\(name) is unpinned" : "\(name) is pinned")
-            } catch {
-                endWrite()
-                guard stillLive(account) else { return }
-                if unconfirmed(error) {
-                    say("Your desktop did not answer, so this iPhone could not confirm \(name) was \(wasPinned ? "unpinned" : "pinned"). This list shows what your desktop has.")
-                    await loadRoster()
-                    return
-                }
-                Connection.shared.note(error)
-                if wasPinned { if !pinned.contains(botID) { pinned.append(botID) } } else { pinned.removeAll { $0 == botID } }
-                say(error.plainWords)
-            }
-        }
     }
 
     // MARK: One bot

@@ -8,6 +8,7 @@ struct BotInboxSection: View {
     let live = BotsInboxLive.shared
     @State private var showAllDone = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let cards = store.needs.filter { $0.botID == botID }
@@ -49,25 +50,7 @@ struct BotInboxSection: View {
                 if done.isEmpty {
                     EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: 20)
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(done.prefix(showAllDone ? done.count : 3).enumerated()), id: \.element.id) { index, item in
-                            if index > 0 { RowLine(inset: 54) }
-                            DoneRow(item: item)
-                        }
-                        if done.count > 3 {
-                            RowLine()
-                            Button {
-                                withAnimation(Motion.snappy) { showAllDone.toggle() }
-                            } label: {
-                                Text(showAllDone ? "Show fewer" : "Show all \(done.count)")
-                                    .font(KFont.ui(15, .medium, relativeTo: .subheadline))
-                                    .foregroundStyle(Palette.goldText)
-                                    .frame(maxWidth: .infinity, minHeight: 48)
-                            }
-                            .buttonStyle(PressStyle())
-                        }
-                    }
-                    .kCard(radius: 20)
+                    doneList(done) { DoneRow(item: $0) }
                 }
             }
             }
@@ -120,6 +103,40 @@ struct BotInboxSection: View {
                 await live.pollRunning(botID)
             }
         }
+    }
+
+    /// The most Done rows drawn at once. The desktop sends every finished task, so the oldest wait there.
+    private static let doneLimit = 50
+
+    /// Done, newest first: three rows, then up to the 50 most recent when opened, drawn as they scroll in.
+    private func doneList<Item: Identifiable, Row: View>(_ items: [Item], @ViewBuilder row: @escaping (Item) -> Row) -> some View {
+        let shown = Array(items.prefix(showAllDone ? Self.doneLimit : 3))
+        return LazyVStack(spacing: 0) {
+            ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                if index > 0 { RowLine(inset: 54) }
+                row(item)
+            }
+            if showAllDone && items.count > Self.doneLimit {
+                RowLine()
+                Text("Showing the \(Self.doneLimit) most recent.")
+                    .font(KFont.ui(13.5, relativeTo: .footnote))
+                    .foregroundStyle(Palette.inkFaint)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            if items.count > 3 {
+                RowLine()
+                Button {
+                    withAnimation(reduceMotion ? nil : Motion.snappy) { showAllDone.toggle() }
+                } label: {
+                    Text(showAllDone ? "Show fewer" : "Show all \(items.count)")
+                        .font(KFont.ui(15, .medium, relativeTo: .subheadline))
+                        .foregroundStyle(Palette.goldText)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .kCard(radius: 20)
     }
 
     // MARK: Paired
@@ -214,25 +231,7 @@ struct BotInboxSection: View {
                 if rows.done.isEmpty {
                     EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: 20)
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(Array(rows.done.prefix(showAllDone ? rows.done.count : 3).enumerated()), id: \.element.id) { index, item in
-                            if index > 0 { RowLine(inset: 54) }
-                            LiveDoneRow(item: item)
-                        }
-                        if rows.done.count > 3 {
-                            RowLine()
-                            Button {
-                                withAnimation(Motion.snappy) { showAllDone.toggle() }
-                            } label: {
-                                Text(showAllDone ? "Show fewer" : "Show all \(rows.done.count)")
-                                    .font(KFont.ui(15, .medium, relativeTo: .subheadline))
-                                    .foregroundStyle(Palette.goldText)
-                                    .frame(maxWidth: .infinity, minHeight: 48)
-                            }
-                            .buttonStyle(PressStyle())
-                        }
-                    }
-                    .kCard(radius: 20)
+                    doneList(rows.done) { LiveDoneRow(item: $0) }
                 }
             }
         }

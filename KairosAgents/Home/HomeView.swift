@@ -23,7 +23,7 @@ struct HomeView: View {
                 if let banner = bannerText {
                     connectionBanner(banner).arrives(0)
                 }
-                if !store.glance.isEmpty {
+                if !store.glance.isEmpty || (!store.isSample && (BotsStore.shared.needsTotal ?? 0) > 0) {
                     glanceRow.arrives(0)
                 }
 
@@ -151,6 +151,8 @@ struct HomeView: View {
                 try? await Task.sleep(for: .seconds(20))
                 if Task.isCancelled { break }
                 await store.poll()
+                // The bots' needs-you counts, so the faces, the chat header and the pill stay current.
+                await BotsStore.shared.refreshNeeds()
             }
         }
         .onChange(of: store.liveWork) { chrome.liveWork = store.liveWork }
@@ -167,7 +169,10 @@ struct HomeView: View {
         .onChange(of: scenePhase) {
             guard scenePhase == .active else { return }
             connection.wake()
-            Task { await store.refreshHome() }
+            Task {
+                await store.refreshHome()
+                await BotsStore.shared.refreshNeeds()
+            }
         }
     }
 
@@ -300,10 +305,12 @@ struct HomeView: View {
                     .accessibilityLabel("Next event: \(event). Opens Calendar")
                 }
 
-                if !store.isSample && store.glance.needsYou > 0 {
+                // The bots' own counts once their roster is read, so the pill and the faces' badges agree.
+                let needs = BotsStore.shared.needsTotal ?? store.glance.needsYou
+                if !store.isSample && needs > 0 {
                     HStack(spacing: 7) {
                         Circle().fill(Palette.gold).frame(width: 8, height: 8)
-                        Text(HomeFaceWords.needYou(store.glance.needsYou)).foregroundStyle(Palette.ink)
+                        Text(HomeFaceWords.needYou(needs)).foregroundStyle(Palette.ink)
                     }
                     .glancePill()
                 }

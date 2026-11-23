@@ -15,7 +15,6 @@ final class BotsStore: BotsProviding {
 
     // Roster
     var bots: [Bot]
-    var pinned: [String] = ["kip", "producer", "scout"]
     var archived: [Bot]
     var chiefs: Set<String> = ["producer"]
 
@@ -120,9 +119,24 @@ final class BotsStore: BotsProviding {
 
     func team(of botID: String) -> BotTeam? { teams.first { $0.members.contains(botID) } }
 
+    /// How many things wait on the person for one bot: the one count every badge shows (Home's face, the chat
+    /// header, All bots and the panel's Inbox). Paired, the bot's own inbox once it is read (it drops as each
+    /// is answered), else the roster's count.
     func needsCount(_ botID: String) -> Int {
-        if liveMode { return liveNeedsYou[botID] ?? 0 }
+        if liveMode {
+            if cardsLoad[botID] == .loaded && BotsInboxLive.shared.inboxLoad == .loaded {
+                return BotInboxSection.livePending(botID)
+            }
+            return liveNeedsYou[botID] ?? 0
+        }
         return needs.filter { $0.botID == botID && $0.settled == nil }.count
+    }
+
+    /// Everything waiting on the person across the bots, from the same counts. nil until the roster is read.
+    var needsTotal: Int? {
+        guard liveMode, rosterLoad == .loaded else { return nil }
+        let ids = Set(bots.map(\.id) + archived.map(\.id) + liveNeedsYou.keys)
+        return ids.reduce(0) { $0 + needsCount($1) }
     }
 
     func routines(for botID: String) -> [Routine] { routines.filter { $0.botID == botID } }
@@ -143,14 +157,40 @@ final class BotsStore: BotsProviding {
         withAnimation(Motion.bouncy) { needs[index].settled = result }
     }
 
+    // Pins are Home's: one list, kept by `ChatStore` (saved on the desktop when paired), so a pin made here
+    // shows on Home at once and the other way round.
+
+    /// The pinned bots, Kip first (Home always shows Kip), then Home's pins in Home's order.
+    var pinned: [String] {
+        let kip = bots.first(where: \.isKip).map { [$0.id] } ?? []
+        return kip + movablePins
+    }
+
+    /// Home's pinned bots that this roster has, without Kip: the ones that can be moved or unpinned.
+    var movablePins: [String] {
+        ChatStore.shared.pinnedIDs.filter { id in bots.contains { $0.id == id && !$0.isKip } }
+    }
+
+    /// Kip is always on Home; a bot Home does not know (one made only in this sample) cannot be pinned there.
+    func canPin(_ botID: String) -> Bool {
+        guard let found = bots.first(where: { $0.id == botID }), !found.isKip else { return false }
+        return ChatStore.shared.bots.contains { $0.id == botID }
+    }
+
+    func isPinned(_ botID: String) -> Bool { ChatStore.shared.isPinned(bot: botID) }
+
+    /// Pin or unpin a bot on Home, the same way Home's own menu does.
     func togglePin(_ botID: String) {
-        if liveMode { pinLive(botID); return }
-        if pinned.contains(botID) {
-            pinned.removeAll { $0 == botID }
-            say("\(bot(botID).name) is unpinned")
-        } else {
-            pinned.append(botID)
-            say("\(bot(botID).name) is pinned")
+        guard canPin(botID) else { return }
+        let name = bot(botID).name
+        let was = isPinned(botID)
+        Haptics.select()
+        Task {
+            if let problem = await ChatStore.shared.togglePin(bot: botID) {
+                say(problem)
+            } else {
+                say(was ? "\(name) is unpinned" : "\(name) is pinned")
+            }
         }
     }
 
@@ -158,7 +198,8 @@ final class BotsStore: BotsProviding {
         guard let index = bots.firstIndex(where: { $0.id == botID }), !bots[index].isKip else { return }
         let bot = bots.remove(at: index)
         archived.insert(bot, at: 0)
-        pinned.removeAll { $0 == botID }
+        // In the sample an archived bot leaves Home's pins too. Paired, the desktop keeps its own pins.
+        if !liveMode && ChatStore.shared.isPinned(bot: botID) { Task { _ = await ChatStore.shared.togglePin(bot: botID) } }
         say("\(bot.name) is archived")
     }
 

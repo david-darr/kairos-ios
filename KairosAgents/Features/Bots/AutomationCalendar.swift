@@ -15,8 +15,10 @@ private struct CalendarEntry: Identifiable {
 }
 
 /// Sample: the first plan window that resets later today (of one provider, when given), with its time.
-private func sampleReset(_ windows: [PlanWindow], provider: String? = nil) -> (window: PlanWindow, hour: Int, minute: Int)? {
-    guard let window = windows.first(where: { $0.resetAt != nil && (provider == nil || $0.provider == provider) }),
+private func sampleReset(_ windows: [PlanWindow], on day: Date, provider: String? = nil) -> (window: PlanWindow, hour: Int, minute: Int)? {
+    // A sample reset time is today's, so it is drawn on today only.
+    guard Calendar.current.isDateInToday(day),
+          let window = windows.first(where: { $0.resetAt != nil && (provider == nil || $0.provider == provider) }),
           let at = window.resetAt else { return nil }
     return (window, at / 60, at % 60)
 }
@@ -251,7 +253,7 @@ struct CalendarDayView: View {
     /// Sample: when the sample plan usage says a window resets today. Nothing when none does.
     @ViewBuilder
     private var resetMarker: some View {
-        if let reset = sampleReset(store.planWindows) {
+        if let reset = sampleReset(store.planWindows, on: day) {
             let place = min(Double(lastHour) + 0.75, max(Double(firstHour), Double(reset.hour) + Double(reset.minute) / 60))
             HStack(spacing: 6) {
                 Image(systemName: "arrow.counterclockwise").font(.system(size: 10, weight: .bold))
@@ -318,7 +320,7 @@ struct CalendarDayView: View {
                 out.append(CalendarEntry(id: "\(routine.id)", routine: routine, hour: routine.hour, minute: 0))
             case .limitReset:
                 // At the reset the sample plan usage gives for its limit; not drawn when there is none today.
-                if let reset = sampleReset(store.planWindows, provider: routine.limitName) {
+                if let reset = sampleReset(store.planWindows, on: date, provider: routine.limitName) {
                     out.append(CalendarEntry(id: "\(routine.id)", routine: routine, hour: reset.hour, minute: reset.minute))
                 }
             default:
@@ -449,6 +451,9 @@ struct AutomationCalendarScreen: View {
 struct AutomationDetailSheet: View {
     let routine: Routine
     var edit: () -> Void = {}
+    /// Set by a routines list: Delete goes through the list's own delete, so its "Bring it back" shows.
+    /// It gets the routine and where to say a refusal; the list closes this sheet once it is deleted.
+    var onDelete: ((Routine, @escaping (String) -> Void) -> Void)? = nil
     let store = BotsStore.shared
     let desk = BotsRoutinesLive.shared
     @Environment(\.dismiss) private var dismiss
@@ -573,6 +578,10 @@ struct AutomationDetailSheet: View {
         }
         .sheet(isPresented: $deleting) {
             ConfirmSheet(title: "Delete this routine?", detail: "\"\(current.name)\" will stop. Your desktop keeps it for 7 days, so it can be restored there.", confirm: "Delete routine") {
+                if let onDelete {
+                    onDelete(current, show)
+                    return
+                }
                 desk.delete(current, onDeleted: { gone in
                     store.say("Deleted \"\(gone.name)\"")
                     dismiss()
@@ -665,7 +674,12 @@ struct AutomationDetailSheet: View {
         }
         .kSheet([.medium, .large])
         .sheet(isPresented: $deleting) {
-            ConfirmSheet(title: "Delete this routine?", detail: "\"\(live.name)\" will stop.", confirm: "Delete routine") {
+            ConfirmSheet(title: "Delete this routine?", detail: onDelete == nil ? "\"\(live.name)\" will stop." : "\"\(live.name)\" will stop. You can bring it back for a little while.", confirm: "Delete routine") {
+                if let onDelete {
+                    onDelete(live, store.say)
+                    dismiss()
+                    return
+                }
                 store.routines.removeAll { $0.id == routine.id }
                 store.say("Deleted \"\(live.name)\"")
                 dismiss()

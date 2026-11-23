@@ -132,7 +132,7 @@ struct BotPanelRoot: View {
 
     /// "Inbox 2" while something waits on you.
     private func switchTitle(_ item: BotPanelView.Tab) -> String {
-        let needs = store.liveMode ? BotInboxSection.livePending(botID) : store.needsCount(botID)
+        let needs = store.needsCount(botID)
         return item == .inbox && needs > 0 ? "\(item.rawValue) \(needs)" : item.rawValue
     }
 
@@ -181,10 +181,12 @@ struct BotPanelRoot: View {
 
     private func botMenu(_ bot: Bot) -> some View {
         Menu {
-            Button {
-                store.togglePin(botID)
-            } label: {
-                Label(store.pinned.contains(botID) ? "Unpin" : "Pin", systemImage: store.pinned.contains(botID) ? "pin.slash" : "pin")
+            if store.canPin(botID) {
+                Button {
+                    store.togglePin(botID)
+                } label: {
+                    Label(store.isPinned(botID) ? "Unpin from Home" : "Pin to Home", systemImage: store.isPinned(botID) ? "pin.slash" : "pin")
+                }
             }
             Button { goto = .allBots } label: { Label("All bots", systemImage: "person.3") }
             if let team = store.team(of: botID) {

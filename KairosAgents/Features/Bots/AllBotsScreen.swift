@@ -193,8 +193,8 @@ struct AllBotsScreen: View {
     private var pinnedRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionLabel(text: "Pinned").padding(.horizontal, 4)
-            if store.pinned.isEmpty {
-                HintLine(text: "Pin a bot from its menu to keep it here.")
+            if store.movablePins.isEmpty {
+                HintLine(text: "Pin a bot from its menu to keep it here and on Home.")
             }
             ScrollView(.horizontal) {
                 HStack(spacing: 14) {
@@ -255,7 +255,10 @@ struct AllBotsScreen: View {
     }
 
     private func row(_ bot: Bot) -> some View {
-        HStack(spacing: 12) {
+        let conversation = ChatStore.shared.botConversations[bot.id]
+        let line = conversation?.preview.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let unread = conversation?.unread ?? false
+        return HStack(spacing: 12) {
             Button { open(bot.id) } label: {
                 HStack(spacing: 12) {
                     BotFace(bot: bot, size: 48, showStatus: true)
@@ -265,14 +268,22 @@ struct AllBotsScreen: View {
                             if store.chiefs.contains(bot.id) {
                                 Image(systemName: "crown.fill").font(.system(size: 11)).foregroundStyle(Palette.goldText).accessibilityLabel("Chief of Staff")
                             }
-                            if store.pinned.contains(bot.id) {
+                            if store.isPinned(bot.id) {
                                 Image(systemName: "pin.fill").font(.system(size: 10)).foregroundStyle(Palette.inkFaint).accessibilityLabel("Pinned")
                             }
                         }
-                        Text(bot.role).font(KFont.ui(13.5)).foregroundStyle(Palette.inkDim).lineLimit(1)
+                        // The newest message with this bot, as Home's chats show it; its job until they have talked.
+                        Text(line.isEmpty ? bot.role : line)
+                            .font(KFont.ui(13.5, unread ? .medium : .regular))
+                            .foregroundStyle(unread ? Palette.ink.opacity(0.9) : Palette.inkDim)
+                            .lineLimit(1)
                         Text(bot.statusWord).font(KFont.ui(12.5)).foregroundStyle(bot.statusColor)
                     }
                     Spacer(minLength: 4)
+                    if unread {
+                        Circle().fill(Palette.gold).frame(width: 10, height: 10)
+                            .accessibilityLabel("Unread")
+                    }
                     if store.needsCount(bot.id) > 0 { CountBadge(count: store.needsCount(bot.id)) }
                 }
                 .contentShape(Rectangle())
@@ -294,8 +305,10 @@ struct AllBotsScreen: View {
     private func menuItems(_ bot: Bot) -> some View {
         Button { open(bot.id) } label: { Label("Open", systemImage: "bubble.left") }
         Button { goto = .botPage(bot.id) } label: { Label("Inbox and settings", systemImage: "tray") }
-        Button { store.togglePin(bot.id) } label: {
-            Label(store.pinned.contains(bot.id) ? "Unpin" : "Pin", systemImage: store.pinned.contains(bot.id) ? "pin.slash" : "pin")
+        if store.canPin(bot.id) {
+            Button { store.togglePin(bot.id) } label: {
+                Label(store.isPinned(bot.id) ? "Unpin from Home" : "Pin to Home", systemImage: store.isPinned(bot.id) ? "pin.slash" : "pin")
+            }
         }
         if !store.liveMode { sampleMenuItems(bot) }
     }
@@ -351,11 +364,15 @@ struct AllBotsScreen: View {
     private var reorderList: some View {
         VStack(alignment: .leading, spacing: 14) {
             HintLine(text: "Move pinned bots and the list up or down. The order is kept.", symbol: "arrow.up.arrow.down")
-            BotsSection(title: "Pinned") {
-                ForEach(Array(store.pinned.enumerated()), id: \.element) { index, id in
-                    if index > 0 { RowLine(inset: 62) }
-                    reorderRow(store.bot(id), index: index, count: store.pinned.count) { from, to in
-                        withAnimation(Motion.snappy) { store.pinned.swapAt(from, to) }
+            let pins = store.movablePins
+            if !pins.isEmpty {
+                BotsSection(title: "Pinned") {
+                    ForEach(Array(pins.enumerated()), id: \.element) { index, id in
+                        if index > 0 { RowLine(inset: 62) }
+                        reorderRow(store.bot(id), index: index, count: pins.count) { from, to in
+                            // Home's pins: the new order shows on Home too.
+                            withAnimation(Motion.snappy) { ChatStore.shared.swapPins(pins[from], pins[to]) }
+                        }
                     }
                 }
             }
@@ -396,8 +413,7 @@ struct AllBotsScreen: View {
     private func open(_ id: String) {
         Haptics.tap()
         if let router {
-            // Opened from Home's All bots tile, this page is a cover over Home: close it, then show the chat.
-            router.allBotsShown = false
+            // Opened from Home's All bots tile, this page is a cover over Home: pushing on Home closes it.
             router.push(.bot(id), on: .home)
         } else {
             goto = .botPage(id)

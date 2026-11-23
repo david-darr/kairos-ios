@@ -203,6 +203,9 @@ final class SampleBackend: ChatBackend {
         return HomeData(bots: SampleData.allBots, pinned: pinnedBots, conversations: list, projects: projects)
     }
 
+    /// The pins in a new order (Home's reorder in the sample).
+    func pinOrder(_ ids: [String]) { pinnedBots = ids }
+
     func pinBot(_ id: String, pinned: Bool) async throws {
         pinnedBots.removeAll { $0 == id }
         if pinned { pinnedBots.append(id) }
