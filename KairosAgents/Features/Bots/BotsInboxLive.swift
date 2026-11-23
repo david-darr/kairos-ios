@@ -55,7 +55,7 @@ nonisolated enum BotsInboxWire {
         case "turn-failed": BotNoticeLook(label: "Could not finish", symbol: "exclamationmark.triangle", problem: true)
         case "incident": BotNoticeLook(label: "Problem", symbol: "exclamationmark.octagon", problem: true)
         case "sign-in": BotNoticeLook(label: "Sign-in needed", symbol: "key", needsYou: true)
-        case "delegation-settled": BotNoticeLook(label: "Handoff settled", symbol: "arrow.left.arrow.right")
+        case "delegation-settled": BotNoticeLook(label: "Hand-off settled", symbol: "arrow.left.arrow.right")
         case "mention": BotNoticeLook(label: "Mention", symbol: "at")
         case "spend": BotNoticeLook(label: "Spend", symbol: "dollarsign.circle")
         case "brief": BotNoticeLook(label: "Brief", symbol: "sun.max")

@@ -50,7 +50,7 @@ struct BotInboxSection: View {
                     EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: 20)
                 } else {
                     VStack(spacing: 0) {
-                        ForEach(Array(done.prefix(showAllDone ? 20 : 3).enumerated()), id: \.element.id) { index, item in
+                        ForEach(Array(done.prefix(showAllDone ? done.count : 3).enumerated()), id: \.element.id) { index, item in
                             if index > 0 { RowLine(inset: 54) }
                             DoneRow(item: item)
                         }
@@ -215,7 +215,7 @@ struct BotInboxSection: View {
                     EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: 20)
                 } else {
                     VStack(spacing: 0) {
-                        ForEach(Array(rows.done.prefix(showAllDone ? 20 : 3).enumerated()), id: \.element.id) { index, item in
+                        ForEach(Array(rows.done.prefix(showAllDone ? rows.done.count : 3).enumerated()), id: \.element.id) { index, item in
                             if index > 0 { RowLine(inset: 54) }
                             LiveDoneRow(item: item)
                         }
@@ -224,7 +224,7 @@ struct BotInboxSection: View {
                             Button {
                                 withAnimation(Motion.snappy) { showAllDone.toggle() }
                             } label: {
-                                Text(showAllDone ? "Show fewer" : "Show \(min(rows.done.count, 20)) most recent")
+                                Text(showAllDone ? "Show fewer" : "Show all \(rows.done.count)")
                                     .font(KFont.ui(15, .medium, relativeTo: .subheadline))
                                     .foregroundStyle(Palette.goldText)
                                     .frame(maxWidth: .infinity, minHeight: 48)

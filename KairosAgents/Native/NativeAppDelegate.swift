@@ -275,6 +275,7 @@ private struct NativeLinksModifier: ViewModifier {
 
     private func follow(_ link: NativeLink) {
         router.sheet = nil
+        router.allBotsShown = false
         switch link {
         case .chat(let id): router.paths[.home] = []; router.push(.chat(id), on: .home)
         case .bot(let id), .ask(let id), .approval(_, let id): router.paths[.home] = []; router.push(.bot(id), on: .home)
@@ -284,7 +285,7 @@ private struct NativeLinksModifier: ViewModifier {
         case .addedTab(let title): router.push(.page(title))
         case .home: router.paths[.home] = []; router.select(.home)
         case .desktop: router.paths[.desktop] = []; router.select(.desktop)
-        case .allBots: router.paths[.home] = []; router.push(.allBots, on: .home)
+        case .allBots: router.paths[.home] = []; router.select(.home); router.allBotsShown = true
         case .ring, .call: break
         }
     }

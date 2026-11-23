@@ -254,6 +254,10 @@ private struct BotChatScreen: View {
                 VStack(spacing: 5) {
                     BotFace(bot: bot, size: 72, blinks: true)
                         .matchedTransitionSource(id: "face", in: faceSpace)
+                        .overlay(alignment: .topTrailing) {
+                            let count = BotsStore.shared.needsCount(bot.id)
+                            if count > 0 { CountBadge(count: count).offset(x: 4, y: -2) }
+                        }
                     HStack(spacing: 4) {
                         Text(bot.name).font(KFont.ui(14.5, .medium, relativeTo: .subheadline))
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.inkFaint)
@@ -265,7 +269,7 @@ private struct BotChatScreen: View {
                 }
             }
             .buttonStyle(PressStyle(scale: 0.93))
-            .accessibilityLabel("\(bot.name). Open inbox and settings")
+            .accessibilityLabel(headerLabel)
             Spacer()
             GlassIconButton(symbol: "phone", label: "Call \(bot.name)") { showCall = true }
         }
@@ -273,6 +277,12 @@ private struct BotChatScreen: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .background { HeaderFade() }
+    }
+
+    /// The face's spoken name, with how many things need the person (the count All bots shows).
+    private var headerLabel: String {
+        let count = BotsStore.shared.needsCount(bot.id)
+        return count > 0 ? "\(bot.name), \(HomeFaceWords.needYou(count)). Open inbox and settings" : "\(bot.name). Open inbox and settings"
     }
 
     // MARK: Composer

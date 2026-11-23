@@ -36,6 +36,9 @@ final class AppRouter {
     var visited: Set<AppTab> = [.home]
     var paths: [AppTab: [Route]] = [:]
     var sheet: SheetRoute?
+    /// true while the All bots page is up over Home. It is a cover with its own stack, because its pages
+    /// push Bots pages, which Home's stack of `Route` values cannot hold.
+    var allBotsShown = false
     var librarySection: LibrarySection = .files
     /// Shortcuts the person dragged onto the bar. A shortcut opens the area's one home; it is never a copy.
     var pinned: [JumpArea] = []

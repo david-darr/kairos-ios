@@ -124,7 +124,7 @@ nonisolated enum BotsSample {
         BotNotice(botID: "kip", kind: "Finished", title: "Morning brief is ready", detail: "3 things today", age: "8:00", unread: false, symbol: "sun.max"),
         BotNotice(botID: "kip", kind: "Missed call", title: "Kip called you", detail: "About the van booking", age: "Yesterday", symbol: "phone.arrow.down.left"),
         BotNotice(botID: "kip", kind: "Routine failed", title: "Rival prices did not finish", detail: "Sign-in needed at the second shop", age: "20m", problem: true, symbol: "exclamationmark.triangle"),
-        BotNotice(botID: "kip", kind: "Handoff settled", title: "Scout finished the sources", detail: "Two sources added to the report", age: "1h", unread: false, symbol: "arrow.left.arrow.right"),
+        BotNotice(botID: "kip", kind: "Hand-off settled", title: "Scout finished the sources", detail: "Two sources added to the report", age: "1h", unread: false, symbol: "arrow.left.arrow.right"),
         BotNotice(botID: "kip", kind: "Spend", title: "This month is at 26% of the cap", detail: "$6.40 of $25", age: "Mon", unread: false, symbol: "dollarsign.circle"),
     ]
 

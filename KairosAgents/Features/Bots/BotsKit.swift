@@ -736,7 +736,7 @@ extension Bot {
         switch status {
         case .online: "Ready"
         case .working: "Working"
-        case .needsYou: "Waiting for you"
+        case .needsYou: "Needs you"
         case .offline: "Asleep"
         }
     }

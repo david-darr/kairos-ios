@@ -1,8 +1,8 @@
 import SwiftUI
 
-// Home's bots: the pinned row (Kip, All bots, then the person's pins) and the All bots page,
-// which is laid out like Home but lists every bot and team. Bot pins are saved on the desktop;
-// team pins stay on this phone, because the desktop has no pin for a team.
+// Home's bots: the pinned row (Kip, All bots, then the person's pins). The All bots tile opens
+// `AllBotsScreen`. Bot pins are saved on the desktop; team pins stay on this phone, because the
+// desktop has no pin for a team.
 
 /// One face in a row of pinned faces.
 enum HomeFace: Identifiable, Hashable {
@@ -48,7 +48,7 @@ private struct FaceRowLayout: Layout {
     }
 }
 
-/// The pinned row: big round faces, four across. A long hold pins or unpins.
+/// The pinned row: big round faces, four across, each bot with its needs-you count. A long hold pins or unpins.
 struct PinnedFacesGrid: View {
     let faces: [HomeFace]
     /// Where tapping a face goes. The grid itself only draws and pins.
@@ -92,7 +92,12 @@ struct PinnedFacesGrid: View {
     @ViewBuilder
     private func picture(_ face: HomeFace) -> some View {
         switch face {
-        case .bot(let bot): BotFace(bot: bot, size: 82, showStatus: true, blinks: true)
+        case .bot(let bot):
+            BotFace(bot: bot, size: 82, showStatus: true, blinks: true)
+                .overlay(alignment: .topTrailing) {
+                    let count = BotsStore.shared.needsCount(bot.id)
+                    if count > 0 { CountBadge(count: count).offset(x: 4, y: -2) }
+                }
         case .allBots: AllBotsTile(size: 82)
         case .team(let team): TeamFace(team: team, size: 82)
         }
@@ -108,7 +113,8 @@ struct PinnedFacesGrid: View {
 
     private func label(_ face: HomeFace) -> String {
         switch face {
-        case .bot(let bot): "\(bot.name), \(HomeFaceWords.status(bot.status))"
+        case .bot(let bot):
+            HomeFaceWords.label(bot.name, status: HomeFaceWords.status(bot.status), needs: BotsStore.shared.needsCount(bot.id))
         case .allBots: "All bots. Every bot and team"
         case .team(let team): "\(team.name), a team of \(team.members.count)"
         }
@@ -165,9 +171,19 @@ enum HomeFaceWords {
         switch status {
         case .online: "ready"
         case .working: "working"
-        case .needsYou: "waiting for you"
+        case .needsYou: "needs you"
         case .offline: "asleep"
         }
+    }
+
+    /// "3 need you", or "1 needs you": the same words as the glance pill and the bot's Needs you.
+    static func needYou(_ count: Int) -> String {
+        count == 1 ? "1 needs you" : "\(count) need you"
+    }
+
+    /// A bot face's spoken name: its name, its status, and how many things need the person.
+    static func label(_ name: String, status: String, needs: Int) -> String {
+        needs > 0 ? "\(name), \(status), \(needYou(needs))" : "\(name), \(status)"
     }
 }
 
@@ -217,148 +233,6 @@ struct TeamFace: View {
         .frame(width: size * 0.84, height: size * 0.84)
         .frame(width: size, height: size)
         .accessibilityHidden(true)
-    }
-}
-
-/// Every bot and team, laid out like Home: pinned faces, then one row per bot and team.
-struct AllBotsHomeView: View {
-    @Environment(AppRouter.self) private var router
-    @Environment(ChromeState.self) private var chrome
-    @Environment(\.dismiss) private var dismiss
-    @State private var openTeam: BotTeam?
-    @State private var managing = false
-
-    private var store: ChatStore { ChatStore.shared }
-    private var bots: BotsStore { BotsStore.shared }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                let pinned = HomeFaces.pinned(store: store, bots: bots, withAllBots: false)
-                if !pinned.isEmpty {
-                    PinnedFacesGrid(faces: pinned, open: open)
-                        .padding(.top, 2)
-                }
-
-                LazyVStack(spacing: 0) {
-                    let conversations = store.botConversations
-                    ForEach(Array(store.singleBots.enumerated()), id: \.element.id) { index, bot in
-                        Button { router.push(.bot(bot.id), on: .home) } label: {
-                            ConversationRow(conversation: row(for: bot, conversations: conversations), bot: bot)
-                        }
-                        .buttonStyle(PressStyle(scale: 0.985))
-                        .contextMenu {
-                            Button("Open", systemImage: "bubble.left") { router.push(.bot(bot.id), on: .home) }
-                            if !bot.isKip { HomePinButton(face: .bot(bot)) }
-                        }
-                        .arrives(min(index, 12) + 3)
-                    }
-                    ForEach(bots.teams) { team in
-                        Button { openTeam = team } label: { teamRow(team) }
-                            .buttonStyle(PressStyle(scale: 0.985))
-                            .contextMenu {
-                                Button("Open", systemImage: "person.3") { openTeam = team }
-                                HomePinButton(face: .team(team))
-                            }
-                    }
-                }
-
-                if !store.homeLoaded && !store.isSample {
-                    ProgressView().tint(Palette.inkDim).frame(maxWidth: .infinity).padding(.top, 30)
-                } else if store.singleBots.isEmpty {
-                    Text("No bots yet. Make one in Kairos on your desktop.")
-                        .font(KFont.ui(15, relativeTo: .subheadline))
-                        .foregroundStyle(Palette.inkDim)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 30)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 30)
-            .animation(Motion.snappy, value: store.pinnedIDs)
-            .animation(Motion.snappy, value: store.pinnedTeamIDs)
-        }
-        .scrollIndicators(.hidden)
-        .refreshable {
-            await store.refreshHome()
-            if bots.liveMode { await bots.loadRoster() }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            ZStack {
-                Text("All bots")
-                    .font(KFont.ui(17, .semibold, relativeTo: .headline))
-                    .foregroundStyle(Palette.ink)
-                HStack {
-                    GlassIconButton(symbol: "chevron.left", label: "Back to Home") { dismiss() }
-                    Spacer()
-                    Button { managing = true } label: {
-                        Text("Manage")
-                            .font(KFont.ui(15, .medium, relativeTo: .subheadline))
-                            .foregroundStyle(Palette.ink)
-                            .padding(.horizontal, 14)
-                            .frame(height: 44)
-                            .kGlass(Capsule(), interactive: true)
-                    }
-                    .accessibilityHint("Reorder, archive and arrange bots in teams")
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 10)
-            .background { HeaderFade() }
-        }
-        .kScreen()
-        .fullScreenCover(item: $openTeam) { team in
-            NavigationStack { TeamScreen(teamID: team.id).botsDestinations() }
-                .tint(Palette.gold)
-        }
-        .fullScreenCover(isPresented: $managing) {
-            NavigationStack { AllBotsScreen().botsDestinations() }
-                .tint(Palette.gold)
-        }
-        .task { await HomeFaces.loadTeams() }
-        .onChange(of: store.generation) { dismiss() }
-    }
-
-    private func open(_ face: HomeFace) {
-        switch face {
-        case .bot(let bot): router.push(.bot(bot.id), on: .home)
-        case .team(let team): openTeam = team
-        case .allBots: break
-        }
-    }
-
-    /// The bot's newest conversation, or a quiet row for a bot not talked to yet.
-    private func row(for bot: Bot, conversations: [String: Conversation]) -> Conversation {
-        if let conversation = conversations[bot.id] { return conversation }
-        return Conversation(id: "bot-" + bot.id, kind: .bot(bot.id), title: bot.name,
-                            preview: bot.isKip ? "Here when you need me." : bot.role, time: "")
-    }
-
-    private func teamRow(_ team: BotTeam) -> some View {
-        HStack(spacing: 12) {
-            TeamFace(team: team, size: 58)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(team.name)
-                    .font(KFont.ui(16.5, .medium))
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(1)
-                Text(team.members.map { store.bot($0).name }.joined(separator: ", "))
-                    .font(KFont.ui(14.5, relativeTo: .subheadline))
-                    .foregroundStyle(Palette.inkFaint)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            if store.isPinned(team: team.id) {
-                Image(systemName: "pin.fill").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.inkFaint)
-            }
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 4)
-        .contentShape(Rectangle())
-        .overlay(alignment: .bottom) { Palette.line.frame(height: 1).padding(.leading, 74) }
-        .accessibilityElement(children: .combine)
     }
 }
 

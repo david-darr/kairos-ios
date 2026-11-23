@@ -29,7 +29,7 @@ struct AllBotsScreen: View {
                 reorderList
             } else {
                 pinnedRow
-                attention
+                needsYou
                 ForEach(store.teams) { team in
                     section(team.name, team.members.compactMap { id in store.bots.first { $0.id == id } }, team: team)
                 }
@@ -111,13 +111,14 @@ struct AllBotsScreen: View {
                 Haptics.tap()
                 withAnimation(Motion.snappy) { editing.toggle() }
             } label: {
-                Text(editing ? "Done" : "Edit").font(KFont.ui(15, .semibold)).foregroundStyle(Palette.ink)
-                    .padding(.horizontal, 14).frame(minHeight: 44)
+                Image(systemName: editing ? "checkmark" : "arrow.up.arrow.down").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
+                    .frame(width: 44, height: 44).contentShape(Circle())
             }
-            .kGlass(Capsule(), interactive: true)
+            .kGlass(Circle(), interactive: true)
             .accessibilityLabel(editing ? "Done reordering" : "Reorder bots")
     }
 
+    /// Paired, the menu only opens other pages, so it is "More"; in the sample it also makes things.
     private var moreMenu: some View {
             Menu {
                 if !store.liveMode {
@@ -133,17 +134,17 @@ struct AllBotsScreen: View {
                     Button { goto = .archived } label: { Label("Archived (\(store.archived.count))", systemImage: "archivebox") }
                 }
             } label: {
-                Image(systemName: "plus").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
+                Image(systemName: store.liveMode ? "ellipsis" : "plus").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
                     .frame(width: 44, height: 44).contentShape(Circle())
             }
             .kGlass(Circle(), interactive: true)
-            .accessibilityLabel("New and more")
+            .accessibilityLabel(store.liveMode ? "More" : "New and more")
     }
 
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(Palette.inkFaint)
-            TextField("Search bots and conversations", text: $search).font(KFont.ui(16)).foregroundStyle(Palette.ink)
+            TextField(store.liveMode ? "Search bots" : "Search bots and conversations", text: $search).font(KFont.ui(16)).foregroundStyle(Palette.ink)
                 .autocorrectionDisabled()
             if !search.isEmpty {
                 Button { search = "" } label: {
@@ -222,11 +223,12 @@ struct AllBotsScreen: View {
         }
     }
 
+    /// Only the bots that need the person: asking, or holding something to answer. Working bots are not here.
     @ViewBuilder
-    private var attention: some View {
-        let bots = store.bots.filter { $0.status == .needsYou || $0.status == .working || store.needsCount($0.id) > 0 }
+    private var needsYou: some View {
+        let bots = store.bots.filter { $0.status == .needsYou || store.needsCount($0.id) > 0 }
             .sorted { store.needsCount($0.id) > store.needsCount($1.id) }
-        if !bots.isEmpty { section("Needs attention", bots, team: nil) }
+        if !bots.isEmpty { section("Needs you", bots, team: nil) }
     }
 
     private func section(_ title: String, _ bots: [Bot], team: BotTeam?) -> some View {
@@ -240,6 +242,7 @@ struct AllBotsScreen: View {
                 }
             }
             .padding(.horizontal, 4)
+            .contextMenu { if let team { teamPinButton(team) } }
             VStack(spacing: 0) {
                 if bots.isEmpty { EmptyNote(text: "No bots here.", symbol: "person") }
                 ForEach(Array(bots.enumerated()), id: \.element.id) { index, bot in
@@ -329,6 +332,20 @@ struct AllBotsScreen: View {
         }
     }
 
+    /// A team's Home pin, kept on this phone (the desktop has no pin for a team). This page is where Home's
+    /// All bots tile leads, so a team is pinned to Home from here.
+    private func teamPinButton(_ team: BotTeam) -> some View {
+        let home = ChatStore.shared
+        let pinned = home.isPinned(team: team.id)
+        return Button {
+            Haptics.select()
+            withAnimation(Motion.snappy) { home.togglePin(team: team.id) }
+            store.say(pinned ? "\(team.name) is unpinned" : "\(team.name) is pinned")
+        } label: {
+            Label(pinned ? "Unpin from Home" : "Pin to Home", systemImage: pinned ? "pin.slash" : "pin")
+        }
+    }
+
     // MARK: Reorder
 
     private var reorderList: some View {
@@ -378,7 +395,13 @@ struct AllBotsScreen: View {
 
     private func open(_ id: String) {
         Haptics.tap()
-        if let router { router.push(.bot(id), on: .home) } else { goto = .botPage(id) }
+        if let router {
+            // Opened from Home's All bots tile, this page is a cover over Home: close it, then show the chat.
+            router.allBotsShown = false
+            router.push(.bot(id), on: .home)
+        } else {
+            goto = .botPage(id)
+        }
     }
 
     private func toggleChief(_ bot: Bot, _ team: BotTeam) {

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Home feels like Messages: a slim glance row; Kip, All bots and the pinned bots and teams as big
-/// round faces; the chat projects; then every model chat, starred first. Bot conversations live in All bots.
+/// round faces; the chat projects; then every model chat, starred first. Every bot is in All bots.
 /// Everything here comes from `ChatStore`: sample data until a desktop is paired, the desktop after.
 struct HomeView: View {
     @Environment(AppRouter.self) private var router
@@ -30,7 +30,7 @@ struct HomeView: View {
                 PinnedFacesGrid(faces: HomeFaces.pinned(store: store, bots: BotsStore.shared, withAllBots: true)) { face in
                     switch face {
                     case .bot(let bot): router.push(.bot(bot.id), on: .home)
-                    case .allBots: router.push(.allBots, on: .home)
+                    case .allBots: router.allBotsShown = true
                     case .team(let team): openTeam = team
                     }
                 }
@@ -110,6 +110,12 @@ struct HomeView: View {
             NavigationStack { TeamScreen(teamID: team.id).botsDestinations() }
                 .tint(Palette.gold)
         }
+        .fullScreenCover(isPresented: Binding(get: { router.allBotsShown }, set: { router.allBotsShown = $0 })) {
+            NavigationStack { AllBotsScreen().botsDestinations() }
+                .tint(Palette.gold)
+                .environment(router)
+                .environment(chrome)
+        }
         .alert("Rename chat", isPresented: renamingShown) {
             TextField("Title", text: $renameText)
             Button("Save") {
@@ -151,6 +157,7 @@ struct HomeView: View {
         .onChange(of: store.generation) {
             // Paired or unpaired: what was open belongs to the other data.
             router.paths[.home] = []
+            router.allBotsShown = false
             chrome.liveWork = store.liveWork
             Task {
                 await store.refreshHome()
@@ -296,7 +303,7 @@ struct HomeView: View {
                 if !store.isSample && store.glance.needsYou > 0 {
                     HStack(spacing: 7) {
                         Circle().fill(Palette.gold).frame(width: 8, height: 8)
-                        Text("\(store.glance.needsYou) need you").foregroundStyle(Palette.ink)
+                        Text(HomeFaceWords.needYou(store.glance.needsYou)).foregroundStyle(Palette.ink)
                     }
                     .glancePill()
                 }

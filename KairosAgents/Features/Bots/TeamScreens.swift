@@ -1163,7 +1163,7 @@ struct TeamMapScreen: View {
                     withAnimation(Motion.snappy) { showHandoffs.toggle() }
                 } label: {
                     HStack {
-                        Text("Handoffs \(store.handoffs.count)").font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
+                        Text("Hand-offs \(store.handoffs.count)").font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
                         Spacer()
                         Image(systemName: showHandoffs ? "chevron.up" : "chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.inkFaint)
                     }
@@ -1300,7 +1300,7 @@ struct TeamMapScreen: View {
                 withAnimation(Motion.snappy) { showHandoffs.toggle() }
             } label: {
                 HStack {
-                    Text("Handoffs \(rows.count)").font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
+                    Text("Hand-offs \(rows.count)").font(KFont.ui(16, .medium)).foregroundStyle(Palette.ink)
                     Spacer()
                     Image(systemName: showHandoffs ? "chevron.up" : "chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.inkFaint)
                 }
@@ -1369,7 +1369,7 @@ struct TeamMapScreen: View {
                             Text(bot.name).font(KFont.ui(15.5, .medium)).foregroundStyle(Palette.ink)
                             if chief { Image(systemName: "crown.fill").font(.system(size: 11)).foregroundStyle(Palette.goldText).accessibilityLabel("Chief of Staff") }
                         }
-                        Text(bot.status == .offline ? "No signal" : bot.statusWord).font(KFont.ui(12.5)).foregroundStyle(bot.statusColor)
+                        Text(bot.statusWord).font(KFont.ui(12.5)).foregroundStyle(bot.statusColor)
                     }
                     Spacer(minLength: 4)
                     Text(isLive ? bot.model : store.settings(bot.id).model).font(KFont.ui(12)).foregroundStyle(Palette.inkDim)

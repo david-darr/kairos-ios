@@ -172,8 +172,6 @@ nonisolated enum Route: Hashable, Sendable {
     case newChat
     /// A new model chat that joins this project at its first message.
     case newChatInProject(String)
-    /// Every bot and team, laid out like Home.
-    case allBots
     /// One chat project and its chats.
     case project(String)
     case area(JumpArea)
