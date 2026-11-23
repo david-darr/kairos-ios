@@ -22,6 +22,20 @@ struct Ground: View {
 
 // MARK: - Glass and surfaces
 
+/// Corner radii by role. Every rounded box takes one of these.
+nonisolated enum Radius {
+    /// Small tiles and swatch cells.
+    static let tile: CGFloat = 14
+    /// Text fields and boxes inside a card.
+    static let field: CGFloat = 18
+    /// Cards.
+    static let card: CGFloat = 20
+    /// Grouped cards that hold a decision: approvals, questions, pickers.
+    static let group: CGFloat = 22
+    /// Large panels.
+    static let panel: CGFloat = 28
+}
+
 extension View {
     /// Real Liquid Glass with the warm Kairos wash. For chrome: bars, round buttons, pills, composers.
     func kGlass<S: Shape>(_ shape: S, tint: Color = Palette.glassTint, interactive: Bool = false) -> some View {
@@ -29,9 +43,16 @@ extension View {
     }
 
     /// A quiet translucent card for things inside the content.
-    func kCard(radius: CGFloat = 20, raised: Bool = false) -> some View {
+    func kCard(radius: CGFloat = Radius.card, raised: Bool = false) -> some View {
         background(raised ? Palette.surfaceRaised : Palette.surface, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
+    }
+
+    /// One option in a set of cards: raised with a gold edge when it is the chosen one. The whole box is tappable.
+    func kOptionCard(selected: Bool, radius: CGFloat = Radius.card) -> some View {
+        background(selected ? Palette.surfaceRaised : Palette.surface, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(selected ? Palette.gold : Palette.line, lineWidth: selected ? 1.5 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
     }
 
     /// Every screen: the ground behind it and no system bar on top.
@@ -70,7 +91,8 @@ private struct Arrive: ViewModifier {
             .offset(y: shown || settled || reduceMotion ? 0 : 14)
             .onAppear {
                 guard !settled else { shown = true; return }
-                withAnimation(Motion.sheet.delay(Double(index) * 0.045)) { shown = true }
+                // Capped, so the last rows of a long list do not wait.
+                withAnimation(Motion.sheet.delay(Double(min(index, 12)) * 0.045)) { shown = true }
             }
     }
 }
@@ -104,6 +126,27 @@ struct GlassIconButton: View {
         }
         .buttonStyle(PressStyle(scale: 0.9))
         .kGlass(Circle(), interactive: true)
+        .accessibilityLabel(label)
+    }
+}
+
+/// A round 44-point button with one icon on a quiet fill: steppers, move up and down, previous and next.
+struct RoundIconButton: View {
+    let symbol: String
+    let label: String
+    let action: () -> Void
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(enabled ? Palette.ink : Palette.inkFaint.opacity(0.5))
+                .frame(width: 44, height: 44)
+                .background(Palette.ink.opacity(enabled ? 0.08 : 0.03), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressStyle(scale: 0.9))
         .accessibilityLabel(label)
     }
 }
@@ -307,6 +350,7 @@ struct GlassSwitch<Item: Hashable>: View {
     @Binding var selection: Item
     let title: (Item) -> String
     @Namespace private var ns
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -323,7 +367,7 @@ struct GlassSwitch<Item: Hashable>: View {
                 let on = item == selection
                 Button {
                     Haptics.select()
-                    withAnimation(Motion.snappy) { selection = item }
+                    withAnimation(reduceMotion ? nil : Motion.snappy) { selection = item }
                 } label: {
                     Text(title(item))
                         .font(KFont.ui(15, on ? .semibold : .regular, relativeTo: .subheadline))
@@ -331,7 +375,7 @@ struct GlassSwitch<Item: Hashable>: View {
                         .lineLimit(1)
                         .fixedSize()
                         .padding(.horizontal, 16)
-                        .frame(minHeight: 38)
+                        .frame(minHeight: 44)
                         .background {
                             if on { Capsule().fill(Palette.ink.opacity(0.15)).matchedGeometryEffect(id: "on", in: ns) }
                         }

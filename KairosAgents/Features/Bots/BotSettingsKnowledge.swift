@@ -43,14 +43,14 @@ struct MemorySettings: View {
                 MeterBar(fraction: Double(s.notes.count * 3) / 200)
             }
             .padding(14)
-            .kCard(radius: 18)
+            .kCard(radius: Radius.card)
 
             TextField("Search its notes", text: $search)
                 .font(KFont.ui(16))
                 .foregroundStyle(Palette.ink)
                 .padding(.horizontal, 14)
                 .frame(minHeight: 48)
-                .kCard(radius: 16)
+                .kCard(radius: Radius.field)
 
             let shown = s.notes.filter { search.count < 2 || $0.text.localizedCaseInsensitiveContains(search) }
             BotsSection(title: "What it remembers") {
@@ -91,7 +91,7 @@ struct MemorySettings: View {
                         .lineLimit(1...4)
                         .padding(14)
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
                 PillButton(title: "Add note", symbol: "plus", look: .filled, wide: true) {
                     let text = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !text.isEmpty else { store.say("Write the note first."); return }
@@ -161,7 +161,7 @@ struct MemorySettings: View {
 
             NavigationLink(value: BotsRoute.settings(botID, .aboutYou)) {
                 NavRow(title: "About you", symbol: "person.text.rectangle", detail: "What every bot knows about you")
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
             }
             .buttonStyle(PressStyle(scale: 0.98))
         }
@@ -206,7 +206,7 @@ struct AboutYouSettings: View {
                 .foregroundStyle(Palette.ink)
                 .lineLimit(5...14)
                 .padding(14)
-                .kCard(radius: 18)
+                .kCard(radius: Radius.card)
                 Text("\(store.aboutYou.count) / 24,000 characters")
                     .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint).padding(.horizontal, 4)
             }
@@ -300,7 +300,7 @@ struct SkillsSettings: View {
                             }
                         }
                         .padding(14)
-                        .kCard(radius: 20, raised: true)
+                        .kCard(radius: Radius.card, raised: true)
                     }
                 }
             }
@@ -323,7 +323,7 @@ struct SkillsSettings: View {
 
             NavigationLink(value: BotsRoute.settings(botID, .skillLibrary)) {
                 NavRow(title: "Open the skill library", symbol: "books.vertical", detail: "\(store.skillLibrary.count) skills you can give any bot")
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
             }
             .buttonStyle(PressStyle(scale: 0.98))
         }
@@ -411,7 +411,7 @@ struct SkillReviewSheet: View {
                     .foregroundStyle(Palette.ink)
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .kCard(radius: 16)
+                    .kCard(radius: Radius.field)
                 HintLine(text: "Read it all before switching it on. A skill can tell the bot to do anything its access allows.", symbol: "eye")
                 if skill.state == .on {
                     GoldButton(title: "Done") { dismiss() }
@@ -513,7 +513,7 @@ struct SkillLibrarySettings: View {
         BotsPage("Skill library", subtitle: "Library (\(store.skillLibrary.count))") {
             TextField("Search skills", text: $search)
                 .font(KFont.ui(16)).foregroundStyle(Palette.ink)
-                .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: 16)
+                .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: Radius.field)
             ForEach(Array(items.enumerated()), id: \.element.id) { index, skill in
                 let given = binding.wrappedValue.skills.contains { $0.name == skill.name }
                 VStack(alignment: .leading, spacing: 4) {
@@ -540,11 +540,11 @@ struct SkillLibrarySettings: View {
                         }
                     ))
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
                 .arrives(index)
             }
             if items.isEmpty {
-                EmptyNote(text: "Nothing matches that search.", symbol: "magnifyingglass").kCard(radius: 20)
+                EmptyNote(text: "Nothing matches that search.", symbol: "magnifyingglass").kCard(radius: Radius.card)
             }
         }
     }
@@ -606,7 +606,7 @@ struct BotKnowMemoryPage: View {
             if live.ready(key) { content }
             NavigationLink(value: BotsRoute.settings(botID, .aboutYou)) {
                 NavRow(title: "About you", symbol: "person.text.rectangle", detail: "What every bot knows about you")
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
             }
             .buttonStyle(PressStyle(scale: 0.98))
         }
@@ -650,14 +650,14 @@ struct BotKnowMemoryPage: View {
             }
         }
         .padding(14)
-        .kCard(radius: 18)
+        .kCard(radius: Radius.card)
 
         TextField("Search its notes", text: $search)
             .font(KFont.ui(16))
             .foregroundStyle(Palette.ink)
             .padding(.horizontal, 14)
             .frame(minHeight: 48)
-            .kCard(radius: 16)
+            .kCard(radius: Radius.field)
 
         if let undo = live.undos[botID] {
             HStack(spacing: 10) {
@@ -673,7 +673,7 @@ struct BotKnowMemoryPage: View {
                     .disabled(live.pageBusy(botID))
             }
             .padding(12)
-            .kCard(radius: 18, raised: true)
+            .kCard(radius: Radius.card, raised: true)
             .transition(.move(edge: .top).combined(with: .opacity))
         }
 
@@ -702,7 +702,7 @@ struct BotKnowMemoryPage: View {
                     .lineLimit(1...4)
                     .padding(14)
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             if let problem {
                 HintLine(text: problem, symbol: "exclamationmark.circle", color: Palette.goldText).padding(.horizontal, 4)
             }
@@ -907,7 +907,7 @@ struct BotKnowAboutPage: View {
             .foregroundStyle(Palette.ink)
             .lineLimit(5...14)
             .padding(14)
-            .kCard(radius: 18)
+            .kCard(radius: Radius.card)
             let used = BotsKnowledgeLive.length(live.aboutDraft)
             Text("\(used.formatted()) / \(limit.formatted()) characters")
                 .font(KFont.ui(12.5, relativeTo: .caption))
@@ -926,7 +926,7 @@ struct BotKnowAboutPage: View {
                 .disabled(live.aboutBusy)
             }
             .padding(14)
-            .kCard(radius: 20, raised: true)
+            .kCard(radius: Radius.card, raised: true)
         case .notSaved(let words):
             VStack(alignment: .leading, spacing: 10) {
                 HintLine(text: words, symbol: "exclamationmark.circle", color: Palette.goldText)
@@ -934,7 +934,7 @@ struct BotKnowAboutPage: View {
                     .disabled(live.aboutBusy)
             }
             .padding(14)
-            .kCard(radius: 20, raised: true)
+            .kCard(radius: Radius.card, raised: true)
         case .unsure(let words):
             VStack(alignment: .leading, spacing: 10) {
                 HintLine(text: words, symbol: "questionmark.circle", color: Palette.goldText)
@@ -942,7 +942,7 @@ struct BotKnowAboutPage: View {
                     .disabled(live.aboutBusy)
             }
             .padding(14)
-            .kCard(radius: 20, raised: true)
+            .kCard(radius: Radius.card, raised: true)
         case .refused(let words):
             HintLine(text: words, symbol: "exclamationmark.circle", color: Palette.danger).padding(.horizontal, 4)
         default:
@@ -1023,7 +1023,7 @@ struct BotKnowSkillsPage: View {
                     }
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .kCard(radius: 20, raised: true)
+                    .kCard(radius: Radius.card, raised: true)
                 }
                 BotsSection(title: "Skills", footer: "Only reviewed skills switched on for this bot are available. Use one in chat with its /name.") {
                     if all.isEmpty {
@@ -1047,7 +1047,7 @@ struct BotKnowSkillsPage: View {
             }
             NavigationLink(value: BotsRoute.settings(botID, .skillLibrary)) {
                 NavRow(title: "Open the skill library", symbol: "books.vertical", detail: "Skills you can give any bot")
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
             }
             .buttonStyle(PressStyle(scale: 0.98))
         }
@@ -1126,12 +1126,12 @@ struct BotKnowLibraryPage: View {
                 HintLine(text: "Give library skills to bots, and review them, on your desktop.", symbol: "desktopcomputer").padding(.horizontal, 4)
                 TextField("Search skills", text: $search)
                     .font(KFont.ui(16)).foregroundStyle(Palette.ink)
-                    .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: 16)
+                    .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: Radius.field)
                 ForEach(Array(items.enumerated()), id: \.offset) { index, skill in
                     libraryCard(skill).arrives(index)
                 }
                 if items.isEmpty {
-                    EmptyNote(text: all.isEmpty ? "The library is empty." : "Nothing matches that search.", symbol: "magnifyingglass").kCard(radius: 20)
+                    EmptyNote(text: all.isEmpty ? "The library is empty." : "Nothing matches that search.", symbol: "magnifyingglass").kCard(radius: Radius.card)
                 }
                 if let left = live.skipped["library"], left > 0 {
                     HintLine(text: left == 1 ? "1 skill could not be read by this app." : "\(left) skills could not be read by this app.", symbol: "info.circle")
@@ -1160,6 +1160,6 @@ struct BotKnowLibraryPage: View {
             RowLine()
             BotKnowValueRow(title: "This bot", value: given ? "Yes" : "No")
         }
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 }

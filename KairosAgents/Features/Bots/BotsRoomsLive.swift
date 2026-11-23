@@ -1187,7 +1187,7 @@ struct BotRoomLiveList: View {
             }
             if state == .loaded && rooms.isEmpty {
                 EmptyNote(text: "Your desktop has no rooms yet. Make one in Kairos on your desktop.", symbol: "number")
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
             }
             if !rooms.isEmpty {
                 VStack(spacing: 0) {
@@ -1203,7 +1203,7 @@ struct BotRoomLiveList: View {
                         .buttonStyle(PressStyle(scale: 0.98))
                     }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             }
             if live.isCurrent && live.roomListSkipped > 0 {
                 HintLine(text: "Some rooms on your desktop could not be read, so they are not shown here.", symbol: "info.circle")

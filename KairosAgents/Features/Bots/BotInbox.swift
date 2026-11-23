@@ -25,7 +25,7 @@ struct BotInboxSection: View {
             VStack(alignment: .leading, spacing: 10) {
                 labelRow("Needs you", count: pending.count)
                 if cards.isEmpty {
-                    EmptyNote(text: "Nothing is waiting on you.", symbol: "checkmark.circle").kCard(radius: 20)
+                    EmptyNote(text: "Nothing is waiting on you.", symbol: "checkmark.circle").kCard(radius: Radius.card)
                 } else {
                     ForEach(Array(cards.enumerated()), id: \.element.id) { index, card in
                         NeedsCardView(card: card)
@@ -37,7 +37,7 @@ struct BotInboxSection: View {
             VStack(alignment: .leading, spacing: 10) {
                 labelRow("Working", count: working.count)
                 if working.isEmpty {
-                    EmptyNote(text: "Nothing is running right now.", symbol: "moon.zzz").kCard(radius: 20)
+                    EmptyNote(text: "Nothing is running right now.", symbol: "moon.zzz").kCard(radius: Radius.card)
                 } else {
                     ForEach(Array(working.enumerated()), id: \.element.id) { index, item in
                         WorkRow(item: item).arrives(index + cards.count)
@@ -48,7 +48,7 @@ struct BotInboxSection: View {
             VStack(alignment: .leading, spacing: 10) {
                 labelRow("Done", count: done.count)
                 if done.isEmpty {
-                    EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: 20)
+                    EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: Radius.card)
                 } else {
                     doneList(done) { DoneRow(item: $0) }
                 }
@@ -75,14 +75,14 @@ struct BotInboxSection: View {
                 }
             }
             .buttonStyle(PressStyle(scale: 0.98))
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
 
             if store.liveMode, live.inboxSkipped + live.workSkipped > 0 {
                 HintLine(text: "Some items on your desktop could not be read, so some may be missing here.", symbol: "info.circle")
                     .padding(.horizontal, 4)
             }
         }
-        .animation(Motion.bouncy, value: store.needs)
+        .animation(reduceMotion ? nil : Motion.bouncy, value: store.needs)
         .task(id: BotsStore.connectionKey) {
             store.followConnection()
             guard store.liveMode else { return }
@@ -136,7 +136,7 @@ struct BotInboxSection: View {
                 .buttonStyle(PressStyle())
             }
         }
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 
     // MARK: Paired
@@ -170,7 +170,7 @@ struct BotInboxSection: View {
                 } else if cardState != .loaded || rowState != .loaded {
                     BotsLoadNote(state: .loading, waiting: "Reading what needs you from your desktop.") {}
                 } else {
-                    EmptyNote(text: "Nothing is waiting on you.", symbol: "checkmark.circle").kCard(radius: 20)
+                    EmptyNote(text: "Nothing is waiting on you.", symbol: "checkmark.circle").kCard(radius: Radius.card)
                 }
             } else {
                 ForEach(Array(cards.enumerated()), id: \.element.viewKey) { index, card in
@@ -213,7 +213,7 @@ struct BotInboxSection: View {
                 }
             } else {
                 if rows.working.isEmpty {
-                    EmptyNote(text: "Nothing is running right now.", symbol: "moon.zzz").kCard(radius: 20)
+                    EmptyNote(text: "Nothing is running right now.", symbol: "moon.zzz").kCard(radius: Radius.card)
                 } else {
                     ForEach(Array(rows.working.enumerated()), id: \.element.id) { index, item in
                         LiveWorkRow(item: item).arrives(min(index, 12))
@@ -229,7 +229,7 @@ struct BotInboxSection: View {
             VStack(alignment: .leading, spacing: 10) {
                 labelRow("Done", count: rows.done.count)
                 if rows.done.isEmpty {
-                    EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: 20)
+                    EmptyNote(text: "Nothing is done yet.", symbol: "tray").kCard(radius: Radius.card)
                 } else {
                     doneList(rows.done) { LiveDoneRow(item: $0) }
                 }
@@ -283,10 +283,10 @@ struct NeedsCardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .kCard(radius: 22, raised: card.settled == nil)
+        .kCard(radius: Radius.group, raised: card.settled == nil)
         .overlay {
             if card.settled == nil {
-                RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Palette.gold.opacity(0.35), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Radius.group, style: .continuous).strokeBorder(Palette.gold.opacity(0.35), lineWidth: 1)
             }
         }
     }
@@ -370,7 +370,7 @@ private struct ApprovalBody: View {
             .foregroundStyle(Palette.inkFaint)
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Palette.ink.opacity(0.05), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
 
             if let settled = card.settled {
                 CardSettledLine(card: card, settled: settled)
@@ -421,7 +421,7 @@ private struct ApprovalBody: View {
                 .lineLimit(1...4)
                 .focused($focused)
                 .padding(12)
-                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             HStack(spacing: 8) {
                 PillButton(title: "Cancel", wide: true) { withAnimation(Motion.snappy) { replying = false } }
                 PillButton(title: "Send reply", look: .filled, wide: true) {
@@ -538,7 +538,7 @@ private struct QuestionBody: View {
             .foregroundStyle(Palette.ink)
             .padding(.horizontal, 14)
             .frame(minHeight: 52)
-            .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             }
         }
     }
@@ -576,9 +576,9 @@ private struct QuestionBody: View {
             }
             .padding(.horizontal, 14)
             .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-            .background(on ? Palette.gold.opacity(0.16) : Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(on ? Palette.gold : Color.clear, lineWidth: 1.5))
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(on ? Palette.gold.opacity(0.16) : Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.field, style: .continuous).strokeBorder(on ? Palette.gold : Color.clear, lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
         }
         .buttonStyle(PressStyle(scale: 0.98))
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -685,7 +685,7 @@ private struct ReviewBody: View {
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1...4)
                     .padding(12)
-                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
                 HStack(spacing: 8) {
                     PillButton(title: "Cancel", wide: true) { withAnimation(Motion.snappy) { asking = false } }
                     PillButton(title: "Request changes", look: .filled, wide: true) {
@@ -752,7 +752,7 @@ struct WorkRow: View {
             }
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 
     private func update(_ change: (inout WorkItem) -> Void) {
@@ -875,10 +875,10 @@ struct InboxRowCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .kCard(radius: 22, raised: settled == nil)
+        .kCard(radius: Radius.group, raised: settled == nil)
         .overlay {
             if settled == nil {
-                RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Palette.gold.opacity(0.35), lineWidth: 1)
+                RoundedRectangle(cornerRadius: Radius.group, style: .continuous).strokeBorder(Palette.gold.opacity(0.35), lineWidth: 1)
             }
         }
         .animation(Motion.snappy, value: replying)
@@ -903,7 +903,7 @@ struct InboxRowCard: View {
                 .lineLimit(1...4)
                 .focused($focused)
                 .padding(12)
-                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             HStack(spacing: 8) {
                 PillButton(title: "Cancel", wide: true) {
                     text = ""
@@ -954,7 +954,7 @@ struct InboxRowCard: View {
     private func startReply() {
         replying = true
         Task {
-            try? await Task.sleep(for: .milliseconds(150))
+            try? await Task.sleep(for: Motion.focusDelay)
             focused = true
         }
     }
@@ -1002,7 +1002,7 @@ struct LiveWorkRow: View {
             }
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 }
 
@@ -1083,7 +1083,7 @@ struct BotNotificationsScreen: View {
                 }
                 if rows.isEmpty {
                     EmptyNote(text: filter == "All" ? "No notifications from this bot." : "No notifications here.", symbol: "bell.slash")
-                        .kCard(radius: 20)
+                        .kCard(radius: Radius.card)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(rows.enumerated()), id: \.element.id) { index, notice in
@@ -1091,7 +1091,7 @@ struct BotNotificationsScreen: View {
                             liveRow(notice).arrives(min(index, 12))
                         }
                     }
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
                 }
                 if live.noticesSkipped > 0 {
                     HintLine(text: "Some notifications from your desktop could not be read and are left out.", symbol: "info.circle")
@@ -1190,7 +1190,7 @@ struct BotNotificationsScreen: View {
                 }
             }
             if items.isEmpty {
-                EmptyNote(text: "No notifications here.", symbol: "bell.slash").kCard(radius: 20)
+                EmptyNote(text: "No notifications here.", symbol: "bell.slash").kCard(radius: Radius.card)
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, notice in
@@ -1198,7 +1198,7 @@ struct BotNotificationsScreen: View {
                         row(notice).arrives(index)
                     }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             }
         }
         .fullScreenCover(isPresented: $calling) { CallView(bot: store.bot(botID)) }
@@ -1299,7 +1299,7 @@ struct BotActivityScreen: View {
                 }
                 if entries.isEmpty {
                     EmptyNote(text: "Nothing was recorded for this bot in the last 30 days.", symbol: "list.bullet.rectangle")
-                        .kCard(radius: 20)
+                        .kCard(radius: Radius.card)
                 } else {
                     let days = Self.days(entries)
                     ForEach(Array(days.enumerated()), id: \.element.day) { dayIndex, group in
@@ -1649,7 +1649,7 @@ struct BotReportScreen: View {
             PillButton(title: refreshing ? "Refreshing" : "Refresh", symbol: "arrow.clockwise", wide: true) {
                 refreshing = true
                 Task {
-                    try? await Task.sleep(for: .seconds(0.8))
+                    try? await Task.sleep(for: Motion.sampleRefresh)
                     refreshing = false
                     store.say("Report is up to date")
                 }
@@ -1665,7 +1665,7 @@ struct BotReportScreen: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .kCard(radius: 18)
+        .kCard(radius: Radius.card)
         .animation(Motion.snappy, value: window)
     }
 

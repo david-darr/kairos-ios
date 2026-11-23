@@ -80,9 +80,9 @@ struct BotCreateSheet: View {
             FittedSheet(estimate: 420) {
                 VStack(spacing: 16) {
                     SheetTitle(title: "Full access", detail: "It acts without asking. You can stop it at any time from its page.")
-                    SwipeToConfirm(title: "Swipe up to give full access") {
+                    HoldToConfirm(title: "Hold to give full access") {
                         draft.fullAccess = true
-                        Task { try? await Task.sleep(for: .seconds(0.5)); confirmFull = false }
+                        Task { try? await Task.sleep(for: Motion.sheetCloseDelay); confirmFull = false }
                     }
                     QuietButton(title: "Keep asking first") { confirmFull = false }
                 }
@@ -125,7 +125,7 @@ struct BotCreateSheet: View {
                 }
             }
             .padding(14)
-            .kCard(radius: 22)
+            .kCard(radius: Radius.group)
             HintLine(text: "It starts with your saved defaults. You can change anything later.", symbol: "info.circle")
         }
     }
@@ -139,7 +139,7 @@ struct BotCreateSheet: View {
             FieldCard(title: "Introduction", text: $draft.introduction, placeholder: "A short line about who it is.", limit: 4_000, lines: 2...5)
             FieldCard(title: "Group (optional)", text: $draft.group, placeholder: "Bots in the same group sit together.", limit: 60)
             MascotPicker(colorHex: $draft.colorHex, shape: $draft.shape, accessory: $draft.accessory, previewSize: 120)
-                .padding(14).kCard(radius: 22)
+                .padding(14).kCard(radius: Radius.group)
         case .soul:
             FieldCard(title: "Standing instructions", text: $draft.instructions, placeholder: "How it should always work", lines: 4...10)
             Text("\(draft.instructions.utf8.count) / 24,000 bytes").font(KFont.ui(12.5)).foregroundStyle(Palette.inkFaint)
@@ -184,7 +184,7 @@ struct BotCreateSheet: View {
                     Text("No starting notes").font(KFont.ui(15, .medium)).foregroundStyle(Palette.ink)
                     Text("Notes it will remember from its very first chat.").font(KFont.ui(13.5)).foregroundStyle(Palette.inkFaint)
                 }
-                .frame(maxWidth: .infinity).padding(18).kCard(radius: 18)
+                .frame(maxWidth: .infinity).padding(18).kCard(radius: Radius.card)
             }
             ForEach($draft.notes) { $note in
                 VStack(spacing: 0) {
@@ -202,7 +202,7 @@ struct BotCreateSheet: View {
                     TextField("Something it should already know", text: $note.text, axis: .vertical)
                         .font(KFont.ui(16)).foregroundStyle(Palette.ink).lineLimit(1...5).padding(14)
                 }
-                .kCard(radius: 18)
+                .kCard(radius: Radius.card)
             }
             PillButton(title: "Add a note", symbol: "plus", wide: true) {
                 withAnimation(Motion.snappy) { draft.notes.append(StartingNote()) }
@@ -214,7 +214,7 @@ struct BotCreateSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             HintLine(text: "Optional. A routine runs on a schedule and tells you what it found.")
             if draft.routines.isEmpty {
-                EmptyNote(text: "No routines yet", symbol: "clock").kCard(radius: 18)
+                EmptyNote(text: "No routines yet", symbol: "clock").kCard(radius: Radius.card)
             }
             ForEach(Array(draft.routines.indices), id: \.self) { index in
                 VStack(alignment: .leading, spacing: 10) {
@@ -224,10 +224,10 @@ struct BotCreateSheet: View {
                         PillButton(title: "Remove", look: .danger) { _ = withAnimation(Motion.snappy) { draft.routines.remove(at: index) } }
                     }
                     TextField("Name", text: $draft.routines[index].name).font(KFont.ui(16)).foregroundStyle(Palette.ink)
-                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
                     TextField("What to do", text: $draft.routines[index].instructions, axis: .vertical).font(KFont.ui(16)).foregroundStyle(Palette.ink)
                         .lineLimit(1...4)
-                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .padding(12).background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
                     GoldSegmented(items: [RepeatMode.daily, RepeatMode.interval], selection: $draft.routines[index].mode) { $0 == .daily ? "Every day at" : "Every few hours" }
                     if draft.routines[index].mode == .daily {
                         HStack {
@@ -244,7 +244,7 @@ struct BotCreateSheet: View {
                     GoldSegmented(items: [false, true], selection: $draft.routines[index].rememberLast) { $0 ? "Every time" : "Only when notable" }
                 }
                 .padding(14)
-                .kCard(radius: 18)
+                .kCard(radius: Radius.card)
             }
             PillButton(title: "Add a routine", symbol: "plus", wide: true) {
                 guard draft.routines.count < 10 else { store.say("A bot can start with 10 routines at most."); return }
@@ -278,7 +278,7 @@ struct BotCreateSheet: View {
                                 Spacer()
                             }
                             .padding(.horizontal, 12).frame(minHeight: 54)
-                            .kCard(radius: 16)
+                            .kCard(radius: Radius.field)
                         }
                         .buttonStyle(PressStyle(scale: 0.98))
                         .arrives(index)

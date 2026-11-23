@@ -53,6 +53,9 @@ final class BotsStore: BotsProviding {
     var liveMode = false
     var rosterLoad: BotsLiveLoad = .idle
     var liveNeedsYou: [String: Int] = [:]
+    /// When each bot's roster count (liveNeedsYou) and its Needs you cards were last read.
+    var needsReadAt: [String: Date] = [:]
+    var cardsReadAt: [String: Date] = [:]
     var details: [String: AgentDetailDTO] = [:]
     var detailLoad: [String: BotsLiveLoad] = [:]
     var cardsLoad: [String: BotsLiveLoad] = [:]
@@ -120,12 +123,16 @@ final class BotsStore: BotsProviding {
     func team(of botID: String) -> BotTeam? { teams.first { $0.members.contains(botID) } }
 
     /// How many things wait on the person for one bot: the one count every badge shows (Home's face, the chat
-    /// header, All bots and the panel's Inbox). Paired, the bot's own inbox once it is read (it drops as each
-    /// is answered), else the roster's count.
+    /// header, All bots and the panel's Inbox). Paired, whichever was read last: the bot's own inbox (it drops as
+    /// each is answered; as old as the older of its cards and rows) or the roster's count.
     func needsCount(_ botID: String) -> Int {
         if liveMode {
-            if cardsLoad[botID] == .loaded && BotsInboxLive.shared.inboxLoad == .loaded {
-                return BotInboxSection.livePending(botID)
+            let inbox = BotsInboxLive.shared
+            if cardsLoad[botID] == .loaded && inbox.inboxLoad == .loaded {
+                let inboxAt = min(cardsReadAt[botID] ?? .distantPast, inbox.inboxReadAt ?? .distantPast)
+                if inboxAt >= (needsReadAt[botID] ?? .distantPast) {
+                    return BotInboxSection.livePending(botID)
+                }
             }
             return liveNeedsYou[botID] ?? 0
         }

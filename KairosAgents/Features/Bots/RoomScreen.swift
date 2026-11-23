@@ -73,7 +73,7 @@ struct RoomScreen: View {
                             PillButton(title: "Stop \(store.bot(id).name)") { stop([id], in: index) }
                         }
                         .padding(10)
-                        .kCard(radius: 18)
+                        .kCard(radius: Radius.card)
                     }
                     ForEach(Array(queued.enumerated()), id: \.offset) { position, text in
                         HStack {
@@ -82,7 +82,7 @@ struct RoomScreen: View {
                             PillButton(title: "Cancel") { _ = withAnimation(Motion.snappy) { queued.remove(at: position) } }
                         }
                         .padding(10)
-                        .kCard(radius: 16)
+                        .kCard(radius: Radius.field)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -190,7 +190,7 @@ struct RoomScreen: View {
                     }
                 }
                 .padding(10)
-                .kCard(radius: 16, raised: true)
+                .kCard(radius: Radius.field, raised: true)
             }
             if let pinned = room.messages.last(where: \.pinned) {
                 HStack(spacing: 8) {
@@ -198,7 +198,8 @@ struct RoomScreen: View {
                     Text(pinned.text).font(KFont.ui(13.5)).foregroundStyle(Palette.ink).lineLimit(1)
                     Spacer()
                     Button { pin(pinned, in: index) } label: {
-                        Text("Unpin").font(KFont.ui(13.5, .semibold)).foregroundStyle(Palette.goldText).frame(minHeight: 36)
+                        Text("Unpin").font(KFont.ui(13.5, .semibold)).foregroundStyle(Palette.goldText)
+                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     }
                 }
                 .padding(.horizontal, 12)
@@ -254,7 +255,7 @@ struct RoomScreen: View {
                 .accessibilityLabel("Send")
                 .padding(.trailing, 4)
             }
-            .kGlass(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .kGlass(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
             .padding(.horizontal, 16)
             Text(room.working.isEmpty ? room.whoAnswers : "Messages wait their turn.")
                 .font(KFont.ui(12, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
@@ -344,8 +345,8 @@ struct RoomBubble: View {
                 Text(message.text)
                     .font(KFont.ui(16.5)).foregroundStyle(Palette.onGold)
                     .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(Palette.gold, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Palette.ink, lineWidth: highlighted ? 2 : 0))
+                    .background(Palette.gold, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Palette.ink, lineWidth: highlighted ? 2 : 0))
             }
         } else {
             let bot = store.bot(message.from)
@@ -362,8 +363,8 @@ struct RoomBubble: View {
                         if let handoff = message.handoff { HandoffChip(handoff: handoff) }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(highlighted ? Palette.gold : Palette.line, lineWidth: highlighted ? 2 : 1))
+                    .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(highlighted ? Palette.gold : Palette.line, lineWidth: highlighted ? 2 : 1))
                 }
                 Spacer(minLength: 40)
             }
@@ -391,7 +392,7 @@ struct HandoffChip: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
         }
         .buttonStyle(PressStyle(scale: 0.98))
     }
@@ -489,7 +490,7 @@ struct RoomSettingsSheet: View {
                     .disabled(busy)
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             GoldButton(title: "Save with \(members.count) bot\(members.count == 1 ? "" : "s")") {
                 guard let index, !members.isEmpty else { Haptics.thud(); return }
                 store.rooms[index].members = store.bots.map(\.id).filter { members.contains($0) }
@@ -517,7 +518,7 @@ struct RoomSettingsSheet: View {
                     .padding(.horizontal, 14).frame(minHeight: 54)
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             HStack {
                 TextField("New conversation", text: $newConversation).font(KFont.ui(16)).foregroundStyle(Palette.ink)
                 PillButton(title: "Create conversation") {
@@ -527,7 +528,7 @@ struct RoomSettingsSheet: View {
                     newConversation = ""
                 }
             }
-            .padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).kCard(radius: 20)
+            .padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).kCard(radius: Radius.card)
         }
     }
 }
@@ -684,7 +685,7 @@ struct BotRoomLiveScreen: View {
             }
         }
         .padding(10)
-        .kCard(radius: 18)
+        .kCard(radius: Radius.card)
     }
 
     private func queueRow(_ position: Int, _ item: BotRmQueueItemDTO) -> some View {
@@ -699,7 +700,7 @@ struct BotRoomLiveScreen: View {
             }
         }
         .padding(10)
-        .kCard(radius: 16)
+        .kCard(radius: Radius.field)
     }
 
     @ViewBuilder
@@ -792,7 +793,7 @@ struct BotRoomLiveScreen: View {
                     }
                 }
                 .padding(10)
-                .kCard(radius: 16, raised: true)
+                .kCard(radius: Radius.field, raised: true)
             }
             if let pinnedID = room.pinnedMessageId { pinnedBar(pinnedID) }
         }
@@ -834,7 +835,8 @@ struct BotRoomLiveScreen: View {
                 .font(KFont.ui(13.5)).foregroundStyle(Palette.ink).lineLimit(1)
             Spacer()
             Button { live.pin(roomID, messageID: nil) } label: {
-                Text("Unpin").font(KFont.ui(13.5, .semibold)).foregroundStyle(Palette.goldText).frame(minHeight: 36)
+                Text("Unpin").font(KFont.ui(13.5, .semibold)).foregroundStyle(Palette.goldText)
+                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
             .disabled(live.busy.contains("pin|\(roomID)"))
         }
@@ -907,7 +909,7 @@ struct BotRoomLiveScreen: View {
                 .accessibilityLabel("Send")
                 .padding(.trailing, 4)
             }
-            .kGlass(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .kGlass(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
             .padding(.horizontal, 16)
             Text(running ? "Messages wait their turn." : live.whoAnswers(roomID))
                 .font(KFont.ui(12, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
@@ -968,8 +970,8 @@ struct BotRoomLiveBubble: View {
             Text(message.text ?? "")
                 .font(KFont.ui(16.5)).foregroundStyle(Palette.onGold)
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Palette.gold, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Palette.ink, lineWidth: highlighted ? 2 : 0))
+                .background(Palette.gold, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(Palette.ink, lineWidth: highlighted ? 2 : 0))
         }
     }
 
@@ -999,8 +1001,8 @@ struct BotRoomLiveBubble: View {
                     }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(highlighted ? Palette.gold : Palette.line, lineWidth: highlighted ? 2 : 1))
+                .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).strokeBorder(highlighted ? Palette.gold : Palette.line, lineWidth: highlighted ? 2 : 1))
             }
             Spacer(minLength: 40)
         }
@@ -1019,7 +1021,7 @@ struct BotRoomLiveOutgoingBubble: View {
                 Text(item.text)
                     .font(KFont.ui(16.5)).foregroundStyle(Palette.onGold)
                     .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(Palette.gold.opacity(0.6), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .background(Palette.gold.opacity(0.6), in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             }
             Text(words)
                 .font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(problem ? Palette.goldText : Palette.inkFaint)
@@ -1379,7 +1381,7 @@ struct BotRoomLiveSheet: View {
                     memberRow(id, chosen: form.members.contains(id))
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             noteLine
             saveButton("Save with \(form.members.count) bot\(form.members.count == 1 ? "" : "s")",
                        disabled: live.locked(roomID) || form.members.isEmpty)
@@ -1445,14 +1447,14 @@ struct BotRoomLiveSheet: View {
                     threadRow(thread)
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
         HStack {
             TextField("New conversation", text: $newTitle).font(KFont.ui(16)).foregroundStyle(Palette.ink)
             PillButton(title: creating ? "Creating" : "Create conversation") { create() }
                 .disabled(creating)
         }
-        .padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).kCard(radius: 20)
+        .padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).kCard(radius: Radius.card)
         noteLine
     }
 

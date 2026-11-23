@@ -140,6 +140,8 @@ extension BotsStore {
             }
             sampleStash = nil
             liveNeedsYou = [:]
+            needsReadAt = [:]
+            cardsReadAt = [:]
             details = [:]
             detailLoad = [:]
             cardsLoad = [:]
@@ -159,6 +161,8 @@ extension BotsStore {
         teams = []
         needs = []
         liveNeedsYou = [:]
+        needsReadAt = [:]
+        cardsReadAt = [:]
         details = [:]
         detailLoad = [:]
         cardsLoad = [:]
@@ -279,7 +283,11 @@ extension BotsStore {
         guard liveMode, rosterLoad == .loaded else { return }
         guard let read = await beginRead("needs") else { return }
         guard let roster = try? await liveClient().agentRoster(), current("needs", read, first: false) else { return }
-        for agent in roster { liveNeedsYou[agent.id] = agent.needsYou ?? 0 }
+        let now = Date()
+        for agent in roster {
+            liveNeedsYou[agent.id] = agent.needsYou ?? 0
+            needsReadAt[agent.id] = now
+        }
     }
 
     private func showRoster(_ roster: [AgentDTO], map: BotTeamMapDTO?, conversations: AgentConversationsDTO?) {
@@ -297,6 +305,8 @@ extension BotsStore {
         var counts: [String: Int] = [:]
         for agent in sorted { counts[agent.id] = agent.needsYou ?? 0 }
         liveNeedsYou = counts
+        let now = Date()
+        needsReadAt = Dictionary(uniqueKeysWithValues: counts.keys.map { ($0, now) })
 
         if let conversations {
             // The desktop's pins, read with the roster, keep Home's pins (the one list) current.
@@ -371,6 +381,7 @@ extension BotsStore {
                 let fresh = Self.liveBot(agent)
                 if let index = bots.firstIndex(where: { $0.id == botID }) { bots[index] = fresh }
                 liveNeedsYou[botID] = agent.needsYou ?? liveNeedsYou[botID] ?? 0
+                if agent.needsYou != nil { needsReadAt[botID] = Date() }
             }
         } catch {
             guard latest(key, read) else { return }
@@ -417,6 +428,7 @@ extension BotsStore {
                 needs.append(contentsOf: kept.isEmpty ? fresh : fresh.filter { !kept.contains($0.live?.id ?? "") })
             }
             cardsLoad[botID] = .loaded
+            cardsReadAt[botID] = Date()
             if !gone.isEmpty {
                 say(gone.count == 1 ? "Your desktop is no longer waiting on that request."
                                     : "Your desktop is no longer waiting on those requests.")
@@ -751,7 +763,7 @@ struct BotsLoadNote: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         case .idle, .loaded:
             EmptyView()
         }

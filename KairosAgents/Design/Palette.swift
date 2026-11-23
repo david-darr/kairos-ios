@@ -129,6 +129,18 @@ nonisolated enum Motion {
     static let gentle = Animation.easeInOut(duration: 0.24)
     /// The pause after a single choice before a card moves to its next question.
     static let autoAdvance: Duration = .milliseconds(280)
+    /// The pause before a field that has just appeared takes the keyboard.
+    static let focusDelay: Duration = .milliseconds(150)
+    /// How long a confirmed sheet stays up, showing its done state, before it closes.
+    static let sheetCloseDelay: Duration = .milliseconds(500)
+    /// How long a picker must settle before what it shows is sent.
+    static let settleDelay: Duration = .milliseconds(800)
+    /// How long an Undo banner stays up.
+    static let undoWindow: Duration = .seconds(8)
+    /// The short wait a sample refresh shows before it is up to date.
+    static let sampleRefresh: Duration = .milliseconds(800)
+    /// How long a press-and-hold confirmation must be held, in seconds.
+    static let holdToConfirm: Double = 0.9
 }
 
 enum Haptics {

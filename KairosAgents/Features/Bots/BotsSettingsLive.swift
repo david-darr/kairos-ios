@@ -899,7 +899,7 @@ struct BotSetUnsureNote: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 }

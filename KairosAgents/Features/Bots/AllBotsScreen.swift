@@ -40,7 +40,7 @@ struct AllBotsScreen: View {
                 }
                 if !store.liveMode {
                     NavigationLink(value: BotsRoute.maker) {
-                        NavRow(title: "Make a bot", symbol: "plus.circle").kCard(radius: 20)
+                        NavRow(title: "Make a bot", symbol: "plus.circle").kCard(radius: Radius.card)
                     }
                     .buttonStyle(PressStyle(scale: 0.98))
                 }
@@ -54,7 +54,7 @@ struct AllBotsScreen: View {
                     }
                 }
                 .padding(12)
-                .kGlass(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .kGlass(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -63,7 +63,7 @@ struct AllBotsScreen: View {
             ConfirmSheet(title: "Archive \(bot.name)?", detail: "It is hidden. Its routines keep running.", confirm: "Archive") {
                 withAnimation(Motion.snappy) { store.archive(bot.id); undoBot = bot.id }
                 Task {
-                    try? await Task.sleep(for: .seconds(8))
+                    try? await Task.sleep(for: Motion.undoWindow)
                     withAnimation(Motion.gentle) { if undoBot == bot.id { undoBot = nil } }
                 }
             }
@@ -155,7 +155,7 @@ struct AllBotsScreen: View {
         }
         .padding(.leading, 14)
         .frame(minHeight: 48)
-        .kCard(radius: 16)
+        .kCard(radius: Radius.field)
     }
 
     // MARK: Sections
@@ -165,7 +165,7 @@ struct AllBotsScreen: View {
         let chats = store.liveMode ? [] : store.bots.flatMap { bot in store.settings(bot.id).conversations.filter { $0.title.localizedCaseInsensitiveContains(search) }.map { (bot, $0) } }
         return VStack(alignment: .leading, spacing: 14) {
             if bots.isEmpty && chats.isEmpty {
-                EmptyNote(text: "Nothing found.", symbol: "magnifyingglass").kCard(radius: 20)
+                EmptyNote(text: "Nothing found.", symbol: "magnifyingglass").kCard(radius: Radius.card)
             }
             if !bots.isEmpty { section("Bots found", bots, team: nil) }
             if !chats.isEmpty {
@@ -237,7 +237,8 @@ struct AllBotsScreen: View {
                 SectionLabel(text: title)
                 if let team {
                     NavigationLink(value: BotsRoute.team(team.id)) {
-                        Text(team.paused ? "Paused" : "Team").font(KFont.ui(13, .medium)).foregroundStyle(Palette.goldText).frame(minHeight: 32)
+                        Text(team.paused ? "Paused" : "Team").font(KFont.ui(13, .medium)).foregroundStyle(Palette.goldText)
+                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     }
                 }
             }
@@ -250,7 +251,7 @@ struct AllBotsScreen: View {
                     row(bot).arrives(index)
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 
@@ -399,13 +400,8 @@ struct AllBotsScreen: View {
     }
 
     private func moveButton(_ symbol: String, _ label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 14, weight: .bold)).foregroundStyle(enabled ? Palette.ink : Palette.inkFaint.opacity(0.5))
-                .frame(width: 44, height: 44).background(Palette.ink.opacity(enabled ? 0.08 : 0.03), in: Circle())
-        }
-        .buttonStyle(PressStyle(scale: 0.9))
-        .disabled(!enabled)
-        .accessibilityLabel(label)
+        RoundIconButton(symbol: symbol, label: label, action: action)
+            .disabled(!enabled)
     }
 
     // MARK: Actions

@@ -33,7 +33,7 @@ struct BotSettingsList: View {
                     }
                 }
                 .buttonStyle(PressStyle(scale: 0.98))
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             }
 
             group("What it knows", [
@@ -71,7 +71,7 @@ struct BotSettingsList: View {
                     }
                 }
                 .buttonStyle(PressStyle(scale: 0.98))
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             }
         }
         .task(id: BotsSettingsLive.connectionKey) {
@@ -141,7 +141,7 @@ struct BotSettingsList: View {
                 }
             }
             .buttonStyle(PressStyle(scale: 0.98))
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 
@@ -159,7 +159,7 @@ struct BotSettingsList: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .kCard(radius: 20, raised: true)
+            .kCard(radius: Radius.card, raised: true)
         }
         .buttonStyle(PressStyle(scale: 0.98))
     }
@@ -185,7 +185,7 @@ struct BotSettingsList: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .kCard(radius: 20, raised: true)
+        .kCard(radius: Radius.card, raised: true)
     }
 
     private static func count(_ n: Int, _ one: String, _ many: String) -> String {
@@ -428,7 +428,7 @@ struct ModelSettings: View {
                 }
             }
             .padding(14)
-            .kCard(radius: 18)
+            .kCard(radius: Radius.card)
         }
     }
 }
@@ -515,7 +515,7 @@ struct ApprovalSettings: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(command).font(.system(size: 15, design: .monospaced)).foregroundStyle(Palette.ink)
-                            Text("In the shop-site folder").font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
+                            Text("Runs without asking").font(KFont.ui(12.5, relativeTo: .caption)).foregroundStyle(Palette.inkFaint)
                         }
                         Spacer()
                         PillButton(title: "Remove", look: .danger) {
@@ -567,9 +567,7 @@ struct ApprovalSettings: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(on ? Palette.surfaceRaised : Palette.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(on ? Palette.gold : Palette.line, lineWidth: on ? 1.5 : 1))
-            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .kOptionCard(selected: on)
         }
         .buttonStyle(PressStyle(scale: 0.98))
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -588,7 +586,7 @@ struct ApprovalSettings: View {
     }
 }
 
-/// Raising a level is confirmed on the phone. Full needs a swipe up.
+/// Raising a level is confirmed on the phone. Full needs a press and hold.
 struct RaiseLevelSheet: View {
     let botName: String
     let from: ApprovalLevel
@@ -606,10 +604,10 @@ struct RaiseLevelSheet: View {
                     .frame(width: 76, height: 76)
                     .kGlass(Circle())
                 if to == .full {
-                    SwipeToConfirm(title: "Swipe up to give full access") {
+                    HoldToConfirm(title: "Hold to give full access") {
                         action()
                         Task {
-                            try? await Task.sleep(for: .seconds(0.5))
+                            try? await Task.sleep(for: Motion.sheetCloseDelay)
                             dismiss()
                         }
                     }
@@ -788,7 +786,8 @@ struct InstructionsSettings: View {
 
     @ViewBuilder private var sample: some View {
         let binding = store.binding(botID)
-        BotsPage("Standing instructions") {
+        let unsaved = loaded && (text != binding.wrappedValue.standingInstructions || intro != binding.wrappedValue.introduction)
+        BotsPage("Standing instructions", unsaved: unsaved) {
             FieldCard(title: "Standing instructions", text: $text, placeholder: "How it should work, always", limit: 24_000, lines: 6...14)
             FieldCard(title: "Introduction", text: $intro, placeholder: "A short line about who it is.", limit: 4_000, lines: 2...5)
             BotsSection(title: "Reply style") {
@@ -835,7 +834,7 @@ struct HistorySettings: View {
         let changes = binding.wrappedValue.history
         BotsPage("History", subtitle: "Settings version \(changes.count + 3)") {
             if changes.isEmpty {
-                EmptyNote(text: "Nothing has changed since history started.", symbol: "clock").kCard(radius: 20)
+                EmptyNote(text: "Nothing has changed since history started.", symbol: "clock").kCard(radius: Radius.card)
             } else {
                 BotsSection(title: "Changes") {
                     ForEach(Array(changes.enumerated()), id: \.element.id) { index, change in
@@ -861,7 +860,7 @@ struct HistorySettings: View {
                     }
                 }
             }
-            HintLine(text: "Created October 2. Earlier instructions stay readable here.")
+            HintLine(text: "Earlier instructions stay readable here.")
         }
     }
 }
@@ -1141,7 +1140,7 @@ private struct BotSetModelScreen: View {
                         .opacity(switching ? 0.5 : 1)
                     }
                     .padding(14)
-                    .kCard(radius: 18)
+                    .kCard(radius: Radius.card)
                 }
             }
         }
@@ -1298,7 +1297,7 @@ private struct BotSetApprovalScreen: View {
                 } else {
                     HintLine(text: "This bot uses custom approval rules. Change them in Kairos on your desktop.", symbol: "info.circle")
                         .padding(14)
-                        .kCard(radius: 18)
+                        .kCard(radius: Radius.card)
                 }
             }
 
@@ -1428,9 +1427,7 @@ private struct BotSetApprovalScreen: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(on ? Palette.surfaceRaised : Palette.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(on ? Palette.gold : Palette.line, lineWidth: on ? 1.5 : 1))
-            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .kOptionCard(selected: on)
         }
         .buttonStyle(PressStyle(scale: 0.98))
         .disabled(busy || higher || on || unavailable)
@@ -1806,7 +1803,7 @@ private struct BotSetInstructionsScreen: View {
         let handEdited = soul?.inSync == false
         let edited = form?.edited(values()) ?? []
         let tooLong = text.utf8.count > (soul?.limit ?? Self.soulLimit) || BotSetForm.length(intro) > Self.introLimit
-        BotsPage("Standing instructions", live: true) {
+        BotsPage("Standing instructions", live: true, unsaved: !edited.isEmpty) {
             BotSetUnsureNote(botID: botID)
             BotsLoadNote(state: live.shown(soul == nil ? live.soulLoad[botID] : live.recordLoad[botID])) {
                 Task {
@@ -1819,7 +1816,7 @@ private struct BotSetInstructionsScreen: View {
                 if handEdited {
                     HintLine(text: "The instructions file was edited by hand on your desktop, so nothing here can be saved. Keep or discard that edit in Kairos on your desktop first.", symbol: "exclamationmark.triangle", color: Palette.goldText)
                         .padding(14)
-                        .kCard(radius: 18)
+                        .kCard(radius: Radius.card)
                 }
                 FieldCard(title: "Standing instructions", text: $text, placeholder: "How it should work, always", limit: Self.soulLimit, lines: 6...14)
                 FieldCard(title: "Introduction", text: $intro, placeholder: "A short line about who it is.", limit: Self.introLimit, lines: 2...5)
@@ -1937,7 +1934,7 @@ private struct BotSetHistoryScreen: View {
             BotsLoadNote(state: live.shown(live.historyLoad[botID])) { Task { await live.loadHistory(botID) } }
             if history != nil {
                 if rows.isEmpty {
-                    EmptyNote(text: "Nothing has changed since history started.", symbol: "clock").kCard(radius: 20)
+                    EmptyNote(text: "Nothing has changed since history started.", symbol: "clock").kCard(radius: Radius.card)
                 } else {
                     BotsSection(title: "Changes") {
                         ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in

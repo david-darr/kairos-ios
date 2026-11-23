@@ -54,6 +54,7 @@ struct MascotPicker: View {
     /// The shapes offered. A paired bot can only be stored in the desktop's shapes (BotAvatarRules.shapes).
     var shapes: [MascotShape] = MascotShape.allCases
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let shapeColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
     private let accessoryColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
@@ -64,13 +65,13 @@ struct MascotPicker: View {
                     Spacer()
                     Mascot(shape: shape, colorHex: colorHex, accessory: accessory, size: previewSize, live: true)
                         .id("\(shape.rawValue)-\(accessory.rawValue)-\(colorHex)")
-                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                        .transition(reduceMotion ? .opacity : .scale(scale: 0.9).combined(with: .opacity))
                     Spacer()
                 }
                 .frame(height: previewSize + 10)
-                .animation(Motion.bouncy, value: shape)
-                .animation(Motion.bouncy, value: accessory)
-                .animation(Motion.bouncy, value: colorHex)
+                .animation(previewMotion, value: shape)
+                .animation(previewMotion, value: accessory)
+                .animation(previewMotion, value: colorHex)
                 .accessibilityElement()
                 .accessibilityLabel("Preview: \(BotLook.colorName(colorHex)), \(BotLook.name(shape)), \(BotLook.name(accessory))")
             }
@@ -127,6 +128,9 @@ struct MascotPicker: View {
         }
     }
 
+    /// A plain fade with Reduce Motion on, else a little bounce.
+    private var previewMotion: Animation { reduceMotion ? Motion.gentle : Motion.bouncy }
+
     private func tile<Face: View>(on: Bool, label: String, pick: @escaping () -> Void, @ViewBuilder content: () -> Face) -> some View {
         Button {
             Haptics.select()
@@ -140,9 +144,7 @@ struct MascotPicker: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: 82)
-            .background(on ? Palette.surfaceRaised : Palette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(on ? Palette.gold : Palette.line, lineWidth: on ? 2 : 1))
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .kOptionCard(selected: on, radius: Radius.tile)
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel(label)
@@ -172,14 +174,14 @@ struct BotLookScreen: View {
 
     @ViewBuilder private var sample: some View {
         let bot = store.bot(botID)
-        BotsPage("Look and name") {
+        BotsPage("Look and name", unsaved: loaded && !bot.isKip && changed) {
             if bot.isKip {
                 VStack(spacing: 14) {
                     BotFace(bot: bot, size: 150, blinks: true)
                     Text(bot.name).font(KFont.display(36)).foregroundStyle(Palette.ink)
                     HintLine(text: "Kip always looks like Kairos's own Kip. Its name and look cannot be changed, so you always know who answers first.", symbol: "lock")
                         .padding(14)
-                        .kCard(radius: 18)
+                        .kCard(radius: Radius.card)
                 }
                 .frame(maxWidth: .infinity)
             } else {
@@ -190,7 +192,7 @@ struct BotLookScreen: View {
                 FieldCard(title: "Job", text: $job, placeholder: "What is this bot for?", limit: 200)
                 MascotPicker(colorHex: $colorHex, shape: $shape, accessory: $accessory)
                     .padding(16)
-                    .kCard(radius: 22)
+                    .kCard(radius: Radius.group)
                 HStack(spacing: 10) {
                     PillButton(title: "Shuffle", symbol: "shuffle", wide: true) {
                         let next = BotLook.shuffled()
@@ -258,7 +260,8 @@ private struct BotSetLookScreen: View {
 
     var body: some View {
         let agent = live.record(botID)
-        BotsPage("Look and name", live: true) {
+        let unsaved = agent != nil && agent?.isFrontDesk != true && !(form?.edited(values()).isEmpty ?? true)
+        BotsPage("Look and name", live: true, unsaved: unsaved) {
             BotSetUnsureNote(botID: botID)
             BotsLoadNote(state: live.shown(live.recordLoad[botID])) {
                 Task {
@@ -273,7 +276,7 @@ private struct BotSetLookScreen: View {
                     Text(bot.name).font(KFont.display(36)).foregroundStyle(Palette.ink)
                     HintLine(text: "Kip always looks like Kairos's own Kip. Its name and look cannot be changed, so you always know who answers first.", symbol: "lock")
                         .padding(14)
-                        .kCard(radius: 18)
+                        .kCard(radius: Radius.card)
                 }
                 .frame(maxWidth: .infinity)
             } else if agent != nil, let form {
@@ -295,7 +298,7 @@ private struct BotSetLookScreen: View {
                 }
                 MascotPicker(colorHex: $colorHex, shape: $shape, accessory: $accessory, shapes: BotAvatarRules.shapes)
                     .padding(16)
-                    .kCard(radius: 22)
+                    .kCard(radius: Radius.group)
                 let ready = !edited.isEmpty && !blank && !nameTooLong && !jobTooLong && !saving && !live.busy.contains(botID)
                 HStack(spacing: 10) {
                     PillButton(title: "Shuffle", symbol: "shuffle", wide: true) {

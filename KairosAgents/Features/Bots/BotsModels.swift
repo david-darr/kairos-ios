@@ -94,6 +94,7 @@ nonisolated enum Weekday: Int, CaseIterable, Hashable, Sendable {
 
     var short: String { ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][rawValue] }
     var letter: String { ["M", "T", "W", "T", "F", "S", "S"][rawValue] }
+    var name: String { ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][rawValue] }
 }
 
 nonisolated func clockText(_ hour: Int, _ minute: Int) -> String {
@@ -143,11 +144,14 @@ nonisolated struct Routine: Identifiable, Hashable, Sendable {
         self.minute = minute
     }
 
+    /// The day a sample one-time routine runs on (it keeps no date of its own).
+    static let onceDay: Weekday = .fri
+
     /// One plain sentence: "Every weekday at 9:00 AM".
     var sentence: String {
         let at = clockText(hour, minute)
         switch mode {
-        case .once: return "Once, Friday at \(at)"
+        case .once: return "Once, \(Self.onceDay.name) at \(at)"
         case .daily: return "Every day at \(at)"
         case .weekdays: return "Every weekday at \(at)"
         case .weekly:
@@ -167,7 +171,7 @@ nonisolated struct Routine: Identifiable, Hashable, Sendable {
         case .daily, .interval, .custom: true
         case .weekdays: day.rawValue < 5
         case .weekly: days.contains(day)
-        case .once: day == .fri
+        case .once: day == Self.onceDay
         case .limitReset: day == .wed
         }
     }

@@ -153,7 +153,7 @@ struct RoutinesList: View {
                     .disabled(isLive && live.waits(removed))
                 }
                 .padding(12)
-                .kCard(radius: 18, raised: true)
+                .kCard(radius: Radius.card, raised: true)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
 
@@ -165,7 +165,7 @@ struct RoutinesList: View {
                     }
                 }
                 if routines.isEmpty && (!isLive || (live.isCurrent && live.routinesLoad == .loaded)) {
-                    EmptyNote(text: "No routines yet. Add one and this bot works on its own, on a schedule.", symbol: "clock").kCard(radius: 20)
+                    EmptyNote(text: "No routines yet. Add one and this bot works on its own, on a schedule.", symbol: "clock").kCard(radius: Radius.card)
                 }
                 ForEach(Array(routines.enumerated()), id: \.element.id) { index, routine in
                     RoutineRow(routine: routine, showFace: false, onOpen: { opened = routine }, onDelete: { deleting = routine }, onRun: { running = routine })
@@ -206,7 +206,7 @@ struct RoutinesList: View {
                             TriggerRow(trigger: trigger)
                         }
                     }
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
                 }
                 if isLive {
                     HintLine(text: "Make or change a trigger in Kairos on your desktop. A webhook address carries a secret, so it stays there.", symbol: "info.circle")
@@ -224,7 +224,7 @@ struct RoutinesList: View {
                 }
             }
             .buttonStyle(PressStyle(scale: 0.98))
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
         .navigationDestination(item: $goto) { BotsDestination(route: $0) }
         .sheet(item: $opened) { routine in
@@ -254,7 +254,7 @@ struct RoutinesList: View {
             // and only a time the person picked (never the one just read from the desktop).
             guard isLive, let stored = TasksWire.clock(live.shownWatch?.morning?.time),
                   stored.hour != briefHour || stored.minute != briefMinute else { return }
-            try? await Task.sleep(for: .seconds(0.8))
+            try? await Task.sleep(for: Motion.settleDelay)
             guard !Task.isCancelled else { return }
             if !live.setMorning(time: String(format: "%02d:%02d", briefHour, briefMinute), say: store.say) {
                 // Another change was on its way: the chip goes back to the desktop's time, never shows one unsent.
@@ -282,7 +282,7 @@ struct RoutinesList: View {
     private func showRemoved(_ routine: Routine) {
         withAnimation(Motion.snappy) { removed = routine }
         Task {
-            try? await Task.sleep(for: .seconds(8))
+            try? await Task.sleep(for: Motion.undoWindow)
             withAnimation(Motion.gentle) { if removed?.id == routine.id { removed = nil } }
         }
     }
@@ -347,7 +347,7 @@ struct RoutinesList: View {
                 }
             }
             .padding(14)
-            .kCard(radius: 20, raised: true)
+            .kCard(radius: Radius.card, raised: true)
             .onAppear(perform: syncMorning)
         } else {
             BotsLoadNote(state: live.shown(live.watchLoad), waiting: "Reading Kip's watch from your desktop.") {
@@ -382,7 +382,7 @@ struct RoutinesList: View {
             }
         }
         .padding(14)
-        .kCard(radius: 20, raised: true)
+        .kCard(radius: Radius.card, raised: true)
     }
 }
 
@@ -449,11 +449,11 @@ struct RoutineRow: View {
                     }
                 }
                 .padding(10)
-                .background(Palette.gold.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Palette.gold.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             }
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
         .contextMenu { menuItems }
     }
 
@@ -574,6 +574,8 @@ struct RoutineEditorScreen: View {
     @State private var check: BotRoutinePreview = .checking
     @State private var startMinute = 0
     @State private var endMinute = 0
+    /// The form as it was opened (or last saved), to tell whether there are edits to lose. nil until it is filled.
+    @State private var opened: BotRoutineForm?
 
     private var isLive: Bool { !Connection.shared.usesSampleData }
 
@@ -611,7 +613,8 @@ struct RoutineEditorScreen: View {
     private var stopZone: TimeZone { BotRoutineMap.calendar(form).timeZone }
 
     var body: some View {
-        BotsPage(routineID == nil ? "New routine" : "Edit routine", subtitle: store.bot(draft.botID).name, live: isLive) {
+        BotsPage(routineID == nil ? "New routine" : "Edit routine", subtitle: store.bot(draft.botID).name, live: isLive,
+                 unsaved: opened.map { $0 != form } ?? false) {
             if isLive && missing {
                 HintLine(text: "This routine is not on your desktop any more.", symbol: "info.circle").padding(.horizontal, 4)
             } else if isLive && base == nil {
@@ -637,7 +640,11 @@ struct RoutineEditorScreen: View {
             await live.loadIfNeeded()
             loadLive()
             await live.loadLimits()
-            if base != nil && endpointID.isEmpty, let first = live.shownLimits.first { endpointID = first.endpointId }
+            if base != nil && endpointID.isEmpty, let first = live.shownLimits.first {
+                endpointID = first.endpointId
+                // Filled in for the person, not an edit of theirs.
+                opened?.endpointID = endpointID
+            }
         }
         .onChange(of: live.routinesLoad) {
             // A read another screen started has landed: the routine can be shown now.
@@ -737,7 +744,7 @@ struct RoutineEditorScreen: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .kCard(radius: 20, raised: true)
+        .kCard(radius: Radius.card, raised: true)
         .animation(Motion.snappy, value: check)
     }
 
@@ -764,7 +771,7 @@ struct RoutineEditorScreen: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .kCard(radius: 20, raised: true)
+        .kCard(radius: Radius.card, raised: true)
         .animation(Motion.snappy, value: draft)
     }
 
@@ -995,6 +1002,7 @@ struct RoutineEditorScreen: View {
         } else {
             draft = Routine(botID: botID, name: "", instructions: "", mode: .weekdays)
         }
+        opened = form
     }
 
     /// Paired: the form starts from the desktop's routine, or from the desktop's defaults for a new one.
@@ -1013,6 +1021,7 @@ struct RoutineEditorScreen: View {
         missing = false
         show(start)
         base = start
+        opened = form
         if RepeatMode.more.contains(draft.mode) { moreOptions = true }
     }
 
@@ -1050,6 +1059,7 @@ struct RoutineEditorScreen: View {
             store.say("Scheduled. \(draft.sentence).")
         }
         Haptics.success()
+        opened = form
         dismiss()
     }
 
@@ -1092,6 +1102,7 @@ struct RoutineEditorScreen: View {
             case .done(let text):
                 Haptics.success()
                 store.say(text)
+                opened = form
                 dismiss()
             case .refused(let text):
                 Haptics.thud()
@@ -1145,7 +1156,7 @@ struct TriggerEditorScreen: View {
             // so this iPhone never shows, copies or keeps one.
             BotsPage(webhook ? "Webhook" : "App trigger", subtitle: store.bot(botID).name, live: true) {
                 EmptyNote(text: "Make or change triggers in Kairos on your desktop. A webhook address carries a secret, so it stays there.", symbol: "desktopcomputer")
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
             }
         } else {
             sampleBody
@@ -1291,7 +1302,7 @@ struct TriggerEditorScreen: View {
                         if expanded == index {
                             Text(calls[index].2).font(.system(size: 13, design: .monospaced)).foregroundStyle(Palette.inkDim)
                                 .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
                         }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)

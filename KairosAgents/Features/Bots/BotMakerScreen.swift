@@ -66,7 +66,7 @@ struct BotMakerScreen: View {
                 NavigationLink(value: BotsRoute.allBots) { NavRow(title: "All bots", symbol: "person.3", value: "\(store.bots.count)") }
             }
             .buttonStyle(PressStyle(scale: 0.98))
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
         .navigationDestination(item: $goto) { BotsDestination(route: $0) }
         .sheet(item: $creating) { box in
@@ -108,7 +108,7 @@ struct BotMakerScreen: View {
                             }
                             .padding(.horizontal, 8)
                             .frame(width: 132, height: 168)
-                            .kCard(radius: 22)
+                            .kCard(radius: Radius.group)
                         }
                         .buttonStyle(PressStyle(scale: 0.95))
                         .arrives(index)
@@ -165,7 +165,7 @@ struct BotMakerScreen: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .kCard(radius: 22, raised: true)
+            .kCard(radius: Radius.group, raised: true)
         }
         .buttonStyle(PressStyle(scale: 0.96))
     }
@@ -255,7 +255,7 @@ struct ReadyMadeScreen: View {
             PillButton(title: "Add \(ready.name)", symbol: "plus", look: .filled, wide: true) { creating = DraftBox(draft: ready.draft) }
         }
         .padding(16)
-        .kCard(radius: 22)
+        .kCard(radius: Radius.group)
     }
 }
 
@@ -269,7 +269,7 @@ struct ArchivedBotsScreen: View {
     var body: some View {
         BotsPage("Archived bots", subtitle: "\(store.archived.count) archived") {
             if store.archived.isEmpty {
-                EmptyNote(text: "Nothing is archived.", symbol: "archivebox").kCard(radius: 20)
+                EmptyNote(text: "Nothing is archived.", symbol: "archivebox").kCard(radius: Radius.card)
             } else {
                 HintLine(text: "Archived bots are hidden. Their routines keep running until you delete them.")
                 VStack(spacing: 0) {
@@ -278,7 +278,7 @@ struct ArchivedBotsScreen: View {
                         row(bot)
                     }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
                 HStack(spacing: 10) {
                     PillButton(title: "Restore all", wide: true) {
                         withAnimation(Motion.snappy) { for bot in store.archived { store.restore(bot.id) } }
@@ -375,12 +375,12 @@ struct PackagesScreen: View {
             PillButton(title: "Preview \(title)", symbol: "eye", look: .filled, wide: true) { previewing = true }
         }
         .padding(16)
-        .kCard(radius: 22)
+        .kCard(radius: Radius.group)
     }
 
     private var importTab: some View {
         VStack(alignment: .leading, spacing: 12) {
-            EmptyNote(text: "Choose a JSON or Markdown package. Up to 4 MB.", symbol: "shippingbox").kCard(radius: 22)
+            EmptyNote(text: "Choose a JSON or Markdown package. Up to 4 MB.", symbol: "shippingbox").kCard(radius: Radius.group)
             GoldButton(title: "Choose a package file") { picking = true }
             HintLine(text: "Imported skills and connections stay off until you review them.", symbol: "lock")
         }

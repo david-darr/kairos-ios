@@ -115,7 +115,8 @@ struct BotPanelRoot: View {
                         goto = .team(team.id)
                     } label: {
                         Text(team.name).font(KFont.ui(13, .medium, relativeTo: .footnote)).foregroundStyle(Palette.goldText)
-                            .frame(minHeight: 30)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(PressStyle())
                 }
@@ -158,7 +159,7 @@ struct BotPanelRoot: View {
                 NavRow(title: "All settings", symbol: "gearshape")
             }
             .buttonStyle(PressStyle(scale: 0.98))
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 

@@ -174,6 +174,8 @@ final class BotsInboxLive {
     // Needs you: every bot's open inbox rows. The screens keep one bot's.
     var inboxRows: [BotInboxRowDTO] = []
     var inboxLoad: BotsLiveLoad = .idle
+    /// When the rows were last read, so a badge can tell whether they or the roster's count is newer.
+    var inboxReadAt: Date?
     var inboxSkipped = 0
     /// Rows whose answer is on its way.
     var busyRows: Set<String> = []
@@ -232,6 +234,7 @@ final class BotsInboxLive {
     private func reset() {
         inboxRows = []
         inboxLoad = .idle
+        inboxReadAt = nil
         inboxSkipped = 0
         busyRows = []
         answered = [:]
@@ -328,6 +331,7 @@ final class BotsInboxLive {
                    show: { answer in
                        let list = BotLossyList(answer.rows)
                        withAnimation(Motion.snappy) { inboxRows = list.items }
+                       inboxReadAt = Date()
                        inboxSkipped = list.skipped
                        // The rows now show what the desktop has: a refused row may be answered again by a tap.
                        refusedRows = [:]

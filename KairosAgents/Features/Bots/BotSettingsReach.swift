@@ -43,7 +43,7 @@ struct AccessSettings: View {
                     )) { $0.rawValue }
                 }
                 .padding(14)
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
                 .arrives(index)
             }
             BotsSection(title: "Tool servers") {
@@ -68,7 +68,7 @@ struct AccessSettings: View {
                 Text(placeHint(s.place)).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).padding(.horizontal, 6)
             }
             NavigationLink(value: BotsRoute.settings(botID, .browser)) {
-                NavRow(title: "Browser profiles and sign-ins", symbol: "globe").kCard(radius: 20)
+                NavRow(title: "Browser profiles and sign-ins", symbol: "globe").kCard(radius: Radius.card)
             }
             .buttonStyle(PressStyle(scale: 0.98))
         }
@@ -111,10 +111,10 @@ struct ConnectionsSettings: View {
         }) {
             TextField("Search apps", text: $search)
                 .font(KFont.ui(16)).foregroundStyle(Palette.ink)
-                .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: 16)
+                .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: Radius.field)
             GoldSegmented(items: ["All", "Connected", "Servers"], selection: $show) { $0 }
             if items.isEmpty {
-                EmptyNote(text: "No apps match.", symbol: "magnifyingglass").kCard(radius: 20)
+                EmptyNote(text: "No apps match.", symbol: "magnifyingglass").kCard(radius: Radius.card)
             }
             ForEach(Array(items.enumerated()), id: \.element.id) { index, app in
                 appCard(app).arrives(index)
@@ -171,7 +171,7 @@ struct ConnectionsSettings: View {
             }
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 
     private func actionTitle(_ state: ConnectedApp.State) -> String {
@@ -418,7 +418,7 @@ struct UsageSettings: View {
                 Button {
                     refreshing = true
                     Task {
-                        try? await Task.sleep(for: .seconds(0.8))
+                        try? await Task.sleep(for: Motion.sampleRefresh)
                         withAnimation(Motion.snappy) {
                             for i in store.planWindows.indices { store.planWindows[i].percent = min(100, store.planWindows[i].percent + 1) }
                         }
@@ -467,7 +467,7 @@ struct UsageSettings: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .kCard(radius: 16)
+        .kCard(radius: Radius.tile)
         .animation(Motion.snappy, value: period)
     }
 
@@ -532,7 +532,7 @@ struct ConversationsSettings: View {
             ForEach(groups, id: \.self) { folder in
                 folderSection(folder, live.filter { $0.folder == folder })
             }
-            ToggleRow(title: "Show archived", isOn: $showArchived).kCard(radius: 20)
+            ToggleRow(title: "Show archived", isOn: $showArchived).kCard(radius: Radius.card)
             if selecting {
                 HStack(spacing: 10) {
                     Text("\(selected.count) selected").font(KFont.ui(15, .medium)).foregroundStyle(Palette.ink)
@@ -541,7 +541,7 @@ struct ConversationsSettings: View {
                     PillButton(title: "Delete", look: .danger) { bulk(archive: false) }.disabled(selected.isEmpty)
                 }
                 .padding(12)
-                .kGlass(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .kGlass(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -588,7 +588,7 @@ struct ConversationsSettings: View {
                     row(item)
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 
@@ -773,7 +773,7 @@ struct BotKnowAccessPage: View {
             if live.ready(key) {
                 HintLine(text: "Change what it can reach, and where it works, on your desktop.", symbol: "desktopcomputer").padding(.horizontal, 4)
                 if apps.isEmpty {
-                    EmptyNote(text: "No apps are connected yet.", symbol: "app.badge").kCard(radius: 20)
+                    EmptyNote(text: "No apps are connected yet.", symbol: "app.badge").kCard(radius: Radius.card)
                 }
                 ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
                     appCard(app, mode: data?.mode).arrives(index)
@@ -785,7 +785,7 @@ struct BotKnowAccessPage: View {
                 otherParts(data)
             }
             NavigationLink(value: BotsRoute.settings(botID, .browser)) {
-                NavRow(title: "Browser profiles and sign-ins", symbol: "globe").kCard(radius: 20)
+                NavRow(title: "Browser profiles and sign-ins", symbol: "globe").kCard(radius: Radius.card)
             }
             .buttonStyle(PressStyle(scale: 0.98))
         }
@@ -821,7 +821,7 @@ struct BotKnowAccessPage: View {
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel(text: "Where it works").padding(.horizontal, 4)
-                BotKnowValueRow(title: placeWord(agent?.place), value: "").kCard(radius: 20)
+                BotKnowValueRow(title: placeWord(agent?.place), value: "").kCard(radius: Radius.card)
                 Text(placeHint(agent?.place)).font(KFont.ui(13, relativeTo: .footnote)).foregroundStyle(Palette.inkFaint).padding(.horizontal, 6)
             }
         }
@@ -841,7 +841,7 @@ struct BotKnowAccessPage: View {
             Spacer(minLength: 0)
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
         .accessibilityElement(children: .combine)
     }
 
@@ -908,10 +908,10 @@ struct BotKnowConnectionsPage: View {
                 HintLine(text: "Connect, test or remove apps and tool servers on your desktop.", symbol: "desktopcomputer").padding(.horizontal, 4)
                 TextField("Search apps", text: $search)
                     .font(KFont.ui(16)).foregroundStyle(Palette.ink)
-                    .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: 16)
+                    .padding(.horizontal, 14).frame(minHeight: 48).kCard(radius: Radius.field)
                 GoldSegmented(items: ["All", "Connected", "Servers"], selection: $show) { $0 }
                 if items.isEmpty {
-                    EmptyNote(text: "No apps match.", symbol: "magnifyingglass").kCard(radius: 20)
+                    EmptyNote(text: "No apps match.", symbol: "magnifyingglass").kCard(radius: Radius.card)
                 }
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, app in
                     appCard(app).arrives(index)
@@ -956,7 +956,7 @@ struct BotKnowConnectionsPage: View {
             Spacer(minLength: 0)
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
         .accessibilityElement(children: .combine)
     }
 
@@ -1283,7 +1283,7 @@ struct BotKnowUsagePage: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .kCard(radius: 16)
+        .kCard(radius: Radius.tile)
     }
 
     private func bar(_ name: String, _ share: Double) -> some View {
@@ -1372,7 +1372,7 @@ struct BotKnowConversationsPage: View {
                 ForEach(folders, id: \.id) { folder in
                     folderSection(folder, shown.filter { $0.thread?.folderId == folder.id }, folders: folders, mainID: mainID)
                 }
-                ToggleRow(title: "Show archived", isOn: $showArchived).kCard(radius: 20)
+                ToggleRow(title: "Show archived", isOn: $showArchived).kCard(radius: Radius.card)
                 if live.failed("agent|\(botID)") {
                     HintLine(text: "Its folders could not be read, so every conversation shows outside folders here.", symbol: "exclamationmark.circle", color: Palette.goldText)
                         .padding(.horizontal, 4)
@@ -1400,7 +1400,7 @@ struct BotKnowConversationsPage: View {
                         .disabled(picked.isEmpty || live.busy.contains("delete|\(botID)"))
                     }
                     .padding(12)
-                    .kGlass(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .kGlass(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -1487,7 +1487,7 @@ struct BotKnowConversationsPage: View {
                     row(item, folders: folders, mainID: mainID)
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 

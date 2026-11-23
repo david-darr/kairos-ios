@@ -102,13 +102,7 @@ struct CalendarDayView: View {
     }
 
     private func roundButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.ink)
-                .frame(width: 44, height: 44)
-                .background(Palette.ink.opacity(0.08), in: Circle())
-        }
-        .buttonStyle(PressStyle(scale: 0.9))
-        .accessibilityLabel(label)
+        RoundIconButton(symbol: symbol, label: label, action: action)
     }
 
     private var weekStrip: some View {
@@ -132,8 +126,8 @@ struct CalendarDayView: View {
                         Circle().fill(has ? (on ? Palette.onGold : Palette.gold) : Color.clear).frame(width: 5, height: 5)
                     }
                     .frame(maxWidth: .infinity, minHeight: 60)
-                    .background(on ? AnyShapeStyle(Palette.gold) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(on ? AnyShapeStyle(Palette.gold) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
                 }
                 .buttonStyle(PressStyle(scale: 0.92))
                 .accessibilityLabel(date.formatted(.dateTime.weekday(.wide).day()))
@@ -141,7 +135,7 @@ struct CalendarDayView: View {
             }
         }
         .padding(4)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 
     // MARK: Grid
@@ -179,7 +173,7 @@ struct CalendarDayView: View {
                     .font(KFont.ui(14.5)).foregroundStyle(Palette.inkFaint)
                     .padding(14)
                     .frame(maxWidth: .infinity)
-                    .kCard(radius: 16)
+                    .kCard(radius: Radius.field)
                     .padding(.leading, 52)
                     .padding(.top, hourHeight * 3)
                     .allowsHitTesting(false)
@@ -222,8 +216,8 @@ struct CalendarDayView: View {
                 .padding(.horizontal, 8)
                 .frame(width: max(40, width - 4), height: max(44, length), alignment: .topLeading)
                 .padding(.top, 0)
-                .background(Color(hex: bot.isKip ? Palette.botGold : bot.colorHex).opacity(entry.routine.on ? 0.92 : 0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.night.opacity(0.15), lineWidth: 1))
+                .background(Color(hex: bot.isKip ? Palette.botGold : bot.colorHex).opacity(entry.routine.on ? 0.92 : 0.45), in: RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous).strokeBorder(Palette.night.opacity(0.15), lineWidth: 1))
             }
             .buttonStyle(PressStyle(scale: 0.96))
             .offset(x: 52 + CGFloat(lane) * width, y: top)
@@ -505,7 +499,7 @@ struct AutomationDetailSheet: View {
                             }
                         }
                         .padding(12)
-                        .background(Palette.gold.opacity(0.14), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(Palette.gold.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
                     }
                     BotsSection(title: "Next times") {
                         if desk.detailLoad[id] == .loaded || !times.isEmpty {
@@ -528,7 +522,7 @@ struct AutomationDetailSheet: View {
                         if desk.detailLoad[id] == .loaded && runs.isEmpty {
                             Text("It has not run yet.").font(KFont.ui(15)).foregroundStyle(Palette.inkDim).padding(14)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .kCard(radius: 20)
+                                .kCard(radius: Radius.card)
                         } else if !runs.isEmpty {
                             VStack(spacing: 0) {
                                 ForEach(Array(runs.prefix(5).enumerated()), id: \.element.id) { index, run in
@@ -540,7 +534,7 @@ struct AutomationDetailSheet: View {
                                            color: word.bad ? Palette.danger : (word.quiet ? Palette.inkFaint : Palette.success))
                                 }
                             }
-                            .kCard(radius: 20)
+                            .kCard(radius: Radius.card)
                         }
                         BotsLoadNote(state: desk.detailLoad[id] ?? .idle, waiting: "Reading its runs from your desktop.") {
                             Task { await desk.loadDetail(current) }
@@ -629,7 +623,7 @@ struct AutomationDetailSheet: View {
                         }
                     }
                     .padding(12)
-                    .background(Palette.gold.opacity(0.14), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(Palette.gold.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
                 }
                 BotsSection(title: "Next times") {
                     if times.isEmpty {
@@ -647,11 +641,11 @@ struct AutomationDetailSheet: View {
                     SectionLabel(text: "Recent runs").padding(.horizontal, 4)
                     if let run = sampleRun(live) {
                         runRow(run.when, run.word, color: run.word == "Running" ? Palette.inkFaint : nil)
-                            .kCard(radius: 20)
+                            .kCard(radius: Radius.card)
                     } else {
                         Text("It has not run yet.").font(KFont.ui(15)).foregroundStyle(Palette.inkDim).padding(14)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .kCard(radius: 20)
+                            .kCard(radius: Radius.card)
                     }
                 }
                 HStack(spacing: 8) {
@@ -824,7 +818,7 @@ struct AutomationsScreen: View {
             TextField("Every weekday at 9, summarise my inbox", text: $ask, axis: .vertical)
                 .font(KFont.ui(16)).foregroundStyle(Palette.ink).lineLimit(1...3)
                 .padding(12)
-                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             HStack(spacing: 8) {
                 Menu {
                     ForEach(store.bots) { bot in Button(bot.name) { askBot = bot.name } }
@@ -848,7 +842,7 @@ struct AutomationsScreen: View {
             }
         }
         .padding(14)
-        .kCard(radius: 20, raised: true)
+        .kCard(radius: Radius.card, raised: true)
     }
 
     @ViewBuilder
@@ -881,7 +875,7 @@ struct AutomationsScreen: View {
                 }
             }
             .padding(14)
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 
@@ -928,7 +922,7 @@ struct AutomationsScreen: View {
                 }
             }
             .padding(14)
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
         }
     }
 
@@ -936,7 +930,7 @@ struct AutomationsScreen: View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel(text: "\(title) \(items.count)").padding(.horizontal, 4)
             if items.isEmpty {
-                EmptyNote(text: "Nothing here.", symbol: "tray").kCard(radius: 20)
+                EmptyNote(text: "Nothing here.", symbol: "tray").kCard(radius: Radius.card)
             }
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, routine in
@@ -944,7 +938,7 @@ struct AutomationsScreen: View {
                     automationRow(routine)
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             .opacity(items.isEmpty ? 0 : 1)
             .frame(height: items.isEmpty ? 0 : nil)
         }
@@ -1012,7 +1006,7 @@ struct AutomationsScreen: View {
                     }
                     if triggers.isEmpty { EmptyNote(text: "No triggers for this bot.", symbol: "bolt") }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             }
             if isLive && desk.skippedTriggers > 0 {
                 HintLine(text: desk.skippedTriggers == 1 ? "1 trigger could not be read by this app." : "\(desk.skippedTriggers) triggers could not be read by this app.", symbol: "info.circle")

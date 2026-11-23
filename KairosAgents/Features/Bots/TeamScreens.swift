@@ -130,7 +130,7 @@ struct TeamScreen: View {
             if paused {
                 HintLine(text: "The team is paused. Its bots only read until you resume it.", symbol: "pause.circle.fill", color: Palette.goldText)
                     .padding(12)
-                    .background(Palette.gold.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(Palette.gold.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             }
             PillButton(title: paused ? "Resume team" : "Pause team", symbol: paused ? "play.fill" : "pause.fill", look: paused ? .filled : .plain, wide: true) {
                 // A paired pause asks first, and its confirm sheet gives the buzz.
@@ -234,7 +234,7 @@ struct TeamScreen: View {
                         .buttonStyle(PressStyle(scale: 0.98))
                     }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
                 if routines.count > 6 {
                     HintLine(text: "\(routines.count - 6) more. Open a bot's Routines page to see all of its routines.", symbol: "clock")
                         .padding(.horizontal, 4)
@@ -266,7 +266,7 @@ struct TeamScreen: View {
             NavigationLink(value: BotsRoute.teamMap) { NavRow(title: "Team map", symbol: "map") }
         }
         .buttonStyle(PressStyle(scale: 0.98))
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 
     // MARK: Sample sections
@@ -320,7 +320,7 @@ struct TeamScreen: View {
                 NavigationLink(value: BotsRoute.departments) { NavRow(title: "Departments", symbol: "building.2", value: team.department) }
             }
             .buttonStyle(PressStyle(scale: 0.98))
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
     }
 
     private func memberFace(_ id: String, chief: Bool) -> some View {
@@ -540,7 +540,7 @@ struct TeamSheetView: View {
                 .accessibilityAddTraits(members.contains(bot.id) ? .isSelected : [])
             }
         }
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 
     private func manage(_ team: BotTeam) -> some View {
@@ -601,7 +601,7 @@ struct TeamSheetView: View {
                     }
                 }
             }
-            if team.memory.isEmpty { EmptyNote(text: "No team memories yet.", symbol: "brain").kCard(radius: 20) }
+            if team.memory.isEmpty { EmptyNote(text: "No team memories yet.", symbol: "brain").kCard(radius: Radius.card) }
             SectionLabel(text: "Add entry")
             GoldSegmented(items: kinds, selection: $kind) { $0 }
             FieldCard(title: "Name", text: $entryName, placeholder: "Short name", limit: 120)
@@ -694,10 +694,10 @@ struct TeamSheetView: View {
                         get: { picks[id] ?? suggestion(tier) },
                         set: { picks[id] = $0 }
                     ))
-                    .kCard(radius: 16)
+                    .kCard(radius: Radius.field)
                 }
                 .padding(12)
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             }
             HintLine(text: "Estimated cost: about 40% of running every bot on a strong model. An estimate, not a quote.", symbol: "dollarsign.circle")
             GoldButton(title: "Apply these models") {
@@ -750,7 +750,7 @@ struct TeamSheetView: View {
                     .buttonStyle(PressStyle(scale: 0.98))
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             if team.chief != nil {
                 PillButton(title: "Remove chief", look: .danger, wide: true) {
                     guard let i = store.teamIndex(team.id) else { return }
@@ -835,7 +835,7 @@ struct NewTeamSheet: View {
                         .buttonStyle(PressStyle(scale: 0.98))
                     }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
                 GoldButton(title: "Save team") {
                     let clean = name.trimmingCharacters(in: .whitespaces)
                     guard !clean.isEmpty else { store.say("Give the team a name."); return }
@@ -897,7 +897,7 @@ struct NewRoomSheet: View {
                         .buttonStyle(PressStyle(scale: 0.98))
                     }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
                 GoldButton(title: members.isEmpty ? "Choose at least one bot" : "Create room with \(members.count) bot\(members.count == 1 ? "" : "s")") {
                     let clean = name.trimmingCharacters(in: .whitespaces)
                     guard !clean.isEmpty, !members.isEmpty else { Haptics.thud(); store.say("Give the room a name and at least one bot."); return }
@@ -971,7 +971,7 @@ struct TeamReportScreen: View {
                     }
                 }
                 SectionLabel(text: "Members").padding(.horizontal, 4)
-                if members.items.isEmpty { EmptyNote(text: "This team has no bots.", symbol: "person.3").kCard(radius: 20) }
+                if members.items.isEmpty { EmptyNote(text: "This team has no bots.", symbol: "person.3").kCard(radius: Radius.card) }
                 ForEach(Array(members.items.enumerated()), id: \.offset) { index, member in
                     liveMemberCard(member, index: index)
                 }
@@ -1017,7 +1017,7 @@ struct TeamReportScreen: View {
             .buttonStyle(PressStyle())
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
         .arrives(index)
     }
 
@@ -1087,7 +1087,7 @@ struct TeamReportScreen: View {
             .buttonStyle(PressStyle())
         }
         .padding(14)
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
         .arrives(index)
     }
 
@@ -1106,7 +1106,7 @@ struct TeamReportScreen: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .kCard(radius: 18)
+        .kCard(radius: Radius.card)
         .animation(Motion.snappy, value: window)
     }
 }
@@ -1166,7 +1166,7 @@ struct TeamMapScreen: View {
                             botTile(bot, chief: false)
                         }
                     }
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
                 }
             }
             if isLive {
@@ -1191,7 +1191,7 @@ struct TeamMapScreen: View {
                     }
                 }
             }
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             }
         }
         .onAppear { appearances += 1 }
@@ -1249,7 +1249,7 @@ struct TeamMapScreen: View {
                 TextField("Tag @bots, a team or @everyone", text: $message, axis: .vertical)
                     .font(KFont.ui(16)).foregroundStyle(Palette.ink).lineLimit(1...4)
                     .padding(12)
-                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(Palette.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
                 Button {
                     send()
                 } label: {
@@ -1272,7 +1272,7 @@ struct TeamMapScreen: View {
             }
         }
         .padding(14)
-        .kCard(radius: 20, raised: true)
+        .kCard(radius: Radius.card, raised: true)
     }
 
     private func send() {
@@ -1332,7 +1332,7 @@ struct TeamMapScreen: View {
                 }
             }
         }
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
     }
 
     private func teamCard(_ team: BotTeam) -> some View {
@@ -1369,7 +1369,7 @@ struct TeamMapScreen: View {
                 botTile(store.bot(id), chief: chief == id)
             }
         }
-        .kCard(radius: 20)
+        .kCard(radius: Radius.card)
         .opacity(paused ? 0.85 : 1)
     }
 
@@ -1447,7 +1447,7 @@ struct DepartmentsScreen: View {
                         .buttonStyle(PressStyle(scale: 0.98))
                     }
                 }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             }
         }
     }
@@ -1469,7 +1469,7 @@ struct DepartmentsScreen: View {
                             teamRow(team, departments: departments)
                         }
                     }
-                    .kCard(radius: 20)
+                    .kCard(radius: Radius.card)
                 }
                 .arrives(index)
             }
@@ -1589,7 +1589,7 @@ struct BotTmInstructionsForm: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .kCard(radius: 20)
+            .kCard(radius: Radius.card)
             PillButton(title: "Use the desktop's text", symbol: "arrow.down.doc", wide: true) { adopt(desk, keepTyped: false) }
                 .disabled(saving)
             PillButton(title: "Keep mine to save over it", symbol: "pencil", wide: true) { adopt(desk, keepTyped: true) }
@@ -1707,7 +1707,7 @@ struct BotTmMemoryForm: View {
                         }
                     }
                 }
-                if entries.isEmpty { EmptyNote(text: "No team memories yet.", symbol: "brain").kCard(radius: 20) }
+                if entries.isEmpty { EmptyNote(text: "No team memories yet.", symbol: "brain").kCard(radius: Radius.card) }
                 if let skipped = live.skippedMemory[team.id], skipped > 0 {
                     HintLine(text: skipped == 1 ? "1 entry could not be read by this app." : "\(skipped) entries could not be read by this app.", symbol: "info.circle")
                 }
@@ -1859,8 +1859,8 @@ struct BotTmChiefForm: View {
                         .disabled(saving || unsure || !readable)
                     }
                 }
-                .kCard(radius: 20)
-                if team.members.isEmpty { EmptyNote(text: "This team has no bots.", symbol: "person.3").kCard(radius: 20) }
+                .kCard(radius: Radius.card)
+                if team.members.isEmpty { EmptyNote(text: "This team has no bots.", symbol: "person.3").kCard(radius: Radius.card) }
                 if !readable { HintLine(text: BotTmMap.chiefListUnreadable, symbol: "desktopcomputer") }
                 if let note { HintLine(text: note, symbol: "info.circle", color: Palette.goldText) }
                 if unsure {

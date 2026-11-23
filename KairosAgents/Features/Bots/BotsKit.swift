@@ -11,15 +11,20 @@ struct BotsPage<Content: View, Trailing: View>: View {
     /// true on a screen that reads the paired desktop. Every other Bots page says, while paired,
     /// that it still shows sample data.
     var live = false
+    /// true while the page holds edits not saved yet: Back and the swipe back ask before they are thrown away.
+    var unsaved = false
     @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
     @Environment(\.dismiss) private var dismiss
     @Environment(\.botsPageEmbedded) private var embedded
+    @State private var discarding = false
+    @State private var leaving = false
 
-    init(_ title: String, subtitle: String? = nil, live: Bool = false, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
+    init(_ title: String, subtitle: String? = nil, live: Bool = false, unsaved: Bool = false, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
         self.title = title
         self.subtitle = subtitle
         self.live = live
+        self.unsaved = unsaved
         self.trailing = trailing()
         self.content = content()
     }
@@ -81,7 +86,7 @@ struct BotsPage<Content: View, Trailing: View>: View {
                 }
                 .padding(.horizontal, 64)
                 HStack {
-                    GlassIconButton(symbol: "chevron.left", label: "Back") { dismiss() }
+                    GlassIconButton(symbol: "chevron.left", label: "Back") { goBack() }
                     Spacer()
                     trailing
                 }
@@ -91,8 +96,32 @@ struct BotsPage<Content: View, Trailing: View>: View {
             .padding(.bottom, 10)
             .background { HeaderFade() }
         }
+        .overlay(alignment: .leading) {
+            if unsaved {
+                // The system swipe back is off while there are edits: a swipe from the edge asks instead.
+                Color.clear
+                    .frame(width: 18)
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 16).onEnded { value in
+                        if value.translation.width > 60 { discarding = true }
+                    })
+                    .accessibilityHidden(true)
+            }
+        }
+        .navigationBarBackButtonHidden(unsaved)
         .kScreen()
         .botsToast()
+        .sheet(isPresented: $discarding, onDismiss: {
+            if leaving { leaving = false; dismiss() }
+        }) {
+            ConfirmSheet(title: "Discard your changes?", detail: "What you changed on this page is not saved.", confirm: "Discard") {
+                leaving = true
+            }
+        }
+    }
+
+    private func goBack() {
+        if unsaved { discarding = true } else { dismiss() }
     }
 }
 
@@ -102,8 +131,8 @@ extension EnvironmentValues {
 }
 
 extension BotsPage where Trailing == EmptyView {
-    init(_ title: String, subtitle: String? = nil, live: Bool = false, @ViewBuilder content: () -> Content) {
-        self.init(title, subtitle: subtitle, live: live, trailing: { EmptyView() }, content: content)
+    init(_ title: String, subtitle: String? = nil, live: Bool = false, unsaved: Bool = false, @ViewBuilder content: () -> Content) {
+        self.init(title, subtitle: subtitle, live: live, unsaved: unsaved, trailing: { EmptyView() }, content: content)
     }
 }
 
@@ -117,7 +146,7 @@ struct BotsSection<Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             if let title { SectionLabel(text: title).padding(.horizontal, 4) }
             VStack(spacing: 0) { content }
-                .kCard(radius: 20)
+                .kCard(radius: Radius.card)
             if let footer {
                 Text(footer)
                     .font(KFont.ui(13, relativeTo: .footnote))
@@ -257,18 +286,10 @@ struct StepperRow: View {
     }
 
     private func stepButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
-        Button {
+        RoundIconButton(symbol: symbol, label: "\(label) \(title.lowercased())") {
             Haptics.select()
             withAnimation(Motion.snappy) { action() }
-        } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(Palette.ink)
-                .frame(width: 44, height: 44)
-                .background(Palette.ink.opacity(0.08), in: Circle())
         }
-        .buttonStyle(PressStyle(scale: 0.9))
-        .accessibilityLabel("\(label) \(title.lowercased())")
     }
 }
 
@@ -344,7 +365,7 @@ struct FieldCard: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .frame(minHeight: 48, alignment: .topLeading)
-                .kCard(radius: 16)
+                .kCard(radius: Radius.field)
         }
     }
 }
@@ -358,6 +379,7 @@ struct GoldSegmented<Item: Hashable>: View {
     let title: (Item) -> String
     var disabled: (Item) -> Bool = { _ in false }
     @Namespace private var ns
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 0) {
@@ -365,7 +387,7 @@ struct GoldSegmented<Item: Hashable>: View {
                 let on = item == selection
                 Button {
                     Haptics.select()
-                    withAnimation(Motion.snappy) { selection = item }
+                    withAnimation(reduceMotion ? nil : Motion.snappy) { selection = item }
                 } label: {
                     Text(title(item))
                         .font(KFont.ui(14.5, on ? .semibold : .regular, relativeTo: .subheadline))
@@ -385,7 +407,9 @@ struct GoldSegmented<Item: Hashable>: View {
             }
         }
         .padding(4)
-        .kCard(radius: 26)
+        // A pill, like the card surface.
+        .background(Palette.surface, in: Capsule())
+        .overlay(Capsule().strokeBorder(Palette.line, lineWidth: 1))
     }
 }
 
@@ -500,66 +524,58 @@ struct PillButton: View {
     }
 }
 
-/// "Swipe up to confirm": for risky actions like giving a bot full access.
-struct SwipeToConfirm: View {
+/// "Hold to confirm": for risky actions like giving a bot full access. Press and hold the gold pill while it fills;
+/// letting go early cancels. With VoiceOver a plain double-tap confirms, since holding is hard there.
+struct HoldToConfirm: View {
     let title: String
-    var symbol = "chevron.up"
     let action: () -> Void
-    @State private var drag: CGFloat = 0
+    @State private var progress: CGFloat = 0
     @State private var done = false
-    private let travel: CGFloat = 120
 
     var body: some View {
-        VStack(spacing: 10) {
-            ZStack(alignment: .bottom) {
-                Capsule()
-                    .fill(Palette.gold.opacity(0.14 + 0.3 * Double(progress)))
-                    .overlay(Capsule().strokeBorder(Palette.gold.opacity(0.5), lineWidth: 1))
-                    .frame(width: 76, height: travel + 76)
-                Circle()
-                    .fill(LinearGradient(colors: [Palette.goldHi, Palette.goldDeep], startPoint: .top, endPoint: .bottom))
-                    .frame(width: 64, height: 64)
-                    .overlay {
-                        Image(systemName: done ? "checkmark" : symbol)
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundStyle(Palette.onGold)
-                            .contentTransition(.symbolEffect(.replace))
-                    }
-                    .shadow(color: .black.opacity(0.25), radius: 10, y: 5)
-                    .padding(.bottom, 6)
-                    .offset(y: -drag)
-                    .gesture(
-                        DragGesture()
-                            .onChanged { value in
-                                guard !done else { return }
-                                drag = min(travel, max(0, -value.translation.height))
-                            }
-                            .onEnded { _ in
-                                if drag > travel * 0.8 {
-                                    withAnimation(Motion.bouncy) { drag = travel; done = true }
-                                    Haptics.success()
-                                    action()
-                                } else {
-                                    withAnimation(Motion.bouncy) { drag = 0 }
-                                }
-                            }
-                    )
+        HStack(spacing: 8) {
+            if done { Image(systemName: "checkmark").font(.system(size: 16, weight: .bold)) }
+            Text(done ? "Confirmed" : title).font(KFont.ui(17, .semibold))
+        }
+        .foregroundStyle(Palette.onGold)
+        .frame(maxWidth: .infinity, minHeight: 54)
+        .background {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    LinearGradient(colors: [Palette.goldHi, Palette.goldDeep], startPoint: .top, endPoint: .bottom)
+                    Color.white.opacity(0.3).frame(width: proxy.size.width * progress)
+                }
             }
-            Text(done ? "Confirmed" : title)
-                .font(KFont.ui(15, .medium, relativeTo: .subheadline))
-                .foregroundStyle(Palette.inkDim)
         }
-        .frame(maxWidth: .infinity)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 14, y: 8)
+        .contentShape(Capsule())
+        .onLongPressGesture(minimumDuration: Motion.holdToConfirm, maximumDistance: 40) {
+            complete()
+        } onPressingChanged: { pressing in
+            guard !done else { return }
+            if pressing {
+                Haptics.tap()
+                withAnimation(.linear(duration: Motion.holdToConfirm)) { progress = 1 }
+            } else {
+                // Let go early: nothing happens.
+                withAnimation(Motion.snappy) { progress = 0 }
+            }
+        }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
+        .accessibilityLabel(done ? "Confirmed" : title)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction {
-            done = true
-            action()
-        }
+        .accessibilityAction { complete() }
     }
 
-    private var progress: CGFloat { drag / travel }
+    private func complete() {
+        guard !done else { return }
+        done = true
+        withAnimation(Motion.snappy) { progress = 1 }
+        Haptics.success()
+        action()
+    }
 }
 
 // MARK: - Meters and states
