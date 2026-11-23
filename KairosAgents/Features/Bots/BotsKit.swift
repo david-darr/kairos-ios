@@ -14,6 +14,7 @@ struct BotsPage<Content: View, Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.botsPageEmbedded) private var embedded
 
     init(_ title: String, subtitle: String? = nil, live: Bool = false, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
         self.title = title
@@ -24,6 +25,35 @@ struct BotsPage<Content: View, Trailing: View>: View {
     }
 
     var body: some View {
+        if embedded {
+            embeddedBody
+        } else {
+            pageBody
+        }
+    }
+
+    /// Inside another page (a section of the bot's panel): the title as a heading over the same
+    /// content, with no header, scroll or ground of its own.
+    private var embeddedBody: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(KFont.ui(20, .semibold, relativeTo: .title3))
+                    .foregroundStyle(Palette.ink)
+                    .accessibilityAddTraits(.isHeader)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(KFont.ui(13, relativeTo: .footnote))
+                        .foregroundStyle(Palette.inkFaint)
+                }
+            }
+            .padding(.horizontal, 4)
+            if !live { BotsSampleNote() }
+            content
+        }
+    }
+
+    private var pageBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if !live { BotsSampleNote() }
@@ -64,6 +94,11 @@ struct BotsPage<Content: View, Trailing: View>: View {
         .kScreen()
         .botsToast()
     }
+}
+
+extension EnvironmentValues {
+    /// true where a Bots page is shown as a section of another page instead of pushed on its own.
+    @Entry var botsPageEmbedded = false
 }
 
 extension BotsPage where Trailing == EmptyView {

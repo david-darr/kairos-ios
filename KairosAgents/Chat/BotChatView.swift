@@ -110,7 +110,7 @@ private struct BotChatScreen: View {
                 router.debugScreen = nil
                 if chat.phase == .loaded { showModel = true } else { modelAfterLoad = true }
             case "botpanel": router.debugScreen = nil; showPanel = true
-            case "botsettings": router.debugScreen = nil; panelTab = .settings; showPanel = true
+            case "botsettings": router.debugScreen = nil; panelTab = .access; showPanel = true
             case "call": router.debugScreen = nil; showCall = true
             default: break
             }

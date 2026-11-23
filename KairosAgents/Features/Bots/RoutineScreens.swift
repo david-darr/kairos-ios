@@ -58,7 +58,39 @@ nonisolated enum RoutineTiming {
 
 // MARK: - Routines list
 
+/// The Routines and triggers page: the list below, with a page header and a New menu.
 struct RoutinesScreen: View {
+    let botID: String
+    let store = BotsStore.shared
+    @State private var goto: BotsRoute?
+
+    /// Paired: every routine and trigger here is the desktop's, never a sample.
+    private var isLive: Bool { !Connection.shared.usesSampleData }
+
+    var body: some View {
+        BotsPage("Routines and triggers", subtitle: store.bot(botID).name, live: isLive, trailing: {
+            Menu {
+                Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
+                if !isLive {
+                    Button { goto = .triggerEditor(botID, nil, webhook: false) } label: { Label("When something happens in an app", systemImage: "app.badge") }
+                    Button { goto = .triggerEditor(botID, nil, webhook: true) } label: { Label("When another app calls", systemImage: "arrow.down.left.circle") }
+                }
+            } label: {
+                Image(systemName: "plus").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
+                    .frame(width: 44, height: 44).contentShape(Circle())
+            }
+            .kGlass(Circle(), interactive: true)
+            .accessibilityLabel(isLive ? "New routine" : "New routine or trigger")
+        }) {
+            RoutinesList(botID: botID)
+        }
+        .navigationDestination(item: $goto) { BotsDestination(route: $0) }
+    }
+}
+
+/// One bot's routines and triggers, sample or from the paired desktop. Shown on its own page
+/// and as the Routines section of the bot's panel.
+struct RoutinesList: View {
     let botID: String
     let store = BotsStore.shared
     let live = BotsRoutinesLive.shared
@@ -77,20 +109,7 @@ struct RoutinesScreen: View {
     var body: some View {
         let routines = (isLive ? live.routines(for: botID) : store.routines(for: botID)).sorted { ($0.on ? 0 : 1, $0.hour) < ($1.on ? 0 : 1, $1.hour) }
         let triggers = (isLive ? live.shownTriggers : store.triggers).filter { $0.botID == botID }
-        BotsPage("Routines and triggers", subtitle: store.bot(botID).name, live: isLive, trailing: {
-            Menu {
-                Button { goto = .routineEditor(botID, nil) } label: { Label("On a schedule", systemImage: "clock") }
-                if !isLive {
-                    Button { goto = .triggerEditor(botID, nil, webhook: false) } label: { Label("When something happens in an app", systemImage: "app.badge") }
-                    Button { goto = .triggerEditor(botID, nil, webhook: true) } label: { Label("When another app calls", systemImage: "arrow.down.left.circle") }
-                }
-            } label: {
-                Image(systemName: "plus").font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
-                    .frame(width: 44, height: 44).contentShape(Circle())
-            }
-            .kGlass(Circle(), interactive: true)
-            .accessibilityLabel(isLive ? "New routine" : "New routine or trigger")
-        }) {
+        VStack(alignment: .leading, spacing: 18) {
             if store.bot(botID).isKip { watchCard }
 
             if let removed {

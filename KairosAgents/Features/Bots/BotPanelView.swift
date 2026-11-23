@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// A bot's own page: Inbox and Settings. Opened by tapping the bot's face in its chat,
+/// A bot's own page: Inbox, Routines and Access. Opened by tapping the bot's face in its chat,
 /// as a full-screen cover with its own navigation stack.
 struct BotPanelView: View {
-    enum Tab: String, CaseIterable { case inbox = "Inbox", settings = "Settings" }
+    enum Tab: String, CaseIterable {
+        case inbox = "Inbox", routines = "Routines", access = "Access"
+        var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+    }
 
     let bot: Bot
     @State var tab: Tab
@@ -26,7 +29,15 @@ struct BotPanelRoot: View {
     let store = BotsStore.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(AppRouter.self) private var router: AppRouter?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The switch's choice.
     @State private var tab: BotPanelView.Tab = .inbox
+    /// The section on screen. It follows the switch one step behind, so the section leaving knows
+    /// which way to slide.
+    @State private var shown: BotPanelView.Tab = .inbox
+    @State private var cameFrom: BotPanelView.Tab = .inbox
+    /// Sections already shown and left: their rows appear in place when shown again.
+    @State private var seen: Set<BotPanelView.Tab> = []
     @State private var started = false
     @State private var goto: BotsRoute?
     @State private var confirmArchive = false
@@ -36,15 +47,13 @@ struct BotPanelRoot: View {
         ScrollView {
             VStack(spacing: 16) {
                 hero(bot)
-                GlassSwitch(items: BotPanelView.Tab.allCases, selection: $tab) { $0.rawValue }
+                GlassSwitch(items: BotPanelView.Tab.allCases, selection: $tab) { switchTitle($0) }
                     .fixedSize()
                 Group {
-                    if tab == .inbox {
-                        BotInboxSection(botID: botID)
-                            .transition(.opacity.combined(with: .move(edge: .leading)))
-                    } else {
-                        BotSettingsList(botID: botID)
-                            .transition(.opacity.combined(with: .move(edge: .trailing)))
+                    switch shown {
+                    case .inbox: section(.inbox) { BotInboxSection(botID: botID) }
+                    case .routines: section(.routines) { RoutinesList(botID: botID) }
+                    case .access: section(.access) { accessSection }
                     }
                 }
             }
@@ -55,7 +64,13 @@ struct BotPanelRoot: View {
         .safeAreaInset(edge: .top, spacing: 0) { header(bot) }
         .background { Ground(glowAt: UnitPoint(x: 0.5, y: 0.12)) }
         .toolbar(.hidden, for: .navigationBar)
-        .animation(Motion.snappy, value: tab)
+        .animation(Motion.snappy, value: shown)
+        .onChange(of: tab) { _, new in
+            guard new != shown else { return }
+            cameFrom = shown
+            seen.insert(shown)
+            withAnimation(Motion.snappy) { shown = new }
+        }
         .navigationDestination(item: $goto) { BotsDestination(route: $0) }
         .sheet(isPresented: $confirmArchive) {
             ConfirmSheet(title: "Archive \(bot.name)?", detail: "It is hidden from your bots. Its routines keep running, and you can bring it back from Archived bots.", confirm: "Archive") {
@@ -68,6 +83,8 @@ struct BotPanelRoot: View {
             guard !started else { return }
             started = true
             tab = startTab
+            shown = startTab
+            cameFrom = startTab
         }
         .task(id: BotsStore.connectionKey) {
             store.followConnection()
@@ -81,7 +98,7 @@ struct BotPanelRoot: View {
     private func hero(_ bot: Bot) -> some View {
         let settings = store.settings(botID)
         return VStack(spacing: 8) {
-            BotFace(bot: bot, size: 132, blinks: true)
+            BotFace(bot: bot, size: 132, showStatus: true, blinks: true)
             Text(bot.name).font(KFont.display(40)).foregroundStyle(Palette.ink)
             Text(store.liveMode ? "\(bot.role) · \(bot.model) · \(bot.approval)" : "\(bot.role) · \(settings.model) · \(settings.approval.longTitle)")
                 .font(KFont.ui(14, relativeTo: .subheadline))
@@ -109,6 +126,38 @@ struct BotPanelRoot: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    /// "Inbox 2" while something waits on you.
+    private func switchTitle(_ item: BotPanelView.Tab) -> String {
+        let needs = store.needsCount(botID)
+        return item == .inbox && needs > 0 ? "\(item.rawValue) \(needs)" : item.rawValue
+    }
+
+    /// One section, sliding in from the side of the switch it sits on. Its rows arrive only the first time.
+    private func section<Content: View>(_ item: BotPanelView.Tab, @ViewBuilder _ content: () -> Content) -> some View {
+        // Leaving: slide toward the section chosen. Arriving: come from the side of the one left.
+        let other = item == tab ? cameFrom : tab
+        let edge: Edge = item.order < other.order ? .leading : .trailing
+        return content()
+            .environment(\.arrivalsSettled, seen.contains(item))
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: edge)))
+    }
+
+    /// Access: how far it may go on its own, what it can reach, then every setting.
+    private var accessSection: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Group {
+                ApprovalSettings(botID: botID)
+                AccessSettings(botID: botID)
+            }
+            .environment(\.botsPageEmbedded, true)
+            NavigationLink(value: BotsRoute.allSettings(botID)) {
+                NavRow(title: "All settings", symbol: "gearshape")
+            }
+            .buttonStyle(PressStyle(scale: 0.98))
+            .kCard(radius: 20)
+        }
     }
 
     private func header(_ bot: Bot) -> some View {

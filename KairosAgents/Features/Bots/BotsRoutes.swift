@@ -11,6 +11,7 @@ enum BotsRoute: Hashable {
     // One bot
     case botPage(String)
     case settings(String, BotSettingsPage)
+    case allSettings(String)
     case report(String)
     case notifications(String)
     case activity(String)
@@ -47,9 +48,17 @@ struct BotsDestination: View {
     let route: BotsRoute
 
     var body: some View {
+        page
+            // A page pushed from a panel section is a page of its own, never embedded or settled.
+            .environment(\.botsPageEmbedded, false)
+            .environment(\.arrivalsSettled, false)
+    }
+
+    @ViewBuilder private var page: some View {
         switch route {
         case .botPage(let id): BotPanelRoot(botID: id, startTab: .inbox, presented: false)
         case .settings(let id, let page): BotSettingsScreen(botID: id, page: page)
+        case .allSettings(let id): BotsPage("Settings", subtitle: BotsStore.shared.bot(id).name, live: true) { BotSettingsList(botID: id) }
         case .report(let id): BotReportScreen(botID: id)
         case .notifications(let id): BotNotificationsScreen(botID: id)
         case .activity(let id): BotActivityScreen(botID: id)

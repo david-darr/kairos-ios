@@ -62,12 +62,14 @@ private struct Arrive: ViewModifier {
     let index: Int
     @State private var shown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.arrivalsSettled) private var settled
 
     func body(content: Content) -> some View {
         content
-            .opacity(shown ? 1 : 0)
-            .offset(y: shown || reduceMotion ? 0 : 14)
+            .opacity(shown || settled ? 1 : 0)
+            .offset(y: shown || settled || reduceMotion ? 0 : 14)
             .onAppear {
+                guard !settled else { shown = true; return }
                 withAnimation(Motion.sheet.delay(Double(index) * 0.045)) { shown = true }
             }
     }
@@ -256,6 +258,9 @@ struct TabHeader<Trailing: View>: View {
 extension EnvironmentValues {
     /// Where the screen's ground glow sits, so a header can continue it.
     @Entry var groundGlow: UnitPoint = UnitPoint(x: 0.88, y: -0.05)
+    /// true where rows have already arrived once (a section shown again): they appear in place
+    /// instead of replaying their entrance.
+    @Entry var arrivalsSettled = false
 }
 
 /// What sits behind a floating header. It repeats the screen's own ground, glow included, so the
